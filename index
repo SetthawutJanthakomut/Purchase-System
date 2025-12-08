@@ -59,11 +59,11 @@
         <div class="bg-blue-50 p-4 rounded-xl border border-blue-100 grid grid-cols-1 md:grid-cols-4 gap-4">
           <div>
             <label class="block text-xs font-bold text-gray-500 mb-1">ประเภท</label>
-            <select name="type" id="formType" onchange="toggleFileUpload()" class="w-full p-2 border rounded bg-white text-sm" required>
-              <option value="Local">Local Purchase</option>
-              <option value="HO">Head Office</option>
-              <option value="Withdraw">Withdraw</option>
-            </select>
+<select name="type" id="formType" onchange="toggleFileUpload()" class="w-full p-2 border rounded bg-white text-sm" required>
+  <option value="Local">Local Purchase</option>
+  <option value="HO">Head Office</option>
+  <option value="Withdraw">Withdraw (เบิกวัสดุ)</option>
+  <option value="Borrow">Borrow (ยืมทรัพย์สิน)</option> </select>
           </div>
           <div>
             <label class="block text-xs font-bold text-gray-500 mb-1">ความเร่งด่วน</label>
@@ -156,6 +156,77 @@
     </div>
   </div>
 
+<div id="logHistoryModal" class="fixed inset-0 bg-gray-900/60 hidden items-center justify-center z-[80] p-4 backdrop-blur-sm">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden">
+    <div class="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
+      <h3 class="font-bold text-xl text-gray-800 flex items-center gap-2">🕒 ประวัติการจัดการคลัง/ทรัพย์สิน</h3>
+      <button onclick="document.getElementById('logHistoryModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-1 rounded">✕</button>
+    </div>
+    <div class="p-4 bg-white border-b">
+        <div class="relative">
+            <span class="absolute left-3 top-2.5 text-gray-400">🔍</span>
+            <input type="text" id="logSearch" placeholder="ค้นหาประวัติ (ชื่อสินค้า, ผู้ทำรายการ, การกระทำ)..." class="w-full border rounded-lg pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" onkeyup="filterLogs()">
+        </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-0">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-gray-50 text-gray-600 sticky top-0 border-b">
+          <tr>
+            <th class="p-3">เวลา</th>
+            <th class="p-3">รายการ (Item)</th>
+            <th class="p-3 text-center">Change</th>
+            <th class="p-3">กิจกรรม (Action)</th>
+            <th class="p-3">โดย (User)</th>
+          </tr>
+        </thead>
+        <tbody id="logHistoryBody" class="divide-y"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="invModal" class="fixed inset-0 bg-gray-900/60 hidden items-center justify-center z-[80] p-4 backdrop-blur-sm">
+  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
+    <h3 id="invModalTitle" class="font-bold text-lg mb-4">จัดการสินค้า</h3>
+    <form id="invForm" onsubmit="submitInventory(event)" class="space-y-3">
+       <input type="hidden" name="id" id="invId">
+       <div><label class="text-xs font-bold text-gray-500">ชื่อสินค้า</label><input type="text" name="name" id="invName" class="w-full border p-2 rounded" required></div>
+       <div class="grid grid-cols-2 gap-3">
+          <div><label class="text-xs font-bold text-gray-500">จำนวน</label><input type="number" name="qty" id="invQty" class="w-full border p-2 rounded" required></div>
+          <div><label class="text-xs font-bold text-gray-500">หน่วยนับ</label><input type="text" name="unit" id="invUnit" class="w-full border p-2 rounded" required></div>
+       </div>
+       <div><label class="text-xs font-bold text-gray-500">ราคามาตรฐาน</label><input type="number" name="price" id="invPrice" class="w-full border p-2 rounded"></div>
+       <div class="flex gap-2 mt-4">
+          <button type="button" onclick="document.getElementById('invModal').classList.add('hidden')" class="flex-1 py-2 border rounded hover:bg-gray-50">ยกเลิก</button>
+          <button type="submit" class="flex-1 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-bold">บันทึก</button>
+       </div>
+    </form>
+  </div>
+</div>
+
+<div id="astModal" class="fixed inset-0 bg-gray-900/60 hidden items-center justify-center z-[80] p-4 backdrop-blur-sm">
+  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
+    <h3 id="astModalTitle" class="font-bold text-lg mb-4">จัดการทรัพย์สิน</h3>
+    <form id="astForm" onsubmit="submitAsset(event)" class="space-y-3">
+       <input type="hidden" name="id" id="astId">
+       <div><label class="text-xs font-bold text-gray-500">ชื่อทรัพย์สิน</label><input type="text" name="name" id="astName" class="w-full border p-2 rounded" required></div>
+       <div><label class="text-xs font-bold text-gray-500">Serial No.</label><input type="text" name="serial" id="astSerial" class="w-full border p-2 rounded"></div>
+       <div><label class="text-xs font-bold text-gray-500">สถานะ</label>
+            <select name="status" id="astStatus" class="w-full border p-2 rounded">
+                <option value="Available">Available (ว่าง)</option>
+                <option value="Borrowed">Borrowed (ถูกยืม)</option>
+                <option value="Broken">Broken (ชำรุด)</option>
+                <option value="Maintenance">Maintenance (ซ่อม)</option>
+            </select>
+       </div>
+       <div><label class="text-xs font-bold text-gray-500">ราคา</label><input type="number" name="price" id="astPrice" class="w-full border p-2 rounded"></div>
+       <div class="flex gap-2 mt-4">
+          <button type="button" onclick="document.getElementById('astModal').classList.add('hidden')" class="flex-1 py-2 border rounded hover:bg-gray-50">ยกเลิก</button>
+          <button type="submit" class="flex-1 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-bold">บันทึก</button>
+       </div>
+    </form>
+  </div>
+</div>
   <script>
     let allRequests = [];
     let stockData = { inventory: [], assets: [] };
@@ -163,13 +234,15 @@
     let dashboardFilter = 'All';
     let orderItems = [];
     let receiveItems = [];
+    let allLogs = [];
     const ALLOWED_UNITS = ['ชิ้น', 'อัน', 'เส้น', 'ชุด', 'เครื่อง', 'ม้วน', 'เมตร', 'ลิตร'];
     
-    const STATUS_STEPS = {
-       'Local': ['Pending Head', 'Pending PM', 'Approved', 'Ordered', 'Completed'],
-       'HO': ['Pending Check', 'PR Issued', 'PO Issued', 'Shipping', 'Completed'],
-       'Withdraw': ['Pending Head', 'Approved', 'Ready to Disburse', 'Completed']
-    };
+const STATUS_STEPS = {
+   'Local': ['Pending Head', 'Pending PM', 'Approved', 'Ordered', 'Completed'],
+   'HO': ['Pending Check', 'PR Issued', 'PO Issued', 'Shipping', 'Completed'],
+   'Withdraw': ['Pending Head', 'Approved', 'Ready to Disburse', 'Completed'],
+   'Borrow': ['Pending Head', 'Approved', 'Ready to Disburse', 'Completed', 'Returned'] // เพิ่มบรรทัดนี้
+};
     const STATUS_LABELS = {
        'Draft': 'Draft', 'Pending Head': 'รอหัวหน้า', 'Pending PM': 'รอ PM', 'Approved': 'อนุมัติแล้ว',
        'Ordered': 'สั่งซื้อแล้ว', 'Pending Check': 'รอตรวจสอบ', 'PR Issued': 'ออก PR', 'PO Issued': 'ออก PO',
@@ -258,31 +331,72 @@
     }
 
     // --- INVENTORY RENDER ---
-    function renderInventory(container, data) {
-       let html = `<div class="bg-white rounded-xl border shadow-sm overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-gray-100 text-gray-600"><tr><th class="p-3">รหัส</th><th class="p-3">สินค้า</th><th class="p-3 text-center">คงเหลือ</th><th class="p-3 text-right">ราคาล่าสุด</th><th class="p-3">อัปเดต</th><th class="p-3">รูป</th></tr></thead><tbody class="divide-y">`;
-       if(data.length === 0) html += `<tr><td colspan="6" class="p-4 text-center text-gray-400">คลังว่างเปล่า</td></tr>`;
-       data.forEach(item => {
-          let imgs = item.image ? item.image.split(',') : [];
-          let imgHtml = imgs.length > 0 ? `<a href="${imgs[0]}" target="_blank" class="text-blue-500 hover:underline">ดูรูป (${imgs.length})</a>` : '-';
-          html += `<tr><td class="p-3 font-mono text-gray-500">${item.id}</td><td class="p-3 font-bold text-gray-800">${item.name}</td><td class="p-3 text-center"><span class="bg-blue-100 text-blue-800 px-2 py-1 rounded font-bold">${item.qty} ${item.unit}</span></td><td class="p-3 text-right">${(item.price||0).toLocaleString()}</td><td class="p-3 text-xs text-gray-500">${item.lastUpdated}</td><td class="p-3">${imgHtml}</td></tr>`;
-       });
-       html += `</tbody></table></div>`;
-       container.innerHTML = html;
-    }
+function renderInventory(container, data) {
+   let html = `
+   <div class="flex justify-between items-center mb-4">
+      <h3 class="font-bold text-gray-700">📦 รายการสินค้าคงคลัง</h3>
+      <button onclick="openAddInventoryModal()" class="bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow hover:bg-green-700">+ เพิ่มสินค้า</button>
+   </div>
+   <div class="bg-white rounded-xl border shadow-sm overflow-hidden">
+     <table class="w-full text-sm text-left">
+       <thead class="bg-gray-100 text-gray-600">
+         <tr><th class="p-3">รหัส</th><th class="p-3">สินค้า</th><th class="p-3 text-center">คงเหลือ</th><th class="p-3 text-right">ราคา</th><th class="p-3">จัดการ</th></tr>
+       </thead>
+       <tbody class="divide-y">`;
+   
+   if(data.length === 0) html += `<tr><td colspan="5" class="p-4 text-center text-gray-400">คลังว่างเปล่า</td></tr>`;
+   
+   data.forEach(item => {
+      html += `<tr>
+        <td class="p-3 font-mono text-gray-500">${item.id}</td>
+        <td class="p-3 font-bold text-gray-800">${item.name}</td>
+        <td class="p-3 text-center"><span class="bg-blue-100 text-blue-800 px-2 py-1 rounded font-bold">${item.qty} ${item.unit}</span></td>
+        <td class="p-3 text-right">${(item.price||0).toLocaleString()}</td>
+        <td class="p-3">
+           <button onclick='openEditInventoryModal(${JSON.stringify(item)})' class="text-blue-600 hover:bg-blue-50 p-1 rounded">✏️ แก้ไข</button>
+        </td>
+      </tr>`;
+   });
+   html += `</tbody></table></div>`;
+   container.innerHTML = html;
+}
 
     // --- ASSETS RENDER ---
-    function renderAssets(container, data) {
-       let html = `<div class="bg-white rounded-xl border shadow-sm overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-gray-100 text-gray-600"><tr><th class="p-3">Asset ID</th><th class="p-3">ชื่อทรัพย์สิน</th><th class="p-3">Serial No.</th><th class="p-3 text-center">สถานะ</th><th class="p-3">ผู้ถือครอง</th><th class="p-3">รูป</th></tr></thead><tbody class="divide-y">`;
-       if(data.length === 0) html += `<tr><td colspan="6" class="p-4 text-center text-gray-400">ไม่พบทรัพย์สิน</td></tr>`;
-       data.forEach(item => {
-          const statusColor = item.status === 'Available' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700';
-          let imgs = item.image ? item.image.split(',') : [];
-          let imgHtml = imgs.length > 0 ? `<a href="${imgs[0]}" target="_blank" class="text-blue-500 hover:underline">ดูรูป (${imgs.length})</a>` : '-';
-          html += `<tr><td class="p-3 font-mono text-indigo-600 font-bold">${item.id}</td><td class="p-3">${item.name}</td><td class="p-3 font-mono text-xs">${item.serial}</td><td class="p-3 text-center"><span class="px-2 py-1 rounded text-xs ${statusColor}">${item.status}</span></td><td class="p-3">${item.holder}</td><td class="p-3">${imgHtml}</td></tr>`;
-       });
-       html += `</tbody></table></div>`;
-       container.innerHTML = html;
-    }
+function renderAssets(container, data) {
+   let html = `
+   <div class="flex justify-between items-center mb-4">
+      <h3 class="font-bold text-gray-700">🏷️ รายการทรัพย์สิน</h3>
+      <button onclick="openAddAssetModal()" class="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold shadow hover:bg-indigo-700">+ เพิ่มทรัพย์สิน</button>
+   </div>
+   <div class="bg-white rounded-xl border shadow-sm overflow-hidden">
+     <table class="w-full text-sm text-left">
+       <thead class="bg-gray-100 text-gray-600">
+         <tr><th class="p-3">ID</th><th class="p-3">ชื่อทรัพย์สิน</th><th class="p-3">สถานะ</th><th class="p-3">ผู้ถือครอง</th><th class="p-3">จัดการ</th></tr>
+       </thead>
+       <tbody class="divide-y">`;
+
+   if(data.length === 0) html += `<tr><td colspan="5" class="p-4 text-center text-gray-400">ไม่พบทรัพย์สิน</td></tr>`;
+   
+   data.forEach(item => {
+      const statusColor = item.status === 'Available' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700';
+      // ปุ่มรับคืนจะแสดงเมื่อสถานะไม่ใช่ Available
+      const returnBtn = item.status !== 'Available' ? 
+          `<button onclick='openReturnAssetModal(${JSON.stringify(item)})' class="text-teal-600 hover:bg-teal-50 p-1 rounded font-bold text-xs border border-teal-200 ml-1">↺ รับคืน</button>` : '';
+          
+      html += `<tr>
+        <td class="p-3 font-mono text-indigo-600 font-bold">${item.id}</td>
+        <td class="p-3">${item.name} <span class="text-gray-400 text-xs">${item.serial}</span></td>
+        <td class="p-3 text-center"><span class="px-2 py-1 rounded text-xs ${statusColor}">${item.status}</span></td>
+        <td class="p-3">${item.holder}</td>
+        <td class="p-3 flex items-center">
+           <button onclick='openEditAssetModal(${JSON.stringify(item)})' class="text-blue-600 hover:bg-blue-50 p-1 rounded">✏️</button>
+           ${returnBtn}
+        </td>
+      </tr>`;
+   });
+   html += `</tbody></table></div>`;
+   container.innerHTML = html;
+}
 
     // --- RECEIVE GOODS LOGIC ---
     function openReceiveModal(reqId) {
@@ -429,6 +543,149 @@
     function getLogColor(action) { if(action.includes('สร้าง') || action.includes('Draft')) return 'bg-gray-400'; if(action.includes('แก้ไข') || action.includes('Recalled')) return 'bg-yellow-400'; if(action.includes('Approved') || action.includes('อนุมัติ')) return 'bg-green-500'; if(action.includes('Ordered') || action.includes('สั่งซื้อ') || action.includes('PO')) return 'bg-blue-500'; if(action.includes('PR')) return 'bg-purple-500'; if(action.includes('Rejected')) return 'bg-red-500'; return 'bg-indigo-400'; }
     function renderProgressBar(type, status) { if(status === 'Draft') return ''; if(status === 'Rejected') return '<div class="w-full bg-red-100 text-red-700 text-center text-xs py-1 rounded font-bold">เอกสารนี้ถูกไม่อนุมัติ (Rejected)</div>'; let steps = STATUS_STEPS[type] || STATUS_STEPS['Local']; let currentIndex = steps.indexOf(status); if(currentIndex === -1 && status === 'Approved' && type === 'Withdraw') currentIndex = 1; let html = '<div class="w-full mt-3 mb-4"><div class="flex justify-between mb-2">'; steps.forEach((step, idx) => { let active = idx <= currentIndex; let label = STATUS_LABELS[step] || step; html += `<div class="flex flex-col items-center w-full relative"><div class="w-2.5 h-2.5 rounded-full mb-1 z-10 ${active ? 'bg-blue-600 scale-110' : 'bg-gray-200'} step-dot"></div><span class="text-[9px] ${active ? 'text-blue-600 font-bold' : 'text-gray-300'} text-center hidden sm:block">${label}</span></div>`; }); html += '</div><div class="h-1 bg-gray-100 rounded-full overflow-hidden flex relative top-[-1.6rem] z-0 mx-4">'; steps.forEach((step, idx) => { if(idx === steps.length - 1) return; let active = idx < currentIndex; html += `<div class="h-full flex-1 border-r border-white ${active ? 'bg-blue-500' : (idx === currentIndex ? 'bg-blue-200' : 'bg-transparent')} step-line"></div>`; }); html += '</div></div>'; return html; }
     function openHistoryModal(reqId) { const req = allRequests.find(r => r.id === reqId); if(!req) return; document.getElementById('histDocId').innerText = req.id; document.getElementById('histJobInfo').innerText = `Job: ${req.job} | By: ${req.requester} | Date: ${req.created}`; document.getElementById('histUrgency').innerText = req.urgency || 'Normal'; document.getElementById('histUrgency').className = `px-2 py-0.5 rounded text-xs font-bold border ${req.urgency === 'Very Urgent' ? 'bg-red-100 text-red-700' : 'bg-gray-100'}`; const docEl = document.getElementById('histDocBadge'); if (req.docNumber) { docEl.innerText = req.docNumber; docEl.classList.remove('hidden'); } else { docEl.classList.add('hidden'); } document.getElementById('histProgressBar').innerHTML = renderProgressBar(req.type, req.status); let total = 0; document.getElementById('histItemsBody').innerHTML = req.items.map(item => { const sum = item.qty * (item.price || 0); total += sum; return `<tr><td class="p-2 align-top"><span class="font-bold text-gray-800 block">${item.name}</span></td><td class="p-2 text-center align-top">${item.imageUrl ? `<a href="${item.imageUrl}" target="_blank"><img src="${item.imageUrl}" class="w-10 h-10 object-cover rounded border hover:scale-150 transition-transform"></a>` : '-'}</td><td class="p-2 text-center align-top">${item.qty}</td><td class="p-2 text-center text-xs align-top">${item.unit}</td><td class="p-2 text-center text-xs align-top">${item.subjob || '-'}</td><td class="p-2 text-right align-top">${(item.price||0).toLocaleString()}</td><td class="p-2 text-xs italic align-top">${item.note || '-'}</td></tr>`; }).join(''); document.getElementById('histTotal').innerText = total > 0 ? `Total: ${total.toLocaleString()} THB` : ''; const historyLog = req.history || []; document.getElementById('histTimeline').innerHTML = historyLog.map((log, index) => `<div class="relative flex gap-4">${index !== historyLog.length - 1 ? '<div class="absolute left-[11px] top-6 bottom-[-16px] w-0.5 bg-gray-200"></div>' : ''}<div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${getLogColor(log.action)} z-10"><div class="w-2.5 h-2.5 bg-white rounded-full"></div></div><div class="pb-6"><p class="text-xs text-gray-400 mb-0.5">${log.date}</p><p class="font-bold text-gray-800 text-sm">${STATUS_LABELS[log.action] || log.action}</p><p class="text-xs text-gray-500">โดย: ${log.user} ${log.note ? `(${log.note})` : ''}</p></div></div>`).join(''); document.getElementById('historyModal').classList.remove('hidden'); }
+
+
+function openGeneralHistory() {
+    document.getElementById('logHistoryModal').classList.remove('hidden');
+    document.getElementById('logHistoryBody').innerHTML = '<tr><td colspan="5" class="p-8 text-center"><div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div><p class="mt-2 text-gray-500">กำลังโหลดประวัติ...</p></td></tr>';
+    
+    // เรียก Backend ดึงข้อมูล Logs
+    google.script.run.withSuccessHandler(logs => {
+        allLogs = logs;
+        renderLogs(allLogs);
+    }).getHistoryLogs();
+}
+
+function renderLogs(logs) {
+    const tbody = document.getElementById('logHistoryBody');
+    if (logs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="p-8 text-center text-gray-400 flex flex-col items-center"><span class="text-4xl mb-2">📭</span><span>ไม่พบประวัติการทำรายการ</span></td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = logs.map(log => {
+        const isPositive = log.change && log.change.toString().includes('+');
+        const isNegative = log.change && log.change.toString().includes('-');
+        const changeColor = isPositive ? 'text-green-600 bg-green-50' : (isNegative ? 'text-red-600 bg-red-50' : 'text-gray-600');
+        
+        return `
+        <tr class="hover:bg-blue-50 transition-colors">
+            <td class="p-3 text-xs text-gray-500 whitespace-nowrap font-mono">${log.date}</td>
+            <td class="p-3 font-bold text-gray-800">${log.item}</td>
+            <td class="p-3 text-center"><span class="px-2 py-1 rounded text-xs font-bold ${changeColor}">${log.change || '-'}</span></td>
+            <td class="p-3">
+                <span class="block font-medium text-gray-700">${log.action}</span>
+                <span class="text-xs text-gray-400 block truncate max-w-[200px]" title="${log.note}">${log.note || ''}</span>
+            </td>
+            <td class="p-3"><span class="text-xs bg-gray-100 px-2 py-1 rounded text-gray-600 border">${log.user}</span></td>
+        </tr>`;
+    }).join('');
+}
+
+function filterLogs() {
+    const q = document.getElementById('logSearch').value.toLowerCase();
+    const filtered = allLogs.filter(l => 
+        (l.item && l.item.toLowerCase().includes(q)) || 
+        (l.action && l.action.toLowerCase().includes(q)) ||
+        (l.user && l.user.toLowerCase().includes(q)) ||
+        (l.note && l.note.toLowerCase().includes(q))
+    );
+    renderLogs(filtered);
+}
+
+// --- INVENTORY ACTIONS ---
+function openAddInventoryModal() {
+    document.getElementById('invForm').reset();
+    document.getElementById('invId').value = '';
+    document.getElementById('invModalTitle').innerText = 'เพิ่มสินค้าใหม่';
+    document.getElementById('invModal').classList.remove('hidden');
+}
+
+function openEditInventoryModal(item) {
+    document.getElementById('invId').value = item.id;
+    document.getElementById('invName').value = item.name;
+    document.getElementById('invQty').value = item.qty;
+    document.getElementById('invUnit').value = item.unit;
+    document.getElementById('invPrice').value = item.price;
+    document.getElementById('invModalTitle').innerText = 'แก้ไขสินค้า: ' + item.name;
+    document.getElementById('invModal').classList.remove('hidden');
+}
+
+function submitInventory(e) {
+    e.preventDefault();
+    const form = document.getElementById('invForm');
+    const formData = {
+        id: form.id.value,
+        name: form.name.value,
+        qty: form.qty.value,
+        unit: form.unit.value,
+        price: form.price.value
+    };
+    
+    const action = formData.id ? 'updateInventoryItem' : 'addInventoryItem';
+    google.script.run.withSuccessHandler(res => {
+        if(res.success) { document.getElementById('invModal').classList.add('hidden'); loadData(); }
+        else alert(res.message);
+    })[action](formData);
+}
+
+// --- ASSET ACTIONS ---
+function openAddAssetModal() {
+    document.getElementById('astForm').reset();
+    document.getElementById('astId').value = '';
+    document.getElementById('astModalTitle').innerText = 'เพิ่มทรัพย์สินใหม่';
+    document.getElementById('astModal').classList.remove('hidden');
+}
+
+function openEditAssetModal(item) {
+    document.getElementById('astId').value = item.id;
+    document.getElementById('astName').value = item.name;
+    document.getElementById('astSerial').value = item.serial;
+    document.getElementById('astStatus').value = item.status;
+    document.getElementById('astPrice').value = item.price;
+    document.getElementById('astModalTitle').innerText = 'แก้ไขทรัพย์สิน: ' + item.id;
+    document.getElementById('astModal').classList.remove('hidden');
+}
+
+function openReturnAssetModal(item) {
+    if(confirm('ยืนยันการรับคืนทรัพย์สิน: ' + item.name + ' ?\nสถานะจะเปลี่ยนเป็น Available')) {
+        const formData = { id: item.id, status: 'Available', note: 'รับคืน' };
+        google.script.run.withSuccessHandler(res => {
+             if(res.success) loadData();
+        }).updateAssetItem(formData);
+    }
+}
+
+function submitAsset(e) {
+    e.preventDefault();
+    const form = document.getElementById('astForm');
+    const formData = {
+        id: form.id.value,
+        name: form.name.value,
+        serial: form.serial.value,
+        status: form.status.value,
+        price: form.price.value
+    };
+    
+    const action = formData.id ? 'updateAssetItem' : 'addAssetItem';
+    google.script.run.withSuccessHandler(res => {
+        if(res.success) { document.getElementById('astModal').classList.add('hidden'); loadData(); }
+        else alert(res.message);
+    })[action](formData);
+}
+
+// --- DISBURSE ACTION (Store) ---
+function handleDisburse(reqId) {
+    if(!confirm('ยืนยันการจ่ายของ/ส่งมอบทรัพย์สิน? \nสต็อกจะถูกตัด หรือสถานะทรัพย์สินจะเปลี่ยน')) return;
+    
+    const req = allRequests.find(r => r.id === reqId);
+    if(!req) return;
+
+    google.script.run.withSuccessHandler(res => {
+        if(res.success) { alert('ดำเนินการเรียบร้อย'); loadData(); }
+    }).processDisburse(reqId, JSON.stringify(req.items));
+}
+
   </script>
 </body>
 </html>
