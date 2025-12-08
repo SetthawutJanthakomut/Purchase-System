@@ -71,7 +71,7 @@
           </div>
           <div>
             <label class="block text-xs font-bold text-gray-500 mb-1">ความเร่งด่วน</label>
-            <select name="urgency" id="formUrgency" class="w-full p-2 border rounded bg-white text-sm">
+            <select name="urgency" id="formUrgency" class="w-full p-2 border rounded text-sm">
               <option value="Normal">ปกติ (Normal)</option>
               <option value="Urgent">ด่วน (Urgent)</option>
               <option value="Very Urgent">ด่วนมาก (Very Urgent)</option>
@@ -190,33 +190,25 @@
   </div>
 
   <script>
-    // --- GLOBAL VARIABLES ---
+    // --- VARIABLES ---
     let allRequests = [];
     let stockData = { inventory: [], assets: [] };
     let currentTab = 'dashboard';
     let dashboardFilter = 'All';
     let orderItems = [];
     let receiveItems = [];
+    let targetStatus = 'Pending Head';
     const ALLOWED_UNITS = ['ชิ้น', 'อัน', 'เส้น', 'ชุด', 'เครื่อง', 'ม้วน', 'เมตร', 'ลิตร'];
     
-    const STATUS_STEPS = {
-       'Local': ['Pending Head', 'Pending PM', 'Approved', 'Ordered', 'Completed'],
-       'HO': ['Pending Check', 'PR Issued', 'PO Issued', 'Shipping', 'Completed'],
-       'Withdraw': ['Pending Head', 'Approved', 'Ready to Disburse', 'Completed']
-    };
-    const STATUS_LABELS = {
-       'Draft': 'Draft', 'Pending Head': 'รอหัวหน้า', 'Pending PM': 'รอ PM', 'Approved': 'อนุมัติแล้ว',
-       'Ordered': 'สั่งซื้อแล้ว', 'Pending Check': 'รอตรวจสอบ', 'PR Issued': 'ออก PR', 'PO Issued': 'ออก PO',
-       'Shipping': 'กำลังส่ง', 'Ready to Disburse': 'รอจ่ายของ', 'Completed': 'เสร็จสิ้น', 'Rejected': 'ไม่อนุมัติ'
-    };
+    const STATUS_STEPS = { 'Local': ['Pending Head', 'Pending PM', 'Approved', 'Ordered', 'Completed'], 'HO': ['Pending Check', 'PR Issued', 'PO Issued', 'Shipping', 'Completed'], 'Withdraw': ['Pending Head', 'Approved', 'Ready to Disburse', 'Completed'] };
+    const STATUS_LABELS = { 'Draft': 'Draft', 'Pending Head': 'รอหัวหน้า', 'Pending PM': 'รอ PM', 'Approved': 'อนุมัติแล้ว', 'Ordered': 'สั่งซื้อแล้ว', 'Pending Check': 'รอตรวจสอบ', 'PR Issued': 'ออก PR', 'PO Issued': 'ออก PO', 'Shipping': 'กำลังส่ง', 'Ready to Disburse': 'รอจ่ายของ', 'Completed': 'เสร็จสิ้น', 'Rejected': 'ไม่อนุมัติ' };
 
-    // --- INITIALIZATION ---
+    // --- INIT ---
     window.onload = loadData;
 
     function loadData() {
       document.getElementById('loading').classList.remove('hidden');
       document.getElementById('dataContainer').classList.add('hidden');
-      
       google.script.run.withSuccessHandler(function(reqs) {
           allRequests = reqs;
           google.script.run.withSuccessHandler(function(stock) {
@@ -234,7 +226,7 @@
         btn.className = 'nav-btn flex items-center gap-3 w-full px-4 py-3 rounded-lg text-gray-600 hover:bg-gray-50 transition-colors';
       });
       document.getElementById('nav-' + tab).className = 'nav-btn flex items-center gap-3 w-full px-4 py-3 rounded-lg bg-blue-50 text-blue-700 font-medium shadow-sm';
-      document.getElementById('pageTitle').innerText = tab === 'dashboard' ? 'ภาพรวมระบบ' : tab === 'orders' ? 'รายการสั่งซื้อ' : tab === 'inventory' ? 'คลังวัสดุ' : 'ทะเบียนทรัพย์สิน';
+      document.getElementById('pageTitle').innerText = tab === 'dashboard' ? 'ภาพรวม' : tab === 'orders' ? 'รายการสั่งซื้อ' : tab === 'inventory' ? 'คลังวัสดุ' : 'ทะเบียนทรัพย์สิน';
       render();
     }
 
@@ -242,7 +234,6 @@
       const container = document.getElementById('dataContainer');
       const role = document.getElementById('roleSelector').value;
       container.innerHTML = ''; 
-
       if (currentTab === 'dashboard') renderDashboard(container, allRequests);
       else if (currentTab === 'orders') renderOrders(container, allRequests, role);
       else if (currentTab === 'inventory') renderInventory(container, stockData.inventory);
@@ -251,10 +242,11 @@
 
     // --- UTILS: Fix Image URL for <img> tag ---
     function getImageUrl(url) {
-       if(url && url.includes('drive.google.com')) {
-           // Convert view URL to direct image URL
+       if(!url) return '';
+       if(url.includes('drive.google.com')) {
            var match = url.match(/\/d\/(.+?)\//);
-           if (match) {
+           if (!match) match = url.match(/id=(.+?)(&|$)/);
+           if (match && match[1]) {
                return 'https://drive.google.com/uc?export=view&id=' + match[1];
            }
        }
@@ -265,65 +257,41 @@
     function renderDashboard(container, data) {
       const stats = {
           all: data.length,
-          pending: data.filter(r => r.status.includes('Pending')).length,
-          processing: data.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Approved', 'PR Issued'].includes(r.status)).length,
-          completed: data.filter(r => r.status === 'Completed').length
+          pending: data.filter(function(r) { return r.status.includes('Pending'); }).length,
+          processing: data.filter(function(r) { return ['Ordered', 'PO Issued', 'Shipping', 'Approved', 'PR Issued'].includes(r.status); }).length,
+          completed: data.filter(function(r) { return r.status === 'Completed'; }).length
       };
       
-      const createCard = (key, title, count, colorClass, bgClass, icon) => 
-        `<div onclick="setDashboardFilter('${key}')" class="cursor-pointer p-5 rounded-2xl border border-gray-100 transition-all duration-200 bg-white ${dashboardFilter === key ? `ring-2 ring-offset-1 ring-${colorClass.split('-')[1]}-400 shadow-md transform scale-105` : 'hover:border-gray-300 hover:shadow-sm'}">
-            <div class="flex justify-between items-center mb-2"><p class="text-sm text-gray-500 font-medium">${title}</p><div class="p-2 rounded-lg ${bgClass} ${colorClass}">${icon}</div></div>
-            <h3 class="text-3xl font-bold ${colorClass}">${count}</h3>
-        </div>`;
+      const createCard = function(key, title, count, colorClass, bgClass, icon) {
+        return `<div onclick="setDashboardFilter('${key}')" class="cursor-pointer p-5 rounded-2xl border border-gray-100 transition-all duration-200 bg-white ${dashboardFilter === key ? 'ring-2 ring-offset-1 ring-blue-400 shadow-md transform scale-105' : 'hover:border-gray-300 hover:shadow-sm'}"><div class="flex justify-between items-center mb-2"><p class="text-sm text-gray-500 font-medium">${title}</p><div class="p-2 rounded-lg ${bgClass} ${colorClass}">${icon}</div></div><h3 class="text-3xl font-bold ${colorClass}">${count}</h3></div>`;
+      };
       
       let displayData = data; 
       if (dashboardFilter !== 'All') { 
-          if (dashboardFilter === 'Pending') displayData = data.filter(r => r.status.includes('Pending')); 
-          else if (dashboardFilter === 'Processing') displayData = data.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Approved', 'PR Issued'].includes(r.status)); 
-          else if (dashboardFilter === 'Completed') displayData = data.filter(r => r.status === 'Completed'); 
+          if (dashboardFilter === 'Pending') displayData = data.filter(function(r) { return r.status.includes('Pending'); }); 
+          else if (dashboardFilter === 'Processing') displayData = data.filter(function(r) { return ['Ordered', 'PO Issued', 'Shipping', 'Approved', 'PR Issued'].includes(r.status); }); 
+          else if (dashboardFilter === 'Completed') displayData = data.filter(function(r) { return r.status === 'Completed'; }); 
       }
       
-      container.innerHTML = `
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-           ${createCard('All', 'ทั้งหมด', stats.all, 'text-blue-600', 'bg-blue-50', '📄')}
-           ${createCard('Pending', 'รออนุมัติ', stats.pending, 'text-amber-500', 'bg-amber-50', '⏳')}
-           ${createCard('Processing', 'กำลังดำเนินการ', stats.processing, 'text-indigo-600', 'bg-indigo-50', '🚚')}
-           ${createCard('Completed', 'เสร็จสิ้น', stats.completed, 'text-green-600', 'bg-green-50', '✅')}
-        </div>
-        <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-           <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center"><h3 class="font-bold text-gray-800">รายการล่าสุด</h3></div>
-           <div class="divide-y divide-gray-100">
-              ${displayData.length === 0 ? '<div class="p-8 text-center text-gray-400">ไม่พบรายการ</div>' : displayData.slice(0, 10).map(req => renderRequestRowLite(req)).join('')}
-           </div>
-        </div>`;
+      container.innerHTML = `<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">${createCard('All', 'ทั้งหมด', stats.all, 'text-blue-600', 'bg-blue-50', '📄')}${createCard('Pending', 'รออนุมัติ', stats.pending, 'text-amber-500', 'bg-amber-50', '⏳')}${createCard('Processing', 'กำลังดำเนินการ', stats.processing, 'text-indigo-600', 'bg-indigo-50', '🚚')}${createCard('Completed', 'เสร็จสิ้น', stats.completed, 'text-green-600', 'bg-green-50', '✅')}</div><div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden"><div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center"><h3 class="font-bold text-gray-800">รายการล่าสุด</h3></div><div class="divide-y divide-gray-100">${displayData.length === 0 ? '<div class="p-8 text-center text-gray-400">ไม่พบรายการ</div>' : displayData.slice(0, 10).map(function(req) { return renderRequestRowLite(req); }).join('')}</div></div>`;
     }
 
     function setDashboardFilter(filterType) { dashboardFilter = (dashboardFilter === filterType) ? 'All' : filterType; render(); }
     
     function renderRequestRowLite(req) { 
-        return `<div class="p-4 hover:bg-slate-50 transition-colors flex justify-between items-center group cursor-pointer" onclick="openHistoryModal('${req.id}')">
-            <div class="flex items-center gap-3">
-               <span class="text-[10px] px-2 py-0.5 rounded border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : 'bg-purple-50 text-purple-700'}">${req.type}</span>
-               <div class="flex flex-col"><span class="text-sm font-bold text-gray-800">${req.items[0]?.name} ${req.items.length > 1 ? `+${req.items.length-1}` : ''}</span><span class="text-xs text-gray-400">${req.id} • ${req.requester}</span></div>
-            </div>
-            <div class="flex items-center gap-3">
-               ${req.docNumber ? `<span class="text-[10px] bg-gray-800 text-white px-1.5 py-0.5 rounded font-mono hidden sm:inline-block">${req.docNumber}</span>` : ''}
-               <span class="px-2 py-1 rounded-full text-xs font-bold ${getStatusColor(req.status)}">${STATUS_LABELS[req.status] || req.status}</span>
-               <button class="text-gray-400 hover:text-blue-600"><span class="text-lg">›</span></button>
-            </div>
-        </div>`; 
+        return `<div class="p-4 hover:bg-slate-50 transition-colors flex justify-between items-center group cursor-pointer" onclick="openHistoryModal('${req.id}')"><div class="flex items-center gap-3"><span class="text-[10px] px-2 py-0.5 rounded border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : 'bg-purple-50 text-purple-700'}">${req.type}</span><div class="flex flex-col"><span class="text-sm font-bold text-gray-800">${req.items[0]?.name} ${req.items.length > 1 ? `+${req.items.length-1}` : ''}</span><span class="text-xs text-gray-400">${req.id} • ${req.requester}</span></div></div><div class="flex items-center gap-3">${req.docNumber ? `<span class="text-[10px] bg-gray-800 text-white px-1.5 py-0.5 rounded font-mono hidden sm:inline-block">${req.docNumber}</span>` : ''}<span class="px-2 py-1 rounded-full text-xs font-bold ${getStatusColor(req.status)}">${STATUS_LABELS[req.status] || req.status}</span><button class="text-gray-400 hover:text-blue-600"><span class="text-lg">›</span></button></div></div>`; 
     }
 
     // --- ORDERS LIST ---
     function renderOrders(container, data, role) {
       let filtered = data;
       if (role === 'User') filtered = data;
-      else if (role === 'Head') filtered = data.filter(r => r.status === 'Pending Head');
-      else if (role === 'PM') filtered = data.filter(r => r.status === 'Pending PM');
-      else if (role === 'Purchasing') filtered = data.filter(r => (r.type === 'Local' && ['Approved', 'Ordered'].includes(r.status)) || (r.type === 'HO' && ['Pending Check', 'PR Issued', 'PO Issued', 'Shipping'].includes(r.status)));
+      else if (role === 'Head') filtered = data.filter(function(r) { return r.status === 'Pending Head'; });
+      else if (role === 'PM') filtered = data.filter(function(r) { return r.status === 'Pending PM'; });
+      else if (role === 'Purchasing') filtered = data.filter(function(r) { return (r.type === 'Local' && ['Approved', 'Ordered'].includes(r.status)) || (r.type === 'HO' && ['Pending Check', 'PR Issued', 'PO Issued', 'Shipping'].includes(r.status)); });
       
       if (filtered.length === 0) { container.innerHTML = `<div class="text-center p-10 text-gray-400">ไม่มีรายการสำหรับคุณ</div>`; return; }
-      container.innerHTML = `<div class="space-y-4">${filtered.map(req => renderRequestCard(req, role)).join('')}</div>`;
+      container.innerHTML = `<div class="space-y-4">${filtered.map(function(req) { return renderRequestCard(req, role); }).join('')}</div>`;
     }
 
     function renderRequestCard(req, role) {
@@ -347,20 +315,7 @@
       const attachmentBadge = req.attachment ? `<a href="${req.attachment}" target="_blank" class="flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded border border-amber-200 hover:underline">📎 แนบไฟล์</a>` : '';
       const historyBtn = `<button onclick="openHistoryModal('${req.id}')" class="text-gray-500 hover:text-gray-700 text-sm font-medium flex items-center gap-1"><span class="text-lg">🕒</span> ประวัติ</button>`;
       
-      return `<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col gap-4">
-          <div class="flex justify-between items-start">
-             <div class="flex gap-4">
-                <div class="p-3 bg-slate-100 rounded-xl text-center min-w-[60px]"><div class="text-xs font-bold text-gray-500">${req.type}</div><div class="font-bold text-blue-600">${req.id.split('-')[1]}</div></div>
-                <div><h4 class="font-bold text-gray-800 flex items-center gap-2 cursor-pointer hover:text-blue-600" onclick="openHistoryModal('${req.id}')">${req.items[0]?.name} ${req.items.length > 1 ? `+${req.items.length-1}` : ''} ${attachmentBadge}</h4><p class="text-xs text-gray-500 mt-1">Job: ${req.job} | By: ${req.requester}</p></div>
-             </div>
-             <div class="flex flex-col items-end gap-2">
-                <span class="px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(req.status)}">${STATUS_LABELS[req.status] || req.status}</span>
-                ${req.docNumber ? `<span class="text-xs bg-gray-800 text-white px-2 py-1 rounded font-mono">DOC: ${req.docNumber}</span>` : ''}
-             </div>
-          </div>
-          ${renderProgressBar(req.type, req.status)}
-          <div class="pt-3 border-t flex justify-between items-center">${historyBtn}<div class="flex gap-2">${actions}</div></div>
-      </div>`;
+      return `<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col gap-4"><div class="flex justify-between items-start"><div class="flex gap-4"><div class="p-3 bg-slate-100 rounded-xl text-center min-w-[60px]"><div class="text-xs font-bold text-gray-500">${req.type}</div><div class="font-bold text-blue-600">${req.id.split('-')[1]}</div></div><div><h4 class="font-bold text-gray-800 flex items-center gap-2 cursor-pointer hover:text-blue-600" onclick="openHistoryModal('${req.id}')">${req.items[0]?.name} ${req.items.length > 1 ? `+${req.items.length-1}` : ''} ${attachmentBadge}</h4><p class="text-xs text-gray-500 mt-1">Job: ${req.job} | By: ${req.requester}</p></div></div><div class="flex flex-col items-end gap-2"><span class="px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(req.status)}">${STATUS_LABELS[req.status] || req.status}</span>${req.docNumber ? `<span class="text-xs bg-gray-800 text-white px-2 py-1 rounded font-mono">DOC: ${req.docNumber}</span>` : ''}</div></div>${renderProgressBar(req.type, req.status)}<div class="pt-3 border-t flex justify-between items-center">${historyBtn}<div class="flex gap-2">${actions}</div></div></div>`;
     }
 
     // --- INVENTORY & ASSETS ---
@@ -372,16 +327,8 @@
        
        data.forEach(function(item, idx) {
           let imgs = item.image ? item.image.split(',') : [];
-          // Fix: Use getImageUrl
           let imgHtml = imgs.length > 0 ? `<div class="w-8 h-8 rounded bg-gray-100 bg-cover border" style="background-image:url('${getImageUrl(imgs[0])}')"></div>` : '-';
-          html += `<tr class="hover:bg-blue-50 cursor-pointer transition-colors" onclick="openItemDetail(stockData.inventory[${idx}], 'INV')">
-             <td class="p-3 font-mono text-gray-500">${item.id}</td>
-             <td class="p-3 font-bold text-gray-800">${item.name}</td>
-             <td class="p-3 text-center"><span class="bg-blue-100 text-blue-800 px-2 py-1 rounded font-bold">${item.qty} ${item.unit}</span></td>
-             <td class="p-3 text-right">${(item.price||0).toLocaleString()}</td>
-             <td class="p-3 text-xs text-gray-500">${item.lastUpdated}</td>
-             <td class="p-3">${imgHtml}</td>
-          </tr>`;
+          html += `<tr class="hover:bg-blue-50 cursor-pointer transition-colors" onclick="openItemDetail(stockData.inventory[${idx}], 'INV')"><td class="p-3 font-mono text-gray-500">${item.id}</td><td class="p-3 font-bold text-gray-800">${item.name}</td><td class="p-3 text-center"><span class="bg-blue-100 text-blue-800 px-2 py-1 rounded font-bold">${item.qty} ${item.unit}</span></td><td class="p-3 text-right">${(item.price||0).toLocaleString()}</td><td class="p-3 text-xs text-gray-500">${item.lastUpdated}</td><td class="p-3">${imgHtml}</td></tr>`;
        });
        container.innerHTML = html + `</tbody></table></div>`;
     }
@@ -395,16 +342,8 @@
        data.forEach(function(item, idx) {
           let s = item.status === 'Available' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700';
           let imgs = item.image ? item.image.split(',') : [];
-          // Fix: Use getImageUrl
           let imgHtml = imgs.length > 0 ? `<div class="w-8 h-8 rounded bg-gray-100 bg-cover border" style="background-image:url('${getImageUrl(imgs[0])}')"></div>` : '-';
-          html += `<tr class="hover:bg-blue-50 cursor-pointer transition-colors" onclick="openItemDetail(stockData.assets[${idx}], 'AST')">
-             <td class="p-3 font-mono text-indigo-600 font-bold">${item.id}</td>
-             <td class="p-3">${item.name}</td>
-             <td class="p-3 font-mono text-xs">${item.serial}</td>
-             <td class="p-3 text-center"><span class="px-2 py-1 rounded text-xs ${s}">${item.status}</span></td>
-             <td class="p-3">${(item.price||0).toLocaleString()}</td>
-             <td class="p-3">${imgHtml}</td>
-          </tr>`;
+          html += `<tr class="hover:bg-blue-50 cursor-pointer transition-colors" onclick="openItemDetail(stockData.assets[${idx}], 'AST')"><td class="p-3 font-mono text-indigo-600 font-bold">${item.id}</td><td class="p-3">${item.name}</td><td class="p-3 font-mono text-xs">${item.serial}</td><td class="p-3 text-center"><span class="px-2 py-1 rounded text-xs ${s}">${item.status}</span></td><td class="p-3">${(item.price||0).toLocaleString()}</td><td class="p-3">${imgHtml}</td></tr>`;
        });
        container.innerHTML = html + `</tbody></table></div>`;
     }
@@ -428,49 +367,16 @@
 
     function renderReceiveItems() {
        document.getElementById('receiveContainer').innerHTML = receiveItems.map(function(item, idx) {
-         return `<div class="border rounded-2xl p-5 bg-gray-50 shadow-sm border-gray-200">
-            <div class="flex flex-col md:flex-row justify-between items-start mb-4 gap-4">
-               <div class="flex-1"><h4 class="font-bold text-lg text-gray-800">${item.name}</h4><div class="flex items-center gap-4 text-sm mt-1 text-gray-600"><span>ขอ: <b>${item.reqQty}</b></span><span>ราคา: <b>${(item.price||0).toLocaleString()}</b></span></div></div>
-               <div class="flex gap-2 bg-white p-1 rounded-lg border">
-                  <button onclick="setTargetType(${idx}, 'Inventory')" class="px-4 py-1.5 rounded-md text-sm transition-all ${item.targetType==='Inventory' ? 'bg-blue-100 text-blue-700 font-bold' : 'text-gray-500'}">เข้าคลังวัสดุ</button>
-                  <button onclick="setTargetType(${idx}, 'Asset')" class="px-4 py-1.5 rounded-md text-sm transition-all ${item.targetType==='Asset' ? 'bg-indigo-100 text-indigo-700 font-bold' : 'text-gray-500'}">ทะเบียนทรัพย์สิน</button>
-               </div>
-            </div>
-            ${item.targetType === 'Inventory' ? renderInventoryInput(idx, item) : renderAssetCards(idx, item)}
-         </div>`;
+         return `<div class="border rounded-2xl p-5 bg-gray-50 shadow-sm border-gray-200"><div class="flex flex-col md:flex-row justify-between items-start mb-4 gap-4"><div class="flex-1"><h4 class="font-bold text-lg text-gray-800">${item.name}</h4><div class="flex items-center gap-4 text-sm mt-1 text-gray-600"><span>ขอ: <b>${item.reqQty}</b></span><span>ราคา: <b>${(item.price||0).toLocaleString()}</b></span></div></div><div class="flex gap-2 bg-white p-1 rounded-lg border"><button onclick="setTargetType(${idx}, 'Inventory')" class="px-4 py-1.5 rounded-md text-sm transition-all ${item.targetType==='Inventory' ? 'bg-blue-100 text-blue-700 font-bold' : 'text-gray-500'}">เข้าคลังวัสดุ</button><button onclick="setTargetType(${idx}, 'Asset')" class="px-4 py-1.5 rounded-md text-sm transition-all ${item.targetType==='Asset' ? 'bg-indigo-100 text-indigo-700 font-bold' : 'text-gray-500'}">ทะเบียนทรัพย์สิน</button></div></div>${item.targetType === 'Inventory' ? renderInventoryInput(idx, item) : renderAssetCards(idx, item)}</div>`;
        }).join('');
     }
 
     function renderInventoryInput(idx, item) {
-       return `<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 bg-white p-3 rounded-xl border border-gray-200">
-            <div><label class="text-xs font-bold text-gray-500 block mb-1">ราคาซื้อจริง</label><input type="number" class="w-full border p-2 rounded-lg text-sm font-bold text-green-700 bg-green-50" value="${item.realPrice}" onchange="updateRecvItem(${idx}, 'realPrice', this.value)"></div>
-            <div><label class="text-xs font-bold text-gray-500 block mb-1">รูปภาพ</label><input type="file" multiple accept="image/*" onchange="handleRecvImages(${idx}, this)" class="block w-full text-xs"><div class="flex gap-2 mt-2 overflow-x-auto">${item.images.map(function(img) { return `<span class="text-[10px] bg-gray-100 px-2 py-1 rounded border truncate max-w-[100px]">${img.name}</span>`; }).join('')}</div></div>
-         </div>
-         <div class="p-4 bg-blue-50 text-blue-800 text-sm rounded-xl border border-blue-200 flex items-center justify-between"><div class="flex items-center gap-2"><span class="text-xl">📦</span><div><p class="font-bold">เพิ่มสต็อกสินค้า</p><p class="text-xs opacity-75">เข้าคลังวัสดุ</p></div></div><div class="text-right"><label class="text-xs font-bold block mb-1">จำนวนรับจริง</label><input type="number" class="w-24 p-2 rounded border text-center font-bold" value="${item.qty}" onchange="updateRecvItem(${idx}, 'qty', this.value)"></div></div>`;
+       return `<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 bg-white p-3 rounded-xl border border-gray-200"><div><label class="text-xs font-bold text-gray-500 block mb-1">ราคาซื้อจริง</label><input type="number" class="w-full border p-2 rounded-lg text-sm font-bold text-green-700 bg-green-50" value="${item.realPrice}" onchange="updateRecvItem(${idx}, 'realPrice', this.value)"></div><div><label class="text-xs font-bold text-gray-500 block mb-1">รูปภาพ</label><input type="file" multiple accept="image/*" onchange="handleRecvImages(${idx}, this)" class="block w-full text-xs"><div class="flex gap-2 mt-2 overflow-x-auto">${item.images.map(function(img) { return `<span class="text-[10px] bg-gray-100 px-2 py-1 rounded border truncate max-w-[100px]">${img.name}</span>`; }).join('')}</div></div></div><div class="p-4 bg-blue-50 text-blue-800 text-sm rounded-xl border border-blue-200 flex items-center justify-between"><div class="flex items-center gap-2"><span class="text-xl">📦</span><div><p class="font-bold">เพิ่มสต็อกสินค้า</p><p class="text-xs opacity-75">เข้าคลังวัสดุ</p></div></div><div class="text-right"><label class="text-xs font-bold block mb-1">จำนวนรับจริง</label><input type="number" class="w-24 p-2 rounded border text-center font-bold" value="${item.qty}" onchange="updateRecvItem(${idx}, 'qty', this.value)"></div></div>`;
     }
 
     function renderAssetCards(idx, item) {
-       return `<div class="space-y-3 mt-4">
-            <div class="flex justify-between items-center px-1"><p class="text-sm font-bold text-indigo-700 flex items-center gap-2"><span class="bg-indigo-100 p-1 rounded">🏷️</span> รายการทรัพย์สิน (${item.assetsList.length} ชิ้น)</p><button onclick="addAssetCard(${idx})" class="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 shadow">+ เพิ่มการ์ด</button></div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-               ${item.assetsList.map(function(ast, aIdx) {
-                  return `<div class="bg-white border border-gray-200 p-4 rounded-xl shadow-sm hover:shadow-md transition-shadow relative group">
-                     <button onclick="removeAssetCard(${idx}, ${aIdx})" class="absolute top-2 right-2 text-gray-300 hover:text-red-500 font-bold p-1">×</button>
-                     <div class="space-y-3">
-                        <div><label class="text-[10px] text-gray-400 font-bold uppercase block">Asset Name</label><input type="text" class="w-full border-b border-gray-300 py-1 text-sm font-bold text-gray-800 focus:border-indigo-500 outline-none" value="${ast.name}" onchange="updateAssetCard(${idx}, ${aIdx}, 'name', this.value)"></div>
-                        <div class="grid grid-cols-2 gap-2">
-                           <div><label class="text-[10px] text-gray-400 font-bold uppercase block">Asset ID</label><input type="text" placeholder="AST-XXX" class="w-full bg-gray-50 border rounded p-1.5 text-xs font-mono" value="${ast.id}" onchange="updateAssetCard(${idx}, ${aIdx}, 'id', this.value)"></div>
-                           <div><label class="text-[10px] text-gray-400 font-bold uppercase block">Serial No.</label><input type="text" placeholder="S/N" class="w-full bg-gray-50 border rounded p-1.5 text-xs font-mono" value="${ast.serial}" onchange="updateAssetCard(${idx}, ${aIdx}, 'serial', this.value)"></div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-2 pt-2 border-t border-dashed">
-                           <div><label class="text-[10px] text-green-600 font-bold uppercase block">Real Price</label><input type="number" class="w-full border rounded p-1.5 text-xs font-bold text-green-700 bg-green-50" value="${ast.realPrice}" onchange="updateAssetCard(${idx}, ${aIdx}, 'realPrice', this.value)"></div>
-                           <div><label class="text-[10px] text-blue-600 font-bold uppercase block">Images</label><input type="file" multiple accept="image/*" class="w-full text-[10px]" onchange="handleAssetCardImages(${idx}, ${aIdx}, this)"><div class="flex gap-1 mt-1 overflow-x-auto">${(ast.images||[]).map(function(img) { return `<div class="w-4 h-4 bg-gray-200 rounded border"></div>`; }).join('')} <span class="text-[9px] text-gray-400">${(ast.images||[]).length} รูป</span></div></div>
-                        </div>
-                     </div>
-                  </div>`;
-               }).join('')}
-            </div>
-         </div>`;
+       return `<div class="space-y-3 mt-4"><div class="flex justify-between items-center px-1"><p class="text-sm font-bold text-indigo-700 flex items-center gap-2"><span class="bg-indigo-100 p-1 rounded">🏷️</span> รายการทรัพย์สิน (${item.assetsList.length} ชิ้น)</p><button onclick="addAssetCard(${idx})" class="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 shadow">+ เพิ่มการ์ด</button></div><div class="grid grid-cols-1 md:grid-cols-2 gap-4">${item.assetsList.map(function(ast, aIdx) { return `<div class="bg-white border border-gray-200 p-4 rounded-xl shadow-sm hover:shadow-md transition-shadow relative group"><button onclick="removeAssetCard(${idx}, ${aIdx})" class="absolute top-2 right-2 text-gray-300 hover:text-red-500 font-bold p-1">×</button><div class="space-y-3"><div><label class="text-[10px] text-gray-400 font-bold uppercase block">Asset Name</label><input type="text" class="w-full border-b border-gray-300 py-1 text-sm font-bold text-gray-800 focus:border-indigo-500 outline-none" value="${ast.name}" onchange="updateAssetCard(${idx}, ${aIdx}, 'name', this.value)"></div><div class="grid grid-cols-2 gap-2"><div><label class="text-[10px] text-gray-400 font-bold uppercase block">Asset ID</label><input type="text" placeholder="AST-XXX" class="w-full bg-gray-50 border rounded p-1.5 text-xs font-mono" value="${ast.id}" onchange="updateAssetCard(${idx}, ${aIdx}, 'id', this.value)"></div><div><label class="text-[10px] text-gray-400 font-bold uppercase block">Serial No.</label><input type="text" placeholder="S/N" class="w-full bg-gray-50 border rounded p-1.5 text-xs font-mono" value="${ast.serial}" onchange="updateAssetCard(${idx}, ${aIdx}, 'serial', this.value)"></div></div><div class="grid grid-cols-2 gap-2 pt-2 border-t border-dashed"><div><label class="text-[10px] text-green-600 font-bold uppercase block">Real Price</label><input type="number" class="w-full border rounded p-1.5 text-xs font-bold text-green-700 bg-green-50" value="${ast.realPrice}" onchange="updateAssetCard(${idx}, ${aIdx}, 'realPrice', this.value)"></div><div><label class="text-[10px] text-blue-600 font-bold uppercase block">Images</label><input type="file" multiple accept="image/*" class="w-full text-[10px]" onchange="handleAssetCardImages(${idx}, ${aIdx}, this)"><div class="flex gap-1 mt-1 overflow-x-auto">${(ast.images||[]).map(function(img) { return `<div class="w-4 h-4 bg-gray-200 rounded border"></div>`; }).join('')} <span class="text-[9px] text-gray-400">${(ast.images||[]).length} รูป</span></div></div></div></div></div>`; }).join('')}</div></div>`;
     }
 
     // --- ACTIONS ---
@@ -509,7 +415,14 @@
     function submitReceive() {
        const docId = document.getElementById('recvDocId').innerText;
        const user = document.getElementById('roleSelector').value;
-       for(let item of receiveItems) { if(item.targetType === 'Asset') { for(let ast of item.assetsList) { if(!ast.id) { alert('กรุณาระบุ Asset ID ให้ครบทุกการ์ด'); return; } } } }
+       for(let i = 0; i < receiveItems.length; i++) {
+           let item = receiveItems[i];
+           if(item.targetType === 'Asset') { 
+               for(let j = 0; j < item.assetsList.length; j++) {
+                   if(!item.assetsList[j].id) { alert('กรุณาระบุ Asset ID ให้ครบทุกการ์ด'); return; } 
+               } 
+           } 
+       }
        const btn = document.querySelector('button[onclick="submitReceive()"]'); 
        btn.innerText = 'กำลังบันทึก...'; btn.disabled = true;
        
@@ -529,7 +442,7 @@
     function handleRecall(id) { if(confirm('ต้องการเรียกคืนเอกสารนี้กลับมาแก้ไข?')) google.script.run.withSuccessHandler(function() { loadData(); }).updateRequestStatus(id, 'Draft', 'Somsak', 'User Recalled'); }
     function handleHOInput(id, status, promptText) { const val = prompt(promptText); if (val) google.script.run.withSuccessHandler(function() { loadData(); }).updateRequestStatus(id, status, document.getElementById('roleSelector').value, `${status}: ${val}`, status === 'PO Issued' ? val : null); }
     
-    function openCreateModal() { resetModal(); document.getElementById('modalTitle').innerText = 'สร้างใบขอซื้อ'; document.getElementById('draftBtnContainer').innerHTML = `<button type="button" onclick="submitForm('Draft')" class="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">บันทึกร่าง</button>`; document.getElementById('createModal').classList.remove('hidden'); }
+    function openCreateModal() { document.getElementById('requestForm').reset(); document.getElementById('editId').value = ''; document.getElementById('fileHint').innerText = ''; orderItems=[{name:'',qty:1,unit:'ชิ้น',price:0,subjob:'',note:'',imageUrl:null}]; renderItemsTable(); document.getElementById('modalTitle').innerText = 'สร้างใบขอซื้อ'; document.getElementById('draftBtnContainer').innerHTML = `<button type="button" onclick="submitForm('Draft')" class="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">บันทึกร่าง</button>`; document.getElementById('createModal').classList.remove('hidden'); }
     function openEditModal(reqId) { 
         const req = allRequests.find(function(r) { return r.id === reqId; }); 
         if(!req) return;
@@ -556,11 +469,10 @@
     
     function renderItemsTable() {
       document.getElementById('itemsTableBody').innerHTML = orderItems.map(function(item, idx) {
-        return `<tr><td class="p-2 text-center text-gray-400 text-xs">${idx + 1}</td><td class="p-2"><input type="text" class="w-full border rounded p-1.5 text-sm" value="${item.name}" onchange="updateItem(${idx}, 'name', this.value)" placeholder="ชื่อวัสดุ..." required></td><td class="p-2"><input type="file" accept="image/*" class="w-full text-xs text-gray-500" onchange="handleItemImage(${idx}, this)">${item.imageUrl ? `<a href="${item.imageUrl}" target="_blank" class="text-[10px] text-blue-500 hover:underline block mt-1">ดูรูปเดิม</a>` : ''}</td><td class="p-2"><input type="number" class="w-full border rounded p-1.5 text-sm text-center" value="${item.qty}" onchange="updateItem(${idx}, 'qty', this.value)" min="1"></td><td class="p-2"><select class="w-full border rounded p-1.5 text-sm text-center bg-white" onchange="updateItem(${idx}, 'unit', this.value)">${ALLOWED_UNITS.map(function(u) { return `<option value="${u}" ${item.unit === u ? 'selected' : ''}>${u}</option>`; }).join('')}</select></td><td class="p-2"><input type="number" class="w-full border rounded p-1.5 text-sm text-right" value="${item.price}" onchange="updateItem(${idx}, 'price', this.value)" placeholder="0.00"></td><td class="p-2"><input type="text" class="w-full border rounded p-1.5 text-sm" value="${item.subjob}" onchange="updateItem(${idx}, 'subjob', this.value)" placeholder="Subjob"></td><td class="p-2"><input type="text" class="w-full border rounded p-1.5 text-sm" value="${item.note}" onchange="updateItem(${idx}, 'note', this.value)" placeholder="หมายเหตุ"></td><td class="p-2 text-center"><button type="button" onclick="orderItems.splice(${idx}, 1); renderItemsTable();" class="text-red-400 hover:text-red-600 font-bold p-1">×</button></td></tr>`;
+        return `<tr><td class="p-2 text-center text-gray-400 text-xs">${idx + 1}</td><td class="p-2"><input type="text" class="w-full border rounded p-1.5 text-sm" value="${item.name}" onchange="updateItem(${idx}, 'name', this.value)" placeholder="ชื่อวัสดุ..." required></td><td class="p-2"><input type="file" accept="image/*" class="w-full text-xs text-gray-500" onchange="handleItemImage(${idx}, this)">${item.imageUrl ? `<a href="${getImageUrl(item.imageUrl)}" target="_blank" class="text-[10px] text-blue-500 hover:underline block mt-1">ดูรูปเดิม</a>` : ''}</td><td class="p-2"><input type="number" class="w-full border rounded p-1.5 text-sm text-center" value="${item.qty}" onchange="updateItem(${idx}, 'qty', this.value)" min="1"></td><td class="p-2"><select class="w-full border rounded p-1.5 text-sm text-center bg-white" onchange="updateItem(${idx}, 'unit', this.value)">${ALLOWED_UNITS.map(function(u) { return `<option value="${u}" ${item.unit === u ? 'selected' : ''}>${u}</option>`; }).join('')}</select></td><td class="p-2"><input type="number" class="w-full border rounded p-1.5 text-sm text-right" value="${item.price}" onchange="updateItem(${idx}, 'price', this.value)" placeholder="0.00"></td><td class="p-2"><input type="text" class="w-full border rounded p-1.5 text-sm" value="${item.subjob}" onchange="updateItem(${idx}, 'subjob', this.value)" placeholder="Subjob"></td><td class="p-2"><input type="text" class="w-full border rounded p-1.5 text-sm" value="${item.note}" onchange="updateItem(${idx}, 'note', this.value)" placeholder="หมายเหตุ"></td><td class="p-2 text-center"><button type="button" onclick="orderItems.splice(${idx}, 1); renderItemsTable();" class="text-red-400 hover:text-red-600 font-bold p-1">×</button></td></tr>`;
       }).join('');
     }
 
-    let targetStatus = 'Pending Head';
     function submitForm(status) { targetStatus = status; document.getElementById('requestForm').dispatchEvent(new Event('submit')); }
     
     function submitRequest(e) {
@@ -607,7 +519,7 @@
       } else { finalize(); }
     }
 
-    // --- ITEM DETAIL & HISTORY (PART 13 FIX) ---
+    // --- ITEM DETAIL & HISTORY ---
     function openItemDetail(item, type) {
        document.getElementById('detailInfoSection').innerHTML = '<div class="text-center w-full py-10">กำลังโหลด...</div>';
        document.getElementById('detailLogsBody').innerHTML = '';
@@ -617,7 +529,6 @@
        let imgHtml = '';
        if(item.image) {
           let imgs = item.image.split(',');
-          // Use getImageUrl to fix display
           imgHtml = `<div class="w-full md:w-1/3 flex flex-col gap-2"><div class="h-48 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden border"><img src="${getImageUrl(imgs[0])}" class="w-full h-full object-cover"></div><div class="flex gap-2 overflow-x-auto">${imgs.map(function(src) { return `<img src="${getImageUrl(src)}" class="w-12 h-12 rounded border object-cover cursor-pointer hover:opacity-80">`; }).join('')}</div></div>`;
        } else {
           imgHtml = `<div class="w-full md:w-1/3 h-48 bg-gray-50 rounded-lg flex items-center justify-center border text-gray-300 flex-col"><span class="text-4xl">📷</span><span class="text-xs mt-2">ไม่มีรูปภาพ</span></div>`;
@@ -703,7 +614,7 @@
           const sum = item.qty * (item.price || 0);
           return `<tr>
              <td class="p-2 align-top"><span class="font-bold text-gray-800 block">${item.name}</span></td>
-             <td class="p-2 text-center align-top">${item.imageUrl ? `<a href="${item.imageUrl}" target="_blank"><img src="${item.imageUrl}" class="w-10 h-10 object-cover rounded border hover:scale-150 transition-transform"></a>` : '-'}</td>
+             <td class="p-2 text-center align-top">${item.imageUrl ? `<a href="${getImageUrl(item.imageUrl)}" target="_blank"><img src="${getImageUrl(item.imageUrl)}" class="w-10 h-10 object-cover rounded border hover:scale-150 transition-transform"></a>` : '-'}</td>
              <td class="p-2 text-center align-top">${item.qty}</td>
              <td class="p-2 text-center text-xs align-top">${item.unit}</td>
              <td class="p-2 text-center text-xs align-top">${item.subjob || '-'}</td>
