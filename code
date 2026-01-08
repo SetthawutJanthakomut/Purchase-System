@@ -1,475 +1,102 @@
+// --- CONFIGURATION ---
+const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
+
 function doGet() {
-  return HtmlService.createTemplateFromFile('index')
+  return HtmlService.createTemplateFromFile('Index')
     .evaluate()
-    .setTitle('ระบบบริหารการจัดซื้อและคลังสินค้า')
+    .setTitle('PurchaseHub System')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-const SHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
-
-// --- Helper: หา/สร้าง Sheet ---
-function getOrCreateSheet(ss, sheetName) {
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-    if (sheetName === 'Inventory') {
-      sheet.appendRow(['id', 'name', 'qty', 'unit', 'price', 'lastUpdated', 'image']);
-    } else if (sheetName === 'Assets') {
-      sheet.appendRow(['id', 'name', 'serial', 'status', 'holder', 'price', 'lastUpdated', 'image', 'sourceDoc']);
-    } else if (sheetName === 'Logs') {
-      sheet.appendRow(['date', 'action', 'item', 'change', 'user', 'docRef', 'note']);
-    } else if (sheetName === 'Requests') {
-      sheet.appendRow(['id', 'requester', 'type', 'job', 'status', 'items', 'dateRequired', 'created', 'history', 'attachment', 'docNumber', 'urgency']);
+// --- HELPER FUNCTIONS ---
+function getSheetData(sheetName) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(sheetName);
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return []; // Empty or header only
+  
+  // Assumes Column A is ID, Column B is JSON Data
+  const result = [];
+  // Skip header if exists, reading from row 2
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][1]) { // Check if JSON column exists
+      try {
+        result.push(JSON.parse(data[i][1]));
+      } catch (e) {
+        Logger.log('Error parsing JSON row ' + i);
+      }
     }
   }
-  return sheet;
+  return result;
 }
 
-// --- API: ดึงข้อมูล Request ---
-function getRequests() {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Requests');
-  if (sheet.getLastRow() <= 1) return [];
-
-  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues();
+function saveDataToSheet(sheetName, id, dataObj) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(sheetName);
+  const allData = sheet.getDataRange().getValues();
   
-  return data.map(function(row) {
-    return {
-      id: row[0],
-      requester: row[1],
-      type: row[2],
-      job: row[3],
-      status: row[4],
-      items: row[5] ? JSON.parse(row[5]) : [],
-      dateRequired: row[6] ? Utilities.formatDate(new Date(row[6]), "GMT+7", "yyyy-MM-dd") : '',
-      created: row[7] ? Utilities.formatDate(new Date(row[7]), "GMT+7", "dd/MM/yyyy") : '',
-      history: row[8] ? JSON.parse(row[8]) : [],
-      attachment: row[9],
-      docNumber: row[10],
-      urgency: row[11] || 'Normal'
-    };
-  }).reverse();
-}
-
-// --- API: ดึงข้อมูลสต็อก ---
-function getStockData() {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const invSheet = getOrCreateSheet(ss, 'Inventory');
-  const astSheet = getOrCreateSheet(ss, 'Assets');
-
-  let inventory = [];
-  if (invSheet.getLastRow() > 1) {
-    const data = invSheet.getRange(2, 1, invSheet.getLastRow()-1, 7).getValues();
-    inventory = data.map(function(r) {
-      return { 
-        id: r[0], name: r[1], qty: r[2], unit: r[3], price: r[4], 
-        lastUpdated: Utilities.formatDate(new Date(r[5]), "GMT+7", "dd/MM/yyyy HH:mm"), 
-        image: r[6] 
-      };
-    });
-  }
-
-  let assets = [];
-  if (astSheet.getLastRow() > 1) {
-    const data = astSheet.getRange(2, 1, astSheet.getLastRow()-1, 9).getValues();
-    assets = data.map(function(r) {
-      return { 
-        id: r[0], name: r[1], serial: r[2], status: r[3], holder: r[4], price: r[5], 
-        lastUpdated: Utilities.formatDate(new Date(r[6]), "GMT+7", "dd/MM/yyyy"), 
-        image: r[7], sourceDoc: r[8] 
-      };
-    });
-  }
-
-  return { inventory: inventory, assets: assets };
-}
-
-// --- API: ดึงประวัติ (Logs) ---
-function getHistoryLogs(filterItemName) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const logSheet = getOrCreateSheet(ss, 'Logs');
-  
-  if (logSheet.getLastRow() <= 1) return [];
-
-  const data = logSheet.getRange(2, 1, logSheet.getLastRow()-1, 7).getValues();
-  let logs = data.map(function(r) {
-    return {
-      date: Utilities.formatDate(new Date(r[0]), "GMT+7", "dd/MM/yyyy HH:mm"),
-      action: r[1],
-      item: r[2],
-      change: r[3],
-      user: r[4],
-      docRef: r[5],
-      note: r[6]
-    };
-  }).reverse();
-
-  if (filterItemName && filterItemName !== 'ALL LOGS') {
-    logs = logs.filter(function(l) { return l.item && l.item.toString().indexOf(filterItemName) > -1; });
-  }
-  return logs;
-}
-
-// --- API: รับของเข้าคลัง ---
-function receiveGoods(formObject) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const invSheet = getOrCreateSheet(ss, 'Inventory');
-  const astSheet = getOrCreateSheet(ss, 'Assets');
-  const logSheet = getOrCreateSheet(ss, 'Logs');
-  const dateNow = new Date();
-
-  const items = JSON.parse(formObject.itemsJson);
-
-  try {
-    items.forEach(function(item) {
-      // 1. Inventory Logic
-      if (item.targetType === 'Inventory') {
-        let imageUrls = [];
-        if (item.images && item.images.length > 0) {
-           item.images.forEach(function(img, idx) {
-              const url = saveFileToDrive(img.data, 'Stock_' + item.name + '_' + idx + '_' + img.name, formObject.reqId);
-              if(url) imageUrls.push(url);
-           });
-        }
-        const imageString = imageUrls.join(',');
-        const finalPrice = item.realPrice || item.price;
-        const receiveQty = parseInt(item.qty);
-
-        const data = invSheet.getDataRange().getValues();
-        let found = false;
-        for (let i = 1; i < data.length; i++) {
-          if (data[i][1] === item.name) { 
-            const currentQty = Number(data[i][2]) || 0;
-            invSheet.getRange(i + 1, 3).setValue(currentQty + receiveQty);
-            invSheet.getRange(i + 1, 5).setValue(finalPrice);
-            invSheet.getRange(i + 1, 6).setValue(dateNow);
-            if(imageString) invSheet.getRange(i + 1, 7).setValue(imageString);
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          const newId = 'INV-' + String(invSheet.getLastRow()).padStart(3, '0');
-          invSheet.appendRow([newId, item.name, receiveQty, item.unit, finalPrice, dateNow, imageString]);
-        }
-        
-        logSheet.appendRow([dateNow, 'Stock In', item.name, '+' + receiveQty, formObject.user, formObject.reqId, 'รับของเข้าคลัง']);
-      } 
-      
-      // 2. Asset Logic
-      else if (item.targetType === 'Asset') {
-        item.assetsList.forEach(function(ast, idx) {
-           let assetImgUrls = [];
-           if (ast.images && ast.images.length > 0) {
-              ast.images.forEach(function(img, imgIdx) {
-                 const url = saveFileToDrive(img.data, 'Asset_' + (ast.id || 'NoID') + '_' + idx + '_' + imgIdx, formObject.reqId);
-                 if(url) assetImgUrls.push(url);
-              });
-           }
-           const assetImgString = assetImgUrls.join(',');
-           const assetPrice = ast.realPrice || item.price;
-
-           astSheet.appendRow([ast.id, ast.name, ast.serial || '-', 'Available', '-', assetPrice, dateNow, assetImgString, formObject.reqId]);
-           
-           logSheet.appendRow([dateNow, 'Register Asset', ast.name, 'New', formObject.user, ast.id, 'รับทรัพย์สิน (' + ast.serial + ')']);
-        });
-      }
-    });
-
-    updateRequestStatus(formObject.reqId, 'Completed', formObject.user, 'Received Goods');
-    return { success: true, message: 'บันทึกรับของเรียบร้อย' };
-  } catch (e) {
-    return { success: false, message: 'Error: ' + e.toString() };
-  }
-}
-
-// --- API: สร้างใบขอซื้อ ---
-function createRequest(formObject) {
-  try {
-    const ss = SpreadsheetApp.openById(SHEET_ID);
-    const sheet = getOrCreateSheet(ss, 'Requests');
-    const lastRow = sheet.getLastRow();
-    const newId = 'REQ-' + String(lastRow).padStart(3, '0');
-    const createdDate = new Date();
-
-    let fileUrl = '';
-    if (formObject.fileData && formObject.fileName) {
-      fileUrl = saveFileToDrive(formObject.fileData, formObject.fileName, newId);
+  let rowIndex = -1;
+  // Search for existing ID in Column A
+  for (let i = 0; i < allData.length; i++) {
+    if (allData[i][0] == id) {
+      rowIndex = i + 1; // 1-based index
+      break;
     }
-
-    let items = formObject.items;
-    items = items.map(function(item, idx) {
-      if (item.imageData && item.imageName) {
-         const itemUrl = saveFileToDrive(item.imageData, 'Item' + (idx+1) + '_' + item.imageName, newId);
-         delete item.imageData; delete item.imageName;
-         item.imageUrl = itemUrl;
-      }
-      return item;
-    });
-
-    const historyLog = [{
-      date: Utilities.formatDate(createdDate, "GMT+7", "dd/MM/yyyy HH:mm"),
-      action: 'สร้างคำขอ',
-      user: formObject.requester,
-      note: 'Initial Request'
-    }];
-
-    const rowData = [
-      newId, formObject.requester, formObject.type, formObject.job, formObject.status,
-      JSON.stringify(items), formObject.dateRequired, createdDate,
-      JSON.stringify(historyLog), fileUrl, '', formObject.urgency || 'Normal'
-    ];
-    
-    sheet.appendRow(rowData);
-    return { success: true, message: 'บันทึกข้อมูลสำเร็จ' };
-  } catch (e) {
-    return { success: false, message: 'Error: ' + e.toString() };
   }
+  
+  const jsonString = JSON.stringify(dataObj);
+  
+  if (rowIndex > 0) {
+    // Update existing
+    sheet.getRange(rowIndex, 2).setValue(jsonString);
+  } else {
+    // Insert new
+    sheet.appendRow([id, jsonString]);
+  }
+  return true;
 }
 
-// --- API: แก้ไขข้อมูล ---
-function editRequest(formObject) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Requests');
-  const data = sheet.getRange(2, 1, sheet.getLastRow()-1, 1).getValues();
+function deleteDataFromSheet(sheetName, id) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(sheetName);
+  const data = sheet.getDataRange().getValues();
   
   for (let i = 0; i < data.length; i++) {
-    if (data[i][0] == formObject.id) {
-      const rowIndex = i + 2;
-      const historyRange = sheet.getRange(rowIndex, 9);
-      let history = JSON.parse(historyRange.getValue() || '[]');
-      
-      history.push({
-        date: Utilities.formatDate(new Date(), "GMT+7", "dd/MM/yyyy HH:mm"),
-        action: 'แก้ไขข้อมูล',
-        user: formObject.requester,
-        note: 'Edit Draft / Re-submit'
-      });
-
-      let fileUrl = sheet.getRange(rowIndex, 10).getValue();
-      if (formObject.fileData && formObject.fileName) {
-        fileUrl = saveFileToDrive(formObject.fileData, formObject.fileName, formObject.id);
-        sheet.getRange(rowIndex, 10).setValue(fileUrl);
-      }
-
-      let items = formObject.items;
-      items = items.map(function(item, idx) {
-        if (item.imageData && item.imageName) {
-           const itemUrl = saveFileToDrive(item.imageData, 'Item' + (idx+1) + '_' + item.imageName, formObject.id);
-           delete item.imageData; delete item.imageName;
-           item.imageUrl = itemUrl;
-        }
-        return item;
-      });
-
-      sheet.getRange(rowIndex, 3).setValue(formObject.type);
-      sheet.getRange(rowIndex, 4).setValue(formObject.job);
-      sheet.getRange(rowIndex, 5).setValue(formObject.status);
-      sheet.getRange(rowIndex, 6).setValue(JSON.stringify(items));
-      sheet.getRange(rowIndex, 7).setValue(formObject.dateRequired);
-      sheet.getRange(rowIndex, 9).setValue(JSON.stringify(history));
-      sheet.getRange(rowIndex, 12).setValue(formObject.urgency);
-
-      return { success: true, message: 'แก้ไขข้อมูลเรียบร้อย' };
+    if (data[i][0] == id) {
+      sheet.deleteRow(i + 1);
+      break;
     }
   }
-  return { success: false, message: 'ไม่พบรายการที่ต้องการแก้ไข' };
 }
 
-// --- API: อัปเดตสถานะ ---
-function updateRequestStatus(reqId, newStatus, user, note, manualDocNum) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Requests');
-  const data = sheet.getRange(2, 1, sheet.getLastRow()-1, 12).getValues();
-  
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] == reqId) {
-      const rowIndex = i + 2;
-      const currentType = data[i][2];
-      const currentDocNum = data[i][10];
-      
-      let history = [];
-      try { history = JSON.parse(data[i][8]); } catch(e) {}
-      
-      history.push({
-        date: Utilities.formatDate(new Date(), "GMT+7", "dd/MM/yyyy HH:mm"),
-        action: newStatus,
-        user: user,
-        note: note || ''
-      });
+// --- API FOR FRONTEND ---
 
-      if (manualDocNum) {
-         sheet.getRange(rowIndex, 11).setValue(manualDocNum);
-      } else if (newStatus === 'Approved' && currentDocNum === '' && currentType !== 'HO') {
-        let count = 0;
-        for (let j = 0; j < data.length; j++) {
-           if (data[j][2] === currentType && data[j][10] !== '') count++;
-        }
-        const runNo = count + 1;
-        let prefix = currentType === 'Local' ? 'LPO' : 'WID';
-        const docNum = prefix + '-' + Utilities.formatDate(new Date(), "GMT+7", "yyMM") + '-' + String(runNo).padStart(3,'0');
-        sheet.getRange(rowIndex, 11).setValue(docNum);
-      }
-
-      sheet.getRange(rowIndex, 5).setValue(newStatus);
-      sheet.getRange(rowIndex, 9).setValue(JSON.stringify(history));
-      
-      return { success: true };
-    }
-  }
-  return { success: false, message: 'ไม่พบ ID' };
+function loadInitialData() {
+  return {
+    requests: getSheetData('Requests'),
+    inventory: getSheetData('Inventory'),
+    assets: getSheetData('Assets'),
+    logs: getSheetData('Logs')
+  };
 }
 
-// --- Helper: Save File ---
-function saveFileToDrive(base64Data, fileName, reqId) {
-  try {
-    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
-    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
-    const blob = Utilities.newBlob(bytes, contentType, reqId + '_' + fileName);
-    const file = DriveApp.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    return file.getUrl();
-  } catch (e) {
-    return '';
-  }
+// --- Specific Save Functions ---
+
+function syncRequest(request) {
+  return saveDataToSheet('Requests', request.id, request);
 }
 
-// --- STORE MANAGEMENT APIs ---
-
-// 1. เพิ่มสินค้าใหม่ (Inventory)
-function addInventoryItem(form) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Inventory');
-  
-  // ตรวจสอบชื่อซ้ำ
-  const data = sheet.getDataRange().getValues();
-  const exists = data.slice(1).some(r => r[1].toString().toLowerCase() === form.name.toLowerCase());
-  if (exists) return { success: false, message: 'มีชื่อสินค้านี้ในระบบแล้ว' };
-
-  const newId = 'INV-' + String(sheet.getLastRow()).padStart(3, '0');
-  const dateNow = new Date();
-  
-  // Upload รูปถ้ามี
-  let imgUrl = '';
-  if (form.imageFile && form.imageName) {
-     imgUrl = saveFileToDrive(form.imageFile, 'Stock_' + form.name + '_' + form.imageName, newId);
-  }
-
-  sheet.appendRow([newId, form.name, form.qty, form.unit, form.price, dateNow, imgUrl]);
-  
-  // บันทึก Log
-  logAction('Add Item', form.name, '+' + form.qty, 'User', newId, 'เพิ่มสินค้าใหม่');
-  
-  return { success: true };
+function syncInventory(item) {
+  return saveDataToSheet('Inventory', item.id, item);
 }
 
-// 2. แก้ไขสินค้า (Inventory) - ปรับปรุงสต็อก/ราคา
-function updateInventoryItem(form) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Inventory');
-  const data = sheet.getDataRange().getValues();
-  
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === form.id) {
-      const row = i + 1;
-      const oldQty = data[i][2];
-      
-      sheet.getRange(row, 3).setValue(form.qty); // Update Qty
-      sheet.getRange(row, 5).setValue(form.price); // Update Price
-      sheet.getRange(row, 6).setValue(new Date()); // Update Date
-      
-      const change = form.qty - oldQty;
-      const changeStr = change > 0 ? '+' + change : change;
-      logAction('Update Stock', data[i][1], changeStr, 'User', form.id, 'แก้ไขข้อมูลสต็อก');
-      
-      return { success: true };
-    }
-  }
-  return { success: false, message: 'ไม่พบสินค้า' };
+function syncAsset(asset) {
+  return saveDataToSheet('Assets', asset.id, asset);
 }
 
-// 3. เพิ่มทรัพย์สินใหม่ (Asset)
-function addAssetItem(form) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Assets');
-  
-  const newId = form.id || 'AST-' + String(sheet.getLastRow()).padStart(3, '0');
-  
-  // ตรวจสอบ ID ซ้ำ
-  const data = sheet.getDataRange().getValues();
-  if (data.slice(1).some(r => r[0] === newId)) return { success: false, message: 'รหัสทรัพย์สินซ้ำ' };
-
-  let imgUrl = '';
-  if (form.imageFile && form.imageName) {
-     imgUrl = saveFileToDrive(form.imageFile, 'Asset_' + newId + '_' + form.imageName, newId);
-  }
-
-  // id, name, serial, status, holder, price, lastUpdated, image, sourceDoc
-  sheet.appendRow([newId, form.name, form.serial, 'Available', '-', form.price, new Date(), imgUrl, 'Manual Add']);
-  logAction('Register Asset', form.name, 'New', 'User', newId, 'เพิ่มทรัพย์สินใหม่');
-  
-  return { success: true };
-}
-
-// 4. แก้ไขทรัพย์สิน (Asset) - เปลี่ยนสถานะ/รับคืน
-function updateAssetItem(form) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Assets');
-  const data = sheet.getDataRange().getValues();
-  
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === form.id) {
-      const row = i + 1;
-      
-      sheet.getRange(row, 4).setValue(form.status); // Status
-      if (form.status === 'Available') {
-         sheet.getRange(row, 5).setValue('-'); // Clear Holder
-      }
-      sheet.getRange(row, 7).setValue(new Date());
-      
-      logAction('Update Asset', data[i][1], form.status, 'User', form.id, form.note || 'แก้ไขสถานะ');
-      return { success: true };
-    }
-  }
-  return { success: false, message: 'ไม่พบทรัพย์สิน' };
-}
-
-// 5. ตัดจ่ายของ/ยืมของ (Disburse)
-function processDisburse(reqId, itemsJson) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const invSheet = getOrCreateSheet(ss, 'Inventory');
-  const astSheet = getOrCreateSheet(ss, 'Assets');
-  const reqSheet = getOrCreateSheet(ss, 'Requests');
-  const items = JSON.parse(itemsJson);
-  const dateNow = new Date();
-
-  // Update Inventory (ตัดสต็อก)
-  const invData = invSheet.getDataRange().getValues();
-  items.forEach(item => {
-    if (item.type !== 'Asset' && !item.isAsset) { // ถ้าเป็นวัสดุสิ้นเปลือง
-       for (let i = 1; i < invData.length; i++) {
-         if (invData[i][1] === item.name) {
-           const newQty = Math.max(0, invData[i][2] - item.qty);
-           invSheet.getRange(i + 1, 3).setValue(newQty);
-           invSheet.getRange(i + 1, 6).setValue(dateNow);
-           logAction('Withdraw', item.name, '-' + item.qty, 'Store', reqId, 'จ่ายของตามใบเบิก');
-           break;
-         }
-       }
-    }
-  });
-
-  // Update Assets (เปลี่ยนสถานะเป็นถูกยืม)
-  // หมายเหตุ: ในระบบจริงควรมีการระบุว่ายืม Asset ชิ้นไหน (ID) 
-  // ในที่นี้จะสมมติว่า User เลือก Asset ID มาแล้ว หรือระบบ Auto assign (เพื่อความง่ายจะข้าม Logic การเลือก ID ไปก่อนใน Demo นี้)
-
-  updateRequestStatus(reqId, 'Completed', 'Store', 'Disbursed/Borrowed');
-  return { success: true };
-}
-
-// Helper สำหรับบันทึก Log
-function logAction(action, item, change, user, docRef, note) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet(ss, 'Logs');
-  sheet.appendRow([new Date(), action, item, change, user, docRef, note]);
+function syncLog(log) {
+  // Logs don't usually update, just append. using timestamp as ID
+  const id = log.date + '_' + Math.floor(Math.random() * 1000); 
+  return saveDataToSheet('Logs', id, log);
 }
