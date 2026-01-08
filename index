@@ -306,8 +306,9 @@
       const [inventory, setInventory] = useState([]);
       const [assets, setAssets] = useState([]);
       const [invLogs, setInvLogs] = useState([]);
-
+const handleCreateOrder = (e, isDraft = false) => {
       const [isLoading, setIsLoading] = useState(true); // Loading State
+      const [uploadFiles, setUploadFiles] = useState({ email: null, quotation: null });
 
       // Helper to Sync to Google Sheet
       const syncToSheet = (type, data) => {
@@ -431,6 +432,14 @@
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 3000);
       };
+        const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = (error) => reject(error);
+    });
+  };
 
       const addInvLog = (action, item, change, note = '', images = []) => {
         const log = {
@@ -772,50 +781,7 @@
           showToast('แก้ไขข้อมูลทรัพย์สินเรียบร้อย');
       };
 
-      const handleCreateOrder = (e, isDraft = false) => {
-        e.preventDefault();
-        if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
-            showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
-            return;
-        }
-        if (orderItems.length === 0) { showToast("กรุณาเพิ่มรายการ", 'error'); return; }
-        
-        let nextStatus = 'Draft';
-        let isFullFlow = false;
-        
-        const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
-        if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
-        if (!isDraft) {
-            if (newOrderMeta.type === 'HO') {
-                if (isFullFlow) {
-                     nextStatus = 'Pending Head';
-                } else {
-                     nextStatus = 'Pending Check';
-                }
-            }
-            else if (newOrderMeta.type === 'Local') nextStatus = 'Pending Head';
-            else nextStatus = 'Pending Head'; // Withdraw/Borrow
-        }
-
-        const order = {
-            id: editingId || `REQ-00${requests.length + 1}`,
-            requester: 'Current User',
-            status: nextStatus,
-            created: new Date().toISOString().split('T')[0],
-            items: orderItems,
-            ...newOrderMeta,
-            docNumber: existingReq?.docNumber || null,
-            isFullApprovalFlow: isFullFlow, 
-            history: [...(existingReq?.history || []), createLog(isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'), 'Current User', isFullFlow ? 'Submit (Full Flow)' : 'Submit')],
-            comments: existingReq?.comments || []
-        };
-        
-        setRequests(prev => editingId ? prev.map(r => r.id === editingId ? order : r) : [order, ...prev]);
-        saveRequestToSheet(order); // Sync
-        
-        showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
-        handleCloseCreateModal();
-      };
+    
       
       const openVerificationModal = (reqId) => {
           const req = requests.find(r => r.id === reqId);
@@ -1417,114 +1383,106 @@
           </main>
     
           {/* Create Modal */}
-// --- (วางส่วนนี้ในตำแหน่งเดิมของ handleCreateOrder) ---
-      
-      // Helper: แปลงไฟล์เป็น Base64
-      const fileToBase64 = (file) => {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.readAsDataURL(file);
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = error => reject(error);
-        });
-      };
 
-      // State สำหรับเก็บไฟล์ที่เลือกไว้ชั่วคราว (เพิ่มเข้ามาใหม่)
-      const [uploadFiles, setUploadFiles] = useState({ email: null, quotation: null });
-
-      const handleCreateOrder = async (e, isDraft = false) => {
-        e.preventDefault();
-        if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
-            showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
-            return;
-        }
-        if (orderItems.length === 0) { showToast("กรุณาเพิ่มรายการ", 'error'); return; }
-        
-        setIsLoading(true); // แสดง Loading ระหว่างอัปโหลด
-
-        // 1. จัดการอัปโหลดไฟล์ (ถ้ามี)
-        let attachmentData = newOrderMeta.attachment; // ค่าเดิม (ถ้ามี)
-        let quotationData = newOrderMeta.quotation;   // ค่าเดิม (ถ้ามี)
-
-        try {
-            // อัปโหลดไฟล์เมลอนุมัติ
-            if (uploadFiles.email) {
-                const base64 = await fileToBase64(uploadFiles.email);
-                const result = await new Promise((resolve, reject) => {
-                    google.script.run
-                        .withSuccessHandler(resolve)
-                        .withFailureHandler(reject)
-                        .uploadFileToDrive(base64, uploadFiles.email.name);
-                });
-                if (result.error) throw new Error(result.error);
-                attachmentData = result; // { name, url, id }
-            }
-
-            // อัปโหลดใบเสนอราคา
-            if (uploadFiles.quotation) {
-                const base64 = await fileToBase64(uploadFiles.quotation);
-                const result = await new Promise((resolve, reject) => {
-                    google.script.run
-                        .withSuccessHandler(resolve)
-                        .withFailureHandler(reject)
-                        .uploadFileToDrive(base64, uploadFiles.quotation.name);
-                });
-                if (result.error) throw new Error(result.error);
-                quotationData = result; // { name, url, id }
-            }
-
-        } catch (err) {
-            console.error("Upload Error:", err);
-            showToast("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + err.message, 'error');
-            setIsLoading(false);
-            return;
-        }
-
-        // 2. สร้างข้อมูล Order
-        let nextStatus = 'Draft';
-        let isFullFlow = false;
-        
-        const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
-        if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
-        
-        if (!isDraft) {
-            if (newOrderMeta.type === 'HO') {
-                if (isFullFlow) {
-                     nextStatus = 'Pending Head';
-                } else {
-                     nextStatus = 'Pending Check';
-                }
-            }
-            else if (newOrderMeta.type === 'Local') nextStatus = 'Pending Head';
-            else nextStatus = 'Pending Head'; // Withdraw/Borrow
-        }
-
-        const order = {
-            id: editingId || `REQ-00${requests.length + 1}`,
-            requester: 'Current User',
-            status: nextStatus,
-            created: new Date().toISOString().split('T')[0],
-            items: orderItems,
-            ...newOrderMeta,
-            attachment: attachmentData, // บันทึกข้อมูลไฟล์
-            quotation: quotationData,   // บันทึกข้อมูลไฟล์
-            docNumber: existingReq?.docNumber || null,
-            isFullApprovalFlow: isFullFlow, 
-            history: [...(existingReq?.history || []), createLog(isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'), 'Current User', isFullFlow ? 'Submit (Full Flow)' : 'Submit')],
-            comments: existingReq?.comments || []
-        };
-        
-        setRequests(prev => editingId ? prev.map(r => r.id === editingId ? order : r) : [order, ...prev]);
-        saveRequestToSheet(order); // Sync
-        
-        setIsLoading(false);
-        showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
-        
-        // Reset State
-        setUploadFiles({ email: null, quotation: null });
-        handleCloseCreateModal();
-      };
-
+const handleCreateOrder = async (e, isDraft = false) => {
+  e.preventDefault();
+  if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
+    showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
+    return;
+  }
+  if (orderItems.length === 0) { 
+    showToast("กรุณาเพิ่มรายการ", 'error'); 
+    return; 
+  }
+  
+  setIsLoading(true);
+  
+  let attachmentData = newOrderMeta.attachment;
+  let quotationData = newOrderMeta.quotation;
+  
+  try {
+    // อัปโหลดไฟล์อีเมล
+    if (uploadFiles.email) {
+      const base64 = await fileToBase64(uploadFiles.email);
+      const result = await new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)
+          .uploadFileToDrive(base64, uploadFiles.email.name);
+      });
+      if (result.error) throw new Error(result.error);
+      attachmentData = result;
+    }
+    
+    // อัปโหลดใบเสนอราคา
+    if (uploadFiles.quotation) {
+      const base64 = await fileToBase64(uploadFiles.quotation);
+      const result = await new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)
+          .uploadFileToDrive(base64, uploadFiles.quotation.name);
+      });
+      if (result.error) throw new Error(result.error);
+      quotationData = result;
+    }
+  } catch (err) {
+    console.error("Upload Error:", err);
+    showToast("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + err.message, 'error');
+    setIsLoading(false);
+    return;
+  }
+  
+  // สร้าง Order
+  let nextStatus = 'Draft';
+  let isFullFlow = false;
+  const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
+  if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
+  
+  if (!isDraft) {
+    if (newOrderMeta.type === 'HO') {
+      nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
+    } else if (newOrderMeta.type === 'Local') {
+      nextStatus = 'Pending Head';
+    } else {
+      nextStatus = 'Pending Head';
+    }
+  }
+  
+  const order = {
+    id: editingId || `REQ-00${requests.length + 1}`,
+    requester: 'Current User',
+    status: nextStatus,
+    created: new Date().toISOString().split('T')[0],
+    items: orderItems,
+    ...newOrderMeta,
+    attachment: attachmentData,
+    quotation: quotationData,
+    docNumber: existingReq?.docNumber || null,
+    isFullApprovalFlow: isFullFlow,
+    history: [
+      ...(existingReq?.history || []),
+      createLog(
+        isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'),
+        'Current User',
+        isFullFlow ? 'Submit (Full Flow)' : 'Submit'
+      )
+    ],
+    comments: existingReq?.comments || []
+  };
+  
+  setRequests(prev => 
+    editingId 
+      ? prev.map(r => r.id === editingId ? order : r) 
+      : [order, ...prev]
+  );
+  
+  saveRequestToSheet(order);
+  setIsLoading(false);
+  showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
+  setUploadFiles({ email: null, quotation: null });
+  handleCloseCreateModal();
+};
       // --- (จบส่วนฟังก์ชัน) ---
 
 
