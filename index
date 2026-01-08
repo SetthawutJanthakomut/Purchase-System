@@ -1417,7 +1417,120 @@
           </main>
     
           {/* Create Modal */}
-          {showCreateModal && (
+// --- (วางส่วนนี้ในตำแหน่งเดิมของ handleCreateOrder) ---
+      
+      // Helper: แปลงไฟล์เป็น Base64
+      const fileToBase64 = (file) => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(file);
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = error => reject(error);
+        });
+      };
+
+      // State สำหรับเก็บไฟล์ที่เลือกไว้ชั่วคราว (เพิ่มเข้ามาใหม่)
+      const [uploadFiles, setUploadFiles] = useState({ email: null, quotation: null });
+
+      const handleCreateOrder = async (e, isDraft = false) => {
+        e.preventDefault();
+        if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
+            showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
+            return;
+        }
+        if (orderItems.length === 0) { showToast("กรุณาเพิ่มรายการ", 'error'); return; }
+        
+        setIsLoading(true); // แสดง Loading ระหว่างอัปโหลด
+
+        // 1. จัดการอัปโหลดไฟล์ (ถ้ามี)
+        let attachmentData = newOrderMeta.attachment; // ค่าเดิม (ถ้ามี)
+        let quotationData = newOrderMeta.quotation;   // ค่าเดิม (ถ้ามี)
+
+        try {
+            // อัปโหลดไฟล์เมลอนุมัติ
+            if (uploadFiles.email) {
+                const base64 = await fileToBase64(uploadFiles.email);
+                const result = await new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .uploadFileToDrive(base64, uploadFiles.email.name);
+                });
+                if (result.error) throw new Error(result.error);
+                attachmentData = result; // { name, url, id }
+            }
+
+            // อัปโหลดใบเสนอราคา
+            if (uploadFiles.quotation) {
+                const base64 = await fileToBase64(uploadFiles.quotation);
+                const result = await new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .uploadFileToDrive(base64, uploadFiles.quotation.name);
+                });
+                if (result.error) throw new Error(result.error);
+                quotationData = result; // { name, url, id }
+            }
+
+        } catch (err) {
+            console.error("Upload Error:", err);
+            showToast("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + err.message, 'error');
+            setIsLoading(false);
+            return;
+        }
+
+        // 2. สร้างข้อมูล Order
+        let nextStatus = 'Draft';
+        let isFullFlow = false;
+        
+        const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
+        if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
+        
+        if (!isDraft) {
+            if (newOrderMeta.type === 'HO') {
+                if (isFullFlow) {
+                     nextStatus = 'Pending Head';
+                } else {
+                     nextStatus = 'Pending Check';
+                }
+            }
+            else if (newOrderMeta.type === 'Local') nextStatus = 'Pending Head';
+            else nextStatus = 'Pending Head'; // Withdraw/Borrow
+        }
+
+        const order = {
+            id: editingId || `REQ-00${requests.length + 1}`,
+            requester: 'Current User',
+            status: nextStatus,
+            created: new Date().toISOString().split('T')[0],
+            items: orderItems,
+            ...newOrderMeta,
+            attachment: attachmentData, // บันทึกข้อมูลไฟล์
+            quotation: quotationData,   // บันทึกข้อมูลไฟล์
+            docNumber: existingReq?.docNumber || null,
+            isFullApprovalFlow: isFullFlow, 
+            history: [...(existingReq?.history || []), createLog(isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'), 'Current User', isFullFlow ? 'Submit (Full Flow)' : 'Submit')],
+            comments: existingReq?.comments || []
+        };
+        
+        setRequests(prev => editingId ? prev.map(r => r.id === editingId ? order : r) : [order, ...prev]);
+        saveRequestToSheet(order); // Sync
+        
+        setIsLoading(false);
+        showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
+        
+        // Reset State
+        setUploadFiles({ email: null, quotation: null });
+        handleCloseCreateModal();
+      };
+
+      // --- (จบส่วนฟังก์ชัน) ---
+
+
+      // --- (วางส่วนนี้แทนที่ Modal showCreateModal เดิม) ---
+
+      {showCreateModal && (
             <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] overflow-y-auto">
                 <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-blue-50 to-white">
@@ -1558,10 +1671,17 @@
                   </div>
                   
                   {newOrderMeta.type === 'HO' && (
-                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 mt-2">
-                        <label className="block text-sm font-bold text-amber-800 mb-2 flex items-center gap-2"><AttachmentIconComp className="w-4 h-4" /> เอกสารแนบ (เช่น เมลอนุมัติ, ใบเสนอราคา)</label>
-                        <p className="text-xs text-gray-500 mb-1">*(จำลองการแนบไฟล์ - ไฟล์จะไม่ถูกอัปโหลดจริงใน Demo นี้)*</p>
-                        <input type="file" className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-700 hover:file:bg-amber-200"/>
+                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 mt-2 space-y-3">
+                        <div>
+                            <label className="block text-sm font-bold text-amber-800 mb-1 flex items-center gap-2"><AttachmentIcon className="w-4 h-4" /> 1. ไฟล์อีเมลอนุมัติ (Approval Email)</label>
+                            <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => setUploadFiles({...uploadFiles, email: e.target.files[0]})} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-700 hover:file:bg-amber-200"/>
+                             {editingId && newOrderMeta.attachment && <p className="text-xs text-green-600 mt-1">✔ มีไฟล์เดิม: {newOrderMeta.attachment.name}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-amber-800 mb-1 flex items-center gap-2"><FileText className="w-4 h-4" /> 2. ใบเสนอราคา (Quotation)</label>
+                            <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => setUploadFiles({...uploadFiles, quotation: e.target.files[0]})} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-700 hover:file:bg-amber-200"/>
+                            {editingId && newOrderMeta.quotation && <p className="text-xs text-green-600 mt-1">✔ มีไฟล์เดิม: {newOrderMeta.quotation.name}</p>}
+                        </div>
                       </div>
                   )}
     
@@ -1569,7 +1689,7 @@
                 </form>
               </div>
             </div>
-          )}
+      )}
     
           {/* Other Modals (Selection, PR, PO, Receive, Verify etc) would go here. For brevity, including the Selection Modal structure */}
           {showSelectionModal && (
@@ -1601,9 +1721,469 @@
             </div>
           )}
           
-          {/* Include other modals (Receive, Verify, PR, PO, Disburse) using the same logic as above but referencing the state variables */}
-          {/* Due to length limits, I'm ensuring the key modals for the requested features are present or their triggers are active */}
+          {showVerificationModal && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <div className="px-6 py-4 border-b border-gray-100 bg-indigo-50 flex justify-between items-center">
+                    <h3 className="font-bold text-lg text-indigo-900 flex items-center gap-2"><CheckSquare className="w-5 h-5 text-indigo-600"/> ตรวจสอบเอกสาร</h3>
+                    <button onClick={() => setShowVerificationModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600"/></button>
+                </div>
+                <div className="p-6 space-y-4">
+                    <div className="space-y-3">
+                        <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${verificationData.checks.quotation ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-indigo-200'}`}>
+                            <input type="checkbox" className="w-5 h-5 accent-green-600" checked={verificationData.checks.quotation} onChange={() => handleChecklistChange('quotation')} />
+                            <span className="text-sm font-medium flex-1">ใบเสนอราคาถูกต้อง (Quotation)</span>
+                            {verificationData.filesExist.quotation && <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">มีไฟล์</span>}
+                        </label>
+                        <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${verificationData.checks.email ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-indigo-200'}`}>
+                            <input type="checkbox" className="w-5 h-5 accent-green-600" checked={verificationData.checks.email} onChange={() => handleChecklistChange('email')} />
+                            <span className="text-sm font-medium flex-1">อีเมลอนุมัติครบถ้วน (Email)</span>
+                            {verificationData.filesExist.email && <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">มีไฟล์</span>}
+                        </label>
+                        <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${verificationData.checks.details ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-indigo-200'}`}>
+                            <input type="checkbox" className="w-5 h-5 accent-green-600" checked={verificationData.checks.details} onChange={() => handleChecklistChange('details')} />
+                            <span className="text-sm font-medium flex-1">รายละเอียดสินค้า/ราคา ถูกต้อง</span>
+                        </label>
+                    </div>
+                    <hr className="border-gray-100"/>
+                    <div className="space-y-3">
+                        <label className="flex items-start gap-3 cursor-pointer group">
+                            <div className="pt-0.5"><input type="checkbox" className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" checked={verificationData.needApproval} onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})} /></div>
+                            <div><p className="text-sm font-bold text-gray-700 group-hover:text-indigo-700">ต้องขออนุมัติจาก Head/PM เพิ่มเติม</p><p className="text-xs text-gray-500">กรณีงบเกิน หรือสินค้าพิเศษที่ต้องพิจารณา</p></div>
+                        </label>
+                        {requests.find(r => r.id === verificationData.requestId)?.purchaseType === 'Rent' && (
+                            <label className="flex items-start gap-3 cursor-pointer group">
+                                <div className="pt-0.5"><input type="checkbox" className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500" checked={verificationData.needContract} onChange={(e) => setVerificationData({...verificationData, needContract: e.target.checked})} /></div>
+                                <div><p className="text-sm font-bold text-gray-700 group-hover:text-teal-700">ต้องทำสัญญาเช่า (Contract Required)</p><p className="text-xs text-gray-500">ติ๊กออกหากเป็นการเช่าระยะสั้นที่ไม่ต้องทำสัญญา</p></div>
+                            </label>
+                        )}
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 mb-1">หมายเหตุเพิ่มเติม (ถ้ามี)</label>
+                        <textarea className="w-full p-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" rows="2" placeholder="ระบุเหตุผล หรือรายละเอียดเพิ่มเติม..." value={verificationData.note} onChange={e => setVerificationData({...verificationData, note: e.target.value})}></textarea>
+                    </div>
+                    <div className="flex gap-3 pt-2">
+                         <button onClick={() => setShowVerificationModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600 font-medium hover:bg-gray-50">ยกเลิก</button>
+                         <button onClick={handleConfirmVerification} className={`flex-1 py-2 rounded-lg text-white font-bold shadow-md ${isVerificationPass() ? (verificationData.needApproval ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700') : 'bg-red-500 hover:bg-red-600'}`}>
+                             {isVerificationPass() ? (verificationData.needApproval ? 'ส่งขออนุมัติเพิ่ม' : 'ยืนยันถูกต้อง (Approve)') : 'ส่งกลับแก้ไข (Revise)'}
+                         </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
           
+          {showDetailModal && selectedRequest && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[70] p-4 backdrop-blur-sm">
+             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden">
+                 <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
+                     <div>
+                         <div className="flex items-center gap-3">
+                             <h3 className="font-bold text-xl text-gray-800">{selectedRequest.id}</h3>
+                             <StatusBadge status={selectedRequest.status} />
+                         </div>
+                         <p className="text-sm text-gray-500 mt-1">วันที่: {selectedRequest.created} | ผู้ขอ: {selectedRequest.requester}</p>
+                     </div>
+                     <button onClick={() => setShowDetailModal(false)} className="text-gray-400 hover:text-gray-600 bg-white p-2 rounded-full shadow-sm border border-gray-200"><X className="w-5 h-5"/></button>
+                 </div>
+                 <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="lg:col-span-2 space-y-6">
+                            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                                <h4 className="font-bold text-gray-700 mb-4 flex items-center gap-2 border-b pb-2"><Info className="w-4 h-4"/> ข้อมูลทั่วไป</h4>
+                                <div className="grid grid-cols-2 gap-y-4 text-sm">
+                                    <div><span className="text-gray-500 block mb-1">ประเภท</span><span className="font-medium bg-gray-100 px-2 py-1 rounded">{selectedRequest.type} {selectedRequest.purchaseType ? `(${selectedRequest.purchaseType})` : ''}</span></div>
+                                    <div><span className="text-gray-500 block mb-1">ความสำคัญ</span><span className={`font-bold ${selectedRequest.priority === 'Critical' ? 'text-red-600' : selectedRequest.priority === 'Urgent' ? 'text-orange-600' : 'text-blue-600'}`}>{PRIORITIES[selectedRequest.priority]?.label}</span></div>
+                                    <div className="col-span-2"><span className="text-gray-500 block mb-1">โครงการ (Job)</span><span className="font-medium text-gray-900">{selectedRequest.job}</span></div>
+                                    <div><span className="text-gray-500 block mb-1">วันที่ต้องการ</span><span className="font-medium">{selectedRequest.dateRequired}</span></div>
+                                    <div><span className="text-gray-500 block mb-1">เลขที่เอกสาร</span><span className="font-mono bg-yellow-50 px-2 py-1 rounded border border-yellow-100 text-yellow-800">{selectedRequest.docNumber || '-'}</span></div>
+                                </div>
+                            </div>
+                            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                                <h4 className="font-bold text-gray-700 mb-4 flex items-center gap-2 border-b pb-2"><ShoppingCart className="w-4 h-4"/> รายการสินค้า ({selectedRequest.items.length})</h4>
+                                <div className="space-y-4">
+                                    {selectedRequest.items.map((item, idx) => (
+                                        <div key={idx} className="flex gap-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
+                                            <div className="w-12 h-12 bg-white rounded-lg border flex items-center justify-center shrink-0"><Package className="w-6 h-6 text-gray-300"/></div>
+                                            <div className="flex-1">
+                                                <div className="flex justify-between items-start">
+                                                    <h5 className="font-bold text-gray-900">{item.name}</h5>
+                                                    <span className="text-sm font-bold text-blue-600">x{item.qty} {item.unit}</span>
+                                                </div>
+                                                <div className="text-xs text-gray-500 mt-1 grid grid-cols-2 gap-2">
+                                                    {item.subJob && <span>Sub: {item.subJob}</span>}
+                                                    {item.epCode && <span>EP: {item.epCode}</span>}
+                                                </div>
+                                                {item.note && <p className="text-xs text-gray-500 mt-1 bg-white p-1 rounded border border-dashed">Note: {item.note}</p>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="space-y-6">
+                            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                                <h4 className="font-bold text-gray-700 mb-4 flex items-center gap-2 border-b pb-2"><History className="w-4 h-4"/> ประวัติการดำเนินการ</h4>
+                                <div className="relative border-l-2 border-gray-100 ml-2 space-y-6 pb-2">
+                                    {selectedRequest.history.slice().reverse().map((log, idx) => (
+                                        <div key={idx} className="ml-6 relative">
+                                            <div className={`absolute -left-[31px] top-0 w-4 h-4 rounded-full border-2 border-white ${idx===0 ? 'bg-blue-500 ring-2 ring-blue-100' : 'bg-gray-300'}`}></div>
+                                            <div className="flex justify-between items-start">
+                                                <span className="text-xs font-bold text-gray-900">{log.action}</span>
+                                                <span className="text-[10px] text-gray-400">{log.date}</span>
+                                            </div>
+                                            <p className="text-xs text-gray-500 mt-0.5">โดย: {log.user}</p>
+                                            {log.note && <div className="mt-1.5 text-xs bg-gray-50 p-2 rounded text-gray-600 border border-gray-100">{log.note}</div>}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                 </div>
+             </div>
+        </div>
+      )}
+
+      {showReceiveGoodsModal && selectedRequest && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b flex justify-between items-center bg-teal-50">
+                <div>
+                    <h3 className="font-bold text-lg text-teal-800 flex items-center gap-2"><Truck className="w-5 h-5"/> รับของ / ตรวจรับงาน</h3>
+                    <p className="text-xs text-teal-600">เอกสาร: {selectedRequest.docNumber || selectedRequest.id}</p>
+                </div>
+                <button onClick={() => setShowReceiveGoodsModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
+                <div className="space-y-4">
+                    {receiveItems.map((item, idx) => (
+                        <div key={idx} className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                            <div className="flex justify-between mb-4 pb-3 border-b">
+                                <div>
+                                    <h4 className="font-bold text-lg text-gray-800">{item.name}</h4>
+                                    <div className="flex gap-4 text-sm text-gray-500 mt-1">
+                                        <span>สั่งซื้อ: <b className="text-gray-900">{item.qty}</b></span>
+                                        <span>รับแล้ว: <b className="text-green-600">{item.receivedSoFar}</b></span>
+                                        <span>ค้างรับ: <b className="text-red-500">{Math.max(0, item.qty - item.receivedSoFar)}</b></span>
+                                    </div>
+                                </div>
+                                <div className="text-right">
+                                    <label className="block text-xs font-bold text-gray-500 mb-1">จำนวนที่รับรอบนี้</label>
+                                    <input type="number" min="0" max={Math.max(0, item.qty - item.receivedSoFar)} className="w-24 p-2 border-2 border-teal-100 rounded-lg text-center font-bold text-teal-700 focus:border-teal-500 outline-none" 
+                                        value={item.receivedQty} 
+                                        onChange={(e) => {
+                                            const val = Math.min(Math.max(0, parseInt(e.target.value) || 0), item.qty - item.receivedSoFar);
+                                            const newItems = [...receiveItems];
+                                            newItems[idx].receivedQty = val;
+                                            setReceiveItems(newItems);
+                                        }}
+                                    />
+                                </div>
+                            </div>
+                            <div className="bg-gray-50 p-4 rounded-lg border border-gray-100 mb-3">
+                                <p className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">การจัดเก็บ (Destination)</p>
+                                <div className="flex gap-4">
+                                    <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-2 rounded border border-gray-200 hover:border-blue-300 transition-all">
+                                        <input type="radio" name={`target-${idx}`} checked={item.targetType === 'Inventory'} onChange={() => { const n = [...receiveItems]; n[idx].targetType = 'Inventory'; setReceiveItems(n); }} className="accent-blue-600"/>
+                                        <span className="text-sm font-medium"><Box className="w-4 h-4 inline mr-1 text-blue-500"/> เข้าคลัง (Stock)</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-2 rounded border border-gray-200 hover:border-indigo-300 transition-all">
+                                        <input type="radio" name={`target-${idx}`} checked={item.targetType === 'Asset'} onChange={() => { const n = [...receiveItems]; n[idx].targetType = 'Asset'; setReceiveItems(n); }} className="accent-indigo-600"/>
+                                        <span className="text-sm font-medium"><Monitor className="w-4 h-4 inline mr-1 text-indigo-500"/> ขึ้นทะเบียนทรัพย์สิน (Asset)</span>
+                                    </label>
+                                </div>
+                            </div>
+                            {item.targetType === 'Asset' && item.receivedQty > 0 && (
+                                <div className="space-y-2 animate-in slide-in-from-top-2">
+                                    <p className="text-xs font-bold text-indigo-600 flex items-center gap-1"><Tag className="w-3 h-3"/> ระบุ Serial Number / รหัสทรัพย์สิน ({item.receivedQty} รายการ)</p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                        {Array.from({ length: item.receivedQty }).map((_, i) => (
+                                            <input key={i} type="text" placeholder={`Serial No. ชิ้นที่ ${i+1}`} className="text-sm p-2 border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 outline-none" 
+                                                value={item.assetsToRegister[i]?.serial || ''} 
+                                                onChange={(e) => {
+                                                    const n = [...receiveItems];
+                                                    if(!n[idx].assetsToRegister[i]) n[idx].assetsToRegister[i] = {};
+                                                    n[idx].assetsToRegister[i].serial = e.target.value;
+                                                    setReceiveItems(n);
+                                                }}
+                                            />
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+             </div>
+             <div className="p-5 border-t bg-white shadow-lg">
+             {receiveItems.some(i => i.receivedQty < (i.qty - i.receivedSoFar)) && (
+                 <div className="mb-4 bg-orange-50 p-3 rounded-lg border border-orange-200">
+                     <label className="flex items-center gap-2 cursor-pointer text-orange-800 text-sm font-bold">
+                         <input type="checkbox" className="w-4 h-4 text-orange-600 rounded focus:ring-orange-500" checked={isForceClose} onChange={(e) => setIsForceClose(e.target.checked)}/>
+                         ปิดงานเลยหรือไม่ (Force Close)
+                     </label>
+                     <p className="text-xs text-orange-600 mt-1 ml-6">กรณีของมาไม่ครบ แต่จะไม่รับส่วนที่เหลือแล้ว (สถานะจะเป็น Completed)</p>
+                 </div>
+             )}
+             <div className="flex gap-3">
+               <button onClick={() => setShowReceiveGoodsModal(false)} className="flex-1 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50">ยกเลิก</button>
+               <button onClick={handleConfirmReceive} className="flex-1 py-3 bg-teal-600 text-white rounded-xl font-bold hover:bg-teal-700 shadow-md">ยืนยันรับของเข้าคลัง</button>
+             </div>
+         </div>
+      </div>
+    </div>
+  )}
+
+  {showAddInvModal && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden">
+                <div className="px-6 py-4 border-b bg-green-50 flex justify-between items-center">
+                    <h3 className="font-bold text-lg text-green-800">เพิ่มสินค้าใหม่ (Inventory)</h3>
+                    <button onClick={() => setShowAddInvModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600"/></button>
+                </div>
+                <div className="p-6 space-y-4">
+                    <div><label className="block text-sm font-bold text-gray-700 mb-1">ชื่อสินค้า</label><input type="text" className="w-full p-2 border rounded-lg" value={newStockItem.name} onChange={e => setNewStockItem({...newStockItem, name: e.target.value})} autoFocus/></div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><label className="block text-sm font-bold text-gray-700 mb-1">จำนวนเริ่มต้น</label><input type="number" className="w-full p-2 border rounded-lg" value={newStockItem.qty} onChange={e => setNewStockItem({...newStockItem, qty: parseInt(e.target.value)||0})}/></div>
+                        <div><label className="block text-sm font-bold text-gray-700 mb-1">หน่วยนับ</label><select className="w-full p-2 border rounded-lg bg-white" value={newStockItem.unit} onChange={e => setNewStockItem({...newStockItem, unit: e.target.value})}>{ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}</select></div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><label className="block text-sm font-bold text-gray-700 mb-1">Min Stock</label><input type="number" className="w-full p-2 border rounded-lg" value={newStockItem.minStock} onChange={e => setNewStockItem({...newStockItem, minStock: parseInt(e.target.value)||0})}/></div>
+                        <div><label className="block text-sm font-bold text-gray-700 mb-1">ราคาต่อหน่วย</label><input type="number" className="w-full p-2 border rounded-lg" value={newStockItem.price} onChange={e => setNewStockItem({...newStockItem, price: parseFloat(e.target.value)||0})}/></div>
+                    </div>
+                    <button onClick={handleAddNewProduct} className="w-full py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 shadow-md mt-2">บันทึกสินค้า</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {showAssetModal && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden">
+                <div className="px-6 py-4 border-b bg-indigo-50 flex justify-between items-center">
+                    <h3 className="font-bold text-lg text-indigo-800">เพิ่มทรัพย์สินใหม่ (Asset)</h3>
+                    <button onClick={() => setShowAssetModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600"/></button>
+                </div>
+                <div className="p-6 space-y-4">
+                    <div><label className="block text-sm font-bold text-gray-700 mb-1">รหัสทรัพย์สิน (Asset ID)</label><input type="text" className="w-full p-2 border rounded-lg font-mono" placeholder="AST-XXXX" value={newAssetItem.id} onChange={e => setNewAssetItem({...newAssetItem, id: e.target.value})} autoFocus/></div>
+                    <div><label className="block text-sm font-bold text-gray-700 mb-1">ชื่อรายการ</label><input type="text" className="w-full p-2 border rounded-lg" value={newAssetItem.name} onChange={e => setNewAssetItem({...newAssetItem, name: e.target.value})}/></div>
+                    <div><label className="block text-sm font-bold text-gray-700 mb-1">Serial Number</label><input type="text" className="w-full p-2 border rounded-lg" value={newAssetItem.serial} onChange={e => setNewAssetItem({...newAssetItem, serial: e.target.value})}/></div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><label className="block text-sm font-bold text-gray-700 mb-1">สภาพ (Condition)</label><select className="w-full p-2 border rounded-lg bg-white" value={newAssetItem.condition} onChange={e => setNewAssetItem({...newAssetItem, condition: e.target.value})}><option value="Good">Good (ดี)</option><option value="Fair">Fair (พอใช้)</option><option value="Damaged">Damaged (ชำรุด)</option></select></div>
+                        <div><label className="block text-sm font-bold text-gray-700 mb-1">ราคาซื้อ/เช่า</label><input type="number" className="w-full p-2 border rounded-lg" value={newAssetItem.price} onChange={e => setNewAssetItem({...newAssetItem, price: parseFloat(e.target.value)||0})}/></div>
+                    </div>
+                    <button onClick={handleAddAsset} className="w-full py-3 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 shadow-md mt-2">บันทึกทรัพย์สิน</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {showItemDetailModal && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">
+             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[80vh] flex flex-col overflow-hidden">
+                <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
+                    <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
+                        {viewingItem ? <><Box className="w-5 h-5"/> ประวัติ: {viewingItem.name}</> : <><ClipboardList className="w-5 h-5"/> ประวัติการทำรายการรวม (All Logs)</>}
+                    </h3>
+                    <button onClick={() => setShowItemDetailModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600"/></button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-0">
+                    <table className="w-full text-sm text-left">
+                        <thead className="bg-gray-100 text-gray-600 sticky top-0"><tr><th className="px-6 py-3">Timestamp</th><th className="px-6 py-3">Action</th><th className="px-6 py-3">Item</th><th className="px-6 py-3">Change</th><th className="px-6 py-3">User</th><th className="px-6 py-3">Note</th></tr></thead>
+                        <tbody className="divide-y">{invLogs.filter(l => !viewingItem || l.item === viewingItem.name).slice().reverse().map((log, i) => (
+                            <tr key={i} className="hover:bg-gray-50">
+                                <td className="px-6 py-3 text-gray-500 text-xs">{log.date}</td>
+                                <td className="px-6 py-3 font-bold">{log.action}</td>
+                                <td className="px-6 py-3">{log.item}</td>
+                                <td className={`px-6 py-3 font-mono font-bold ${log.change.includes('+') ? 'text-green-600' : log.change.includes('-') ? 'text-red-600' : 'text-blue-600'}`}>{log.change}</td>
+                                <td className="px-6 py-3">{log.by}</td>
+                                <td className="px-6 py-3 text-gray-500">{log.note}</td>
+                            </tr>
+                        ))}</tbody>
+                    </table>
+                    {invLogs.length === 0 && <div className="p-8 text-center text-gray-400">ยังไม่มีประวัติการทำรายการ</div>}
+                </div>
+             </div>
+          </div>
+      )}
+
+      {showRejectModal && (
+         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+             <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                 <h3 className="font-bold text-lg text-red-600 mb-4 flex items-center gap-2"><AlertCircle className="w-5 h-5"/> ไม่อนุมัติรายการ</h3>
+                 <textarea className="w-full p-3 border border-gray-300 rounded-lg text-sm mb-4 outline-none focus:ring-2 focus:ring-red-500" rows="3" placeholder="ระบุเหตุผลที่ไม่อนุมัติ..." value={rejectData.reason} onChange={e => setRejectData({...rejectData, reason: e.target.value})} autoFocus></textarea>
+                 <div className="flex gap-3">
+                     <button onClick={() => setShowRejectModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600">ยกเลิก</button>
+                     <button onClick={handleConfirmReject} className="flex-1 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700">ยืนยัน</button>
+                 </div>
+             </div>
+         </div>
+      )}
+
+      {showDisburseModal && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                <h3 className="font-bold text-lg text-teal-700 mb-4 flex items-center gap-2"><Package className="w-5 h-5"/> ยืนยันการจ่ายของ/เบิก</h3>
+                <p className="text-sm text-gray-600 mb-3">ตรวจสอบความถูกต้องและสภาพของก่อนส่งมอบ</p>
+                <textarea className="w-full p-3 border border-gray-300 rounded-lg text-sm mb-4 outline-none focus:ring-2 focus:ring-teal-500" rows="2" placeholder="หมายเหตุการจ่าย (Optional)..." value={disburseData.note} onChange={e => setDisburseData({...disburseData, note: e.target.value})}></textarea>
+                <div className="flex gap-3">
+                    <button onClick={() => setShowDisburseModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600">ยกเลิก</button>
+                    <button onClick={handleConfirmDisburse} className="flex-1 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700">ยืนยันจ่ายของ</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {showEditInvModal && editingStockItem && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                  <h3 className="font-bold text-lg text-blue-700 mb-4 flex items-center gap-2"><Edit className="w-5 h-5"/> แก้ไขสต็อกสินค้า</h3>
+                  <div className="space-y-3">
+                      <div><label className="text-xs font-bold text-gray-500">ชื่อสินค้า</label><input type="text" className="w-full p-2 border rounded bg-gray-50" value={editingStockItem.name} disabled/></div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div><label className="text-xs font-bold text-gray-500">คงเหลือ (Qty)</label><input type="number" className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" value={editingStockItem.qty} onChange={e => setEditingStockItem({...editingStockItem, qty: parseInt(e.target.value)||0})}/></div>
+                        <div><label className="text-xs font-bold text-gray-500">Min Stock</label><input type="number" className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" value={editingStockItem.minStock} onChange={e => setEditingStockItem({...editingStockItem, minStock: parseInt(e.target.value)||0})}/></div>
+                      </div>
+                  </div>
+                  <div className="flex gap-3 mt-6">
+                      <button onClick={() => setShowEditInvModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600">ยกเลิก</button>
+                      <button onClick={handleUpdateStock} className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">บันทึก</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {showEditAssetModal && editingAssetItem && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                  <h3 className="font-bold text-lg text-blue-700 mb-4 flex items-center gap-2"><Edit className="w-5 h-5"/> แก้ไขข้อมูลทรัพย์สิน</h3>
+                   <div className="space-y-3">
+                      <div><label className="text-xs font-bold text-gray-500">รหัสทรัพย์สิน</label><input type="text" className="w-full p-2 border rounded bg-gray-50" value={editingAssetItem.id} disabled/></div>
+                      <div><label className="text-xs font-bold text-gray-500">ชื่อรายการ</label><input type="text" className="w-full p-2 border rounded" value={editingAssetItem.name} onChange={e => setEditingAssetItem({...editingAssetItem, name: e.target.value})}/></div>
+                      <div><label className="text-xs font-bold text-gray-500">สภาพ (Condition)</label><select className="w-full p-2 border rounded" value={editingAssetItem.condition} onChange={e => setEditingAssetItem({...editingAssetItem, condition: e.target.value})}><option value="Good">Good</option><option value="Fair">Fair</option><option value="Damaged">Damaged</option></select></div>
+                   </div>
+                  <div className="flex gap-3 mt-6">
+                      <button onClick={() => setShowEditAssetModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600">ยกเลิก</button>
+                      <button onClick={handleUpdateAsset} className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">บันทึก</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {showPRModal && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+             <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                 <h3 className="font-bold text-lg text-blue-800 mb-4">ออกใบขอซื้อ (Issue PR)</h3>
+                 <div className="space-y-3">
+                     <div><label className="block text-sm font-bold text-gray-700 mb-1">เลขที่ PR (PR Number)</label><input type="text" className="w-full p-2 border rounded-lg" placeholder="PR-XXXX" value={prData.prNumber} onChange={e => setPrData({...prData, prNumber: e.target.value})} autoFocus/></div>
+                     <div><label className="block text-sm font-bold text-gray-700 mb-1">แนบไฟล์ PR (PDF/Image)</label><input type="file" className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" onChange={e => setPrData({...prData, file: e.target.files[0]})}/></div>
+                 </div>
+                 <button onClick={handleSubmitPR} className="w-full py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 mt-4 shadow-md">บันทึก PR</button>
+                 <button onClick={() => setShowPRModal(false)} className="w-full py-2 text-gray-500 text-sm mt-2 hover:underline">ยกเลิก</button>
+             </div>
+          </div>
+      )}
+
+      {showPOModal && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+             <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                 <h3 className="font-bold text-lg text-indigo-800 mb-4">ออกใบสั่งซื้อ (Issue PO)</h3>
+                 <div className="space-y-3">
+                     <div><label className="block text-sm font-bold text-gray-700 mb-1">เลขที่ PO (PO Number)</label><input type="text" className="w-full p-2 border rounded-lg" placeholder="PO-XXXX" value={poData.poNumber} onChange={e => setPoData({...poData, poNumber: e.target.value})} autoFocus/></div>
+                     <div><label className="block text-sm font-bold text-gray-700 mb-1">แนบไฟล์ PO (PDF/Image)</label><input type="file" className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" onChange={e => setPoData({...poData, file: e.target.files[0]})}/></div>
+                 </div>
+                 <button onClick={handleSubmitPO} className="w-full py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 mt-4 shadow-md">บันทึก PO</button>
+                 <button onClick={() => setShowPOModal(false)} className="w-full py-2 text-gray-500 text-sm mt-2 hover:underline">ยกเลิก</button>
+             </div>
+          </div>
+      )}
+
+      {showReturnAssetModal && returnAssetData && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                  <h3 className="font-bold text-lg text-teal-800 mb-4 flex items-center gap-2"><RotateCcw className="w-5 h-5"/> รับคืนทรัพย์สิน</h3>
+                  <div className="bg-gray-50 p-3 rounded mb-4 text-sm"><span className="text-gray-500 block">รหัสทรัพย์สิน:</span> <b>{returnAssetData.id}</b></div>
+                  <div className="space-y-3">
+                      <div><label className="block text-sm font-bold text-gray-700 mb-1">สภาพทรัพย์สิน (Condition)</label><select className="w-full p-2 border rounded-lg bg-white" value={returnAssetData.condition} onChange={e => setReturnAssetData({...returnAssetData, condition: e.target.value})}><option value="Good">Good (ปกติ/ดี)</option><option value="Damaged">Damaged (ชำรุด)</option><option value="Lost">Lost (สูญหาย)</option></select></div>
+                      <div><label className="block text-sm font-bold text-gray-700 mb-1">หมายเหตุ</label><textarea className="w-full p-2 border rounded-lg text-sm" rows="2" value={returnAssetData.note} onChange={e => setReturnAssetData({...returnAssetData, note: e.target.value})}></textarea></div>
+                  </div>
+                  <div className="flex gap-3 mt-6">
+                      <button onClick={() => setShowReturnAssetModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600">ยกเลิก</button>
+                      <button onClick={confirmReturnAsset} className="flex-1 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700">ยืนยันรับคืน</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {showPOPreviewModal && selectedRequest && (
+        <div className="fixed inset-0 bg-white z-[200] overflow-auto">
+            <div className="max-w-[210mm] mx-auto p-10 print-container">
+                <div className="flex justify-between items-start mb-8 border-b pb-4 no-print">
+                    <h2 className="text-xl font-bold">ตัวอย่างเอกสาร (Preview)</h2>
+                    <div className="flex gap-2">
+                        <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"><Printer className="w-4 h-4"/> พิมพ์</button>
+                        <button onClick={() => setShowPOPreviewModal(false)} className="px-4 py-2 border rounded hover:bg-gray-50">ปิด</button>
+                    </div>
+                </div>
+                {/* Print Layout */}
+                <div className="p-8 border border-gray-200 shadow-sm print:border-0 print:shadow-none bg-white min-h-[297mm]">
+                    <div className="flex justify-between items-start mb-8">
+                        <div>
+                            <h1 className="text-2xl font-bold text-gray-800">ใบสั่งซื้อ (PURCHASE ORDER)</h1>
+                            <p className="text-sm text-gray-500">บริษัท ตัวอย่าง จำกัด (สำนักงานใหญ่)</p>
+                            <p className="text-xs text-gray-400">123 ถ.สุขุมวิท แขวงคลองเตย เขตคลองเตย กทม. 10110</p>
+                        </div>
+                        <div className="text-right">
+                            <div className="mb-2"><span className="text-gray-500 text-xs block">เลขที่เอกสาร</span><span className="font-bold text-lg">{selectedRequest.docNumber || 'DRAFT'}</span></div>
+                            <div><span className="text-gray-500 text-xs block">วันที่</span><span className="font-medium">{new Date().toLocaleDateString('th-TH')}</span></div>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-8 mb-8 text-sm">
+                        <div className="p-4 bg-gray-50 rounded border border-gray-100">
+                            <h3 className="font-bold border-b border-gray-200 pb-2 mb-2 text-gray-700">ผู้ขาย (Vendor)</h3>
+                            <p className="text-gray-400 italic">-- ระบุชื่อร้านค้า --</p>
+                            <p>..................................................................</p>
+                        </div>
+                        <div className="p-4 bg-gray-50 rounded border border-gray-100">
+                             <h3 className="font-bold border-b border-gray-200 pb-2 mb-2 text-gray-700">รายละเอียดการจัดส่ง</h3>
+                             <p><span className="font-bold text-gray-500">โครงการ:</span> {selectedRequest.job}</p>
+                             <p><span className="font-bold text-gray-500">ผู้ขอซื้อ:</span> {selectedRequest.requester}</p>
+                             <p><span className="font-bold text-gray-500">วันที่ต้องการ:</span> {selectedRequest.dateRequired}</p>
+                        </div>
+                    </div>
+                    <table className="w-full text-sm mb-8">
+                        <thead><tr className="bg-gray-100 text-gray-700 border-y border-gray-300"><th className="py-2 px-3 text-left w-10">#</th><th className="py-2 px-3 text-left">รายการ (Description)</th><th className="py-2 px-3 text-center w-20">จำนวน</th><th className="py-2 px-3 text-right w-24">หน่วยละ</th><th className="py-2 px-3 text-right w-24">รวมเงิน</th></tr></thead>
+                        <tbody className="divide-y">
+                            {selectedRequest.items.map((item, i) => (
+                                <tr key={i}>
+                                    <td className="py-3 px-3 text-center">{i+1}</td>
+                                    <td className="py-3 px-3">
+                                        <p className="font-bold">{item.name}</p>
+                                        <p className="text-xs text-gray-500">{item.subJob ? `Job: ${item.subJob}` : ''} {item.epCode ? `EP: ${item.epCode}` : ''}</p>
+                                    </td>
+                                    <td className="py-3 px-3 text-center">{item.qty} {item.unit}</td>
+                                    <td className="py-3 px-3 text-right">{item.unitPrice?.toLocaleString()}</td>
+                                    <td className="py-3 px-3 text-right">{(item.qty * item.unitPrice)?.toLocaleString()}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        <tfoot>
+                            <tr className="border-t-2 border-gray-300">
+                                <td colSpan="4" className="py-3 px-3 text-right font-bold">รวมเป็นเงิน (Total)</td>
+                                <td className="py-3 px-3 text-right font-bold text-lg">{selectedRequest.items.reduce((sum, i) => sum + (i.qty * i.unitPrice), 0).toLocaleString()}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    <div className="grid grid-cols-3 gap-4 mt-16 text-center text-sm">
+                        <div><p className="border-b border-black mb-2 pb-8"> </p><p>ผู้จัดทำ</p></div>
+                        <div><p className="border-b border-black mb-2 pb-8"> </p><p>ผู้อนุมัติ (PM)</p></div>
+                        <div><p className="border-b border-black mb-2 pb-8"> </p><p>ผู้มีอำนาจลงนาม</p></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
         </div>
       );
     };
