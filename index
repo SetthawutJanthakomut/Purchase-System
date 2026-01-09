@@ -306,18 +306,9 @@
       const [inventory, setInventory] = useState([]);
       const [assets, setAssets] = useState([]);
       const [invLogs, setInvLogs] = useState([]);
-const handleCreateOrder = (e, isDraft = false) => {
-      const [isLoading, setIsLoading] = useState(true); // Loading State
+      const [isLoading, setIsLoading] = useState(true);
       const [uploadFiles, setUploadFiles] = useState({ email: null, quotation: null });
 
-      // Helper to Sync to Google Sheet
-      const syncToSheet = (type, data) => {
-         // This runs in background to update sheet
-         google.script.run.withFailureHandler((err) => {
-             console.error("Sync Failed", err);
-             showToast("เกิดข้อผิดพลาดในการบันทึกข้อมูล", 'error');
-         }).saveDataToSheet(type, data.id, data); // Generic save wrapper
-      };
       
       // Special Sync wrappers calling specific backend functions
       const saveRequestToSheet = (req) => {
@@ -332,6 +323,104 @@ const handleCreateOrder = (e, isDraft = false) => {
       const saveLogToSheet = (log) => {
          google.script.run.syncLog(log);
       };
+
+      const handleCreateOrder = async (e, isDraft = false) => {
+    e.preventDefault();
+    if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
+      showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
+      return;
+    }
+    if (orderItems.length === 0) { 
+      showToast("กรุณาเพิ่มรายการ", 'error'); 
+      return; 
+    }
+    
+    setIsLoading(true);
+    
+    let attachmentData = newOrderMeta.attachment;
+    let quotationData = newOrderMeta.quotation;
+    
+    try {
+      if (uploadFiles.email) {
+        const base64 = await fileToBase64(uploadFiles.email);
+        const result = await new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .uploadFileToDrive(base64, uploadFiles.email.name);
+        });
+        if (result.error) throw new Error(result.error);
+        attachmentData = result;
+      }
+      
+      if (uploadFiles.quotation) {
+        const base64 = await fileToBase64(uploadFiles.quotation);
+        const result = await new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .uploadFileToDrive(base64, uploadFiles.quotation.name);
+        });
+        if (result.error) throw new Error(result.error);
+        quotationData = result;
+      }
+    } catch (err) {
+      console.error("Upload Error:", err);
+      showToast("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + err.message, 'error');
+      setIsLoading(false);
+      return;
+    }
+    
+    // สร้าง Order
+    let nextStatus = 'Draft';
+    let isFullFlow = false;
+    const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
+    if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
+    
+    if (!isDraft) {
+      if (newOrderMeta.type === 'HO') {
+        nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
+      } else if (newOrderMeta.type === 'Local') {
+        nextStatus = 'Pending Head';
+      } else {
+        nextStatus = 'Pending Head';
+      }
+    }
+    
+    const order = {
+      id: editingId || `REQ-00${requests.length + 1}`,
+      requester: 'Current User',
+      status: nextStatus,
+      created: new Date().toISOString().split('T')[0],
+      items: orderItems,
+      ...newOrderMeta,
+      attachment: attachmentData,
+      quotation: quotationData,
+      docNumber: existingReq?.docNumber || null,
+      isFullApprovalFlow: isFullFlow,
+      history: [
+        ...(existingReq?.history || []),
+        createLog(
+          isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'),
+          'Current User',
+          isFullFlow ? 'Submit (Full Flow)' : 'Submit'
+        )
+      ],
+      comments: existingReq?.comments || []
+    };
+    
+    setRequests(prev => 
+      editingId 
+        ? prev.map(r => r.id === editingId ? order : r) 
+        : [order, ...prev]
+    );
+    
+    saveRequestToSheet(order);
+    setIsLoading(false);
+    showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
+    setUploadFiles({ email: null, quotation: null });
+    handleCloseCreateModal();
+  };
 
 
       // --- FETCH DATA ON LOAD ---
@@ -832,6 +921,33 @@ const handleCreateOrder = (e, isDraft = false) => {
           saveRequestToSheet(updatedReq); // Sync
           setShowVerificationModal(false);
       };
+
+      const handleViewFile = (fileData, fileName) => {
+  if (!fileData) {
+    showToast('ไม่พบไฟล์', 'error');
+    return;
+  }
+  
+  // Check if it's a URL or Base64
+  if (typeof fileData === 'string' && fileData.startsWith('http')) {
+    // It's a URL - open directly
+    window.open(fileData, '_blank');
+  } else if (typeof fileData === 'string' && (fileData.startsWith('data:') || fileData.includes('base64'))) {
+    // It's Base64 - open in new tab
+    const newWindow = window.open();
+    newWindow.document.write(`
+      <html>
+        <head><title>${fileName || 'Document'}</title></head>
+        <body style="margin:0">
+          <iframe src="${fileData}" style="width:100%;height:100vh;border:none"></iframe>
+        </body>
+      </html>
+    `);
+  } else {
+    // It's a file name - show placeholder
+    showToast(`ไฟล์: ${fileData}`, 'info');
+  }
+};
 
       const handleApprovalUpdate = (id, newStatus) => { handleUpdateStatus(id, newStatus); };
 
@@ -1383,111 +1499,6 @@ const handleCreateOrder = (e, isDraft = false) => {
           </main>
     
           {/* Create Modal */}
-
-const handleCreateOrder = async (e, isDraft = false) => {
-  e.preventDefault();
-  if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
-    showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
-    return;
-  }
-  if (orderItems.length === 0) { 
-    showToast("กรุณาเพิ่มรายการ", 'error'); 
-    return; 
-  }
-  
-  setIsLoading(true);
-  
-  let attachmentData = newOrderMeta.attachment;
-  let quotationData = newOrderMeta.quotation;
-  
-  try {
-    // อัปโหลดไฟล์อีเมล
-    if (uploadFiles.email) {
-      const base64 = await fileToBase64(uploadFiles.email);
-      const result = await new Promise((resolve, reject) => {
-        google.script.run
-          .withSuccessHandler(resolve)
-          .withFailureHandler(reject)
-          .uploadFileToDrive(base64, uploadFiles.email.name);
-      });
-      if (result.error) throw new Error(result.error);
-      attachmentData = result;
-    }
-    
-    // อัปโหลดใบเสนอราคา
-    if (uploadFiles.quotation) {
-      const base64 = await fileToBase64(uploadFiles.quotation);
-      const result = await new Promise((resolve, reject) => {
-        google.script.run
-          .withSuccessHandler(resolve)
-          .withFailureHandler(reject)
-          .uploadFileToDrive(base64, uploadFiles.quotation.name);
-      });
-      if (result.error) throw new Error(result.error);
-      quotationData = result;
-    }
-  } catch (err) {
-    console.error("Upload Error:", err);
-    showToast("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + err.message, 'error');
-    setIsLoading(false);
-    return;
-  }
-  
-  // สร้าง Order
-  let nextStatus = 'Draft';
-  let isFullFlow = false;
-  const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
-  if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
-  
-  if (!isDraft) {
-    if (newOrderMeta.type === 'HO') {
-      nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
-    } else if (newOrderMeta.type === 'Local') {
-      nextStatus = 'Pending Head';
-    } else {
-      nextStatus = 'Pending Head';
-    }
-  }
-  
-  const order = {
-    id: editingId || `REQ-00${requests.length + 1}`,
-    requester: 'Current User',
-    status: nextStatus,
-    created: new Date().toISOString().split('T')[0],
-    items: orderItems,
-    ...newOrderMeta,
-    attachment: attachmentData,
-    quotation: quotationData,
-    docNumber: existingReq?.docNumber || null,
-    isFullApprovalFlow: isFullFlow,
-    history: [
-      ...(existingReq?.history || []),
-      createLog(
-        isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'),
-        'Current User',
-        isFullFlow ? 'Submit (Full Flow)' : 'Submit'
-      )
-    ],
-    comments: existingReq?.comments || []
-  };
-  
-  setRequests(prev => 
-    editingId 
-      ? prev.map(r => r.id === editingId ? order : r) 
-      : [order, ...prev]
-  );
-  
-  saveRequestToSheet(order);
-  setIsLoading(false);
-  showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
-  setUploadFiles({ email: null, quotation: null });
-  handleCloseCreateModal();
-};
-      // --- (จบส่วนฟังก์ชัน) ---
-
-
-      // --- (วางส่วนนี้แทนที่ Modal showCreateModal เดิม) ---
-
       {showCreateModal && (
             <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] overflow-y-auto">
@@ -1679,57 +1690,195 @@ const handleCreateOrder = async (e, isDraft = false) => {
             </div>
           )}
           
-          {showVerificationModal && (
-        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                <div className="px-6 py-4 border-b border-gray-100 bg-indigo-50 flex justify-between items-center">
-                    <h3 className="font-bold text-lg text-indigo-900 flex items-center gap-2"><CheckSquare className="w-5 h-5 text-indigo-600"/> ตรวจสอบเอกสาร</h3>
-                    <button onClick={() => setShowVerificationModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600"/></button>
-                </div>
-                <div className="p-6 space-y-4">
-                    <div className="space-y-3">
-                        <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${verificationData.checks.quotation ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-indigo-200'}`}>
-                            <input type="checkbox" className="w-5 h-5 accent-green-600" checked={verificationData.checks.quotation} onChange={() => handleChecklistChange('quotation')} />
-                            <span className="text-sm font-medium flex-1">ใบเสนอราคาถูกต้อง (Quotation)</span>
-                            {verificationData.filesExist.quotation && <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">มีไฟล์</span>}
-                        </label>
-                        <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${verificationData.checks.email ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-indigo-200'}`}>
-                            <input type="checkbox" className="w-5 h-5 accent-green-600" checked={verificationData.checks.email} onChange={() => handleChecklistChange('email')} />
-                            <span className="text-sm font-medium flex-1">อีเมลอนุมัติครบถ้วน (Email)</span>
-                            {verificationData.filesExist.email && <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">มีไฟล์</span>}
-                        </label>
-                        <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${verificationData.checks.details ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-indigo-200'}`}>
-                            <input type="checkbox" className="w-5 h-5 accent-green-600" checked={verificationData.checks.details} onChange={() => handleChecklistChange('details')} />
-                            <span className="text-sm font-medium flex-1">รายละเอียดสินค้า/ราคา ถูกต้อง</span>
-                        </label>
-                    </div>
-                    <hr className="border-gray-100"/>
-                    <div className="space-y-3">
-                        <label className="flex items-start gap-3 cursor-pointer group">
-                            <div className="pt-0.5"><input type="checkbox" className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" checked={verificationData.needApproval} onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})} /></div>
-                            <div><p className="text-sm font-bold text-gray-700 group-hover:text-indigo-700">ต้องขออนุมัติจาก Head/PM เพิ่มเติม</p><p className="text-xs text-gray-500">กรณีงบเกิน หรือสินค้าพิเศษที่ต้องพิจารณา</p></div>
-                        </label>
-                        {requests.find(r => r.id === verificationData.requestId)?.purchaseType === 'Rent' && (
-                            <label className="flex items-start gap-3 cursor-pointer group">
-                                <div className="pt-0.5"><input type="checkbox" className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500" checked={verificationData.needContract} onChange={(e) => setVerificationData({...verificationData, needContract: e.target.checked})} /></div>
-                                <div><p className="text-sm font-bold text-gray-700 group-hover:text-teal-700">ต้องทำสัญญาเช่า (Contract Required)</p><p className="text-xs text-gray-500">ติ๊กออกหากเป็นการเช่าระยะสั้นที่ไม่ต้องทำสัญญา</p></div>
-                            </label>
-                        )}
-                    </div>
-                    <div>
-                        <label className="block text-xs font-bold text-gray-500 mb-1">หมายเหตุเพิ่มเติม (ถ้ามี)</label>
-                        <textarea className="w-full p-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" rows="2" placeholder="ระบุเหตุผล หรือรายละเอียดเพิ่มเติม..." value={verificationData.note} onChange={e => setVerificationData({...verificationData, note: e.target.value})}></textarea>
-                    </div>
-                    <div className="flex gap-3 pt-2">
-                         <button onClick={() => setShowVerificationModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600 font-medium hover:bg-gray-50">ยกเลิก</button>
-                         <button onClick={handleConfirmVerification} className={`flex-1 py-2 rounded-lg text-white font-bold shadow-md ${isVerificationPass() ? (verificationData.needApproval ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700') : 'bg-red-500 hover:bg-red-600'}`}>
-                             {isVerificationPass() ? (verificationData.needApproval ? 'ส่งขออนุมัติเพิ่ม' : 'ยืนยันถูกต้อง (Approve)') : 'ส่งกลับแก้ไข (Revise)'}
-                         </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-      )}
+{/* NEW: Verification Modal - Improved Design */}
+{showVerificationModal && (
+  <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm animate-in fade-in">
+    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+       <div className="px-6 py-4 border-b border-gray-100 bg-indigo-50 flex justify-between items-center">
+           <h3 className="font-bold text-lg text-indigo-900 flex items-center gap-2">
+               <CheckSquare className="w-5 h-5 text-indigo-600"/> ตรวจสอบเอกสาร (Verification)
+           </h3>
+           <button onClick={() => setShowVerificationModal(false)} className="text-gray-400 hover:text-gray-600">
+               <X className="w-5 h-5"/>
+           </button>
+       </div>
+       
+       <div className="p-6 space-y-4">
+           {/* Checklist Section */}
+           <div className="space-y-3">
+               {/* Quotation Check */}
+               <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                   verificationData.checks.quotation 
+                   ? 'border-green-500 bg-green-50' 
+                   : 'border-gray-200 hover:border-indigo-200'
+               }`}>
+                   <input 
+                       type="checkbox" 
+                       className="w-5 h-5 accent-green-600" 
+                       checked={verificationData.checks.quotation} 
+                       onChange={() => handleChecklistChange('quotation')} 
+                   />
+                   <span className="text-sm font-medium flex-1">
+                       ใบเสนอราคาถูกต้อง (Quotation)
+                   </span>
+                   {verificationData.filesExist.quotation && (
+                       <>
+                           <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">มีไฟล์</span>
+                           <button 
+                               type="button"
+                               onClick={(e) => {
+                                   e.preventDefault();
+                                   e.stopPropagation();
+                                   const req = requests.find(r => r.id === verificationData.requestId);
+                                   handleViewFile(req?.quotation, 'Quotation');
+                               }}
+                               className="text-xs bg-white border border-gray-300 px-2 py-1 rounded flex items-center gap-1 hover:bg-gray-50"
+                           >
+                               <Eye className="w-3 h-3"/> ดูไฟล์
+                           </button>
+                       </>
+                   )}
+               </label>
+
+               {/* Email Check */}
+               <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                   verificationData.checks.email 
+                   ? 'border-green-500 bg-green-50' 
+                   : 'border-gray-200 hover:border-indigo-200'
+               }`}>
+                   <input 
+                       type="checkbox" 
+                       className="w-5 h-5 accent-green-600" 
+                       checked={verificationData.checks.email} 
+                       onChange={() => handleChecklistChange('email')} 
+                   />
+                   <span className="text-sm font-medium flex-1">
+                       อีเมลอนุมัติครบถ้วน (Email)
+                   </span>
+                   {verificationData.filesExist.email && (
+                       <>
+                           <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">มีไฟล์</span>
+                           <button 
+                               type="button"
+                               onClick={(e) => {
+                                   e.preventDefault();
+                                   e.stopPropagation();
+                                   const req = requests.find(r => r.id === verificationData.requestId);
+                                   handleViewFile(req?.attachment, 'Email Approval');
+                               }}
+                               className="text-xs bg-white border border-gray-300 px-2 py-1 rounded flex items-center gap-1 hover:bg-gray-50"
+                           >
+                               <Eye className="w-3 h-3"/> ดูไฟล์
+                           </button>
+                       </>
+                   )}
+               </label>
+
+               {/* Details Check */}
+               <label className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                   verificationData.checks.details 
+                   ? 'border-green-500 bg-green-50' 
+                   : 'border-gray-200 hover:border-indigo-200'
+               }`}>
+                   <input 
+                       type="checkbox" 
+                       className="w-5 h-5 accent-green-600" 
+                       checked={verificationData.checks.details} 
+                       onChange={() => handleChecklistChange('details')} 
+                   />
+                   <span className="text-sm font-medium flex-1">
+                       รายละเอียดสินค้า/ราคา ถูกต้อง
+                   </span>
+               </label>
+           </div>
+
+           <hr className="border-gray-100"/>
+
+           {/* Additional Options */}
+           <div className="space-y-3">
+               {/* Need Approval Checkbox */}
+               <label className="flex items-start gap-3 cursor-pointer group">
+                   <div className="pt-0.5">
+                       <input 
+                           type="checkbox" 
+                           className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                           checked={verificationData.needApproval}
+                           onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})}
+                       />
+                   </div>
+                   <div>
+                       <p className="text-sm font-bold text-gray-700 group-hover:text-indigo-700">
+                           ต้องขออนุมัติจาก Head/PM เพิ่มเติม
+                       </p>
+                       <p className="text-xs text-gray-500">กรณีงบเกิน หรือสินค้าพิเศษที่ต้องพิจารณา</p>
+                   </div>
+               </label>
+
+               {/* Contract Requirement (Only for Rent) */}
+               {requests.find(r => r.id === verificationData.requestId)?.purchaseType === 'Rent' && (
+                   <label className="flex items-start gap-3 cursor-pointer group">
+                       <div className="pt-0.5">
+                           <input 
+                               type="checkbox" 
+                               className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500"
+                               checked={verificationData.needContract}
+                               onChange={(e) => setVerificationData({...verificationData, needContract: e.target.checked})}
+                           />
+                       </div>
+                       <div>
+                           <p className="text-sm font-bold text-gray-700 group-hover:text-teal-700">
+                               ต้องทำสัญญาเช่า (Contract Required)
+                           </p>
+                           <p className="text-xs text-gray-500">ติ๊กออกหากเป็นการเช่าระยะสั้นที่ไม่ต้องทำสัญญา</p>
+                       </div>
+                   </label>
+               )}
+           </div>
+
+           {/* Note Input */}
+           <div>
+               <label className="block text-xs font-bold text-gray-500 mb-1">หมายเหตุเพิ่มเติม (ถ้ามี)</label>
+               <textarea 
+                  className="w-full p-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" 
+                  rows="2"
+                  placeholder="ระบุเหตุผล หรือรายละเอียดเพิ่มเติม..."
+                  value={verificationData.note}
+                  onChange={e => setVerificationData({...verificationData, note: e.target.value})}
+               ></textarea>
+           </div>
+
+           {/* Action Buttons */}
+           <div className="flex gap-3 pt-2">
+               <button 
+                   onClick={() => setShowVerificationModal(false)} 
+                   className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600 font-medium hover:bg-gray-50"
+               >
+                   ยกเลิก
+               </button>
+               <button 
+                   onClick={handleConfirmVerification} 
+                   className={`flex-1 py-2 rounded-lg text-white font-bold shadow-md ${
+                       isVerificationPass() 
+                       ? (verificationData.needApproval 
+                           ? 'bg-orange-500 hover:bg-orange-600' 
+                           : 'bg-green-600 hover:bg-green-700'
+                       ) 
+                       : 'bg-red-500 hover:bg-red-600'
+                   }`}
+               >
+                   {isVerificationPass() 
+                       ? (verificationData.needApproval 
+                           ? 'ส่งขออนุมัติเพิ่ม' 
+                           : 'ยืนยันถูกต้อง (Approve)'
+                       ) 
+                       : 'ส่งกลับแก้ไข (Revise)'
+                   }
+               </button>
+           </div>
+       </div>
+    </div>
+  </div>
+)}
           
           {showDetailModal && selectedRequest && (
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[70] p-4 backdrop-blur-sm">
