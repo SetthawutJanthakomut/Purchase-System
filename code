@@ -100,3 +100,32 @@ function syncLog(log) {
   const id = log.date + '_' + Math.floor(Math.random() * 1000); 
   return saveDataToSheet('Logs', id, log);
 }
+
+// --- Code.gs ---
+
+// ฟังก์ชันสำหรับอัปโหลดไฟล์ลง Drive
+function uploadFileToDrive(base64Data, fileName) {
+  try {
+    const FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // Folder ID ที่คุณระบุ
+    const folder = DriveApp.getFolderById(FOLDER_ID);
+    
+    // แปลง Base64 กลับเป็น Blob
+    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+    const blob = Utilities.newBlob(bytes, contentType, fileName);
+    
+    // สร้างไฟล์
+    const file = folder.createFile(blob);
+    
+    // ตั้งค่าสิทธิ์ (เพื่อให้คนอื่นกดดูได้) - Optional
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    return {
+      name: fileName,
+      url: file.getUrl(),
+      id: file.getId()
+    };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
