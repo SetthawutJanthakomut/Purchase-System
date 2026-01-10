@@ -129,3 +129,46 @@ function uploadFileToDrive(base64Data, fileName) {
     return { error: e.toString() };
   }
 }
+
+
+// --- Code.gs (เพิ่มต่อท้าย) ---
+
+// ฟังก์ชันช่วยหาหรือสร้างโฟลเดอร์ย่อย
+function getOrCreateSubFolder(parentFolderId, subFolderName) {
+  const parentFolder = DriveApp.getFolderById(parentFolderId);
+  const folders = parentFolder.getFoldersByName(subFolderName);
+  
+  if (folders.hasNext()) {
+    return folders.next();
+  } else {
+    return parentFolder.createFolder(subFolderName);
+  }
+}
+
+// ฟังก์ชันอัปโหลดรูปทรัพย์สิน (แยกโฟลเดอร์)
+function uploadAssetImage(base64Data, fileName) {
+  try {
+    const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // Folder หลักที่คุณให้มา
+    const SUB_FOLDER_NAME = "Asset_Images"; // ชื่อโฟลเดอร์ย่อยที่จะเก็บรูปทรัพย์สิน
+    
+    // หาหรือสร้างโฟลเดอร์ย่อย
+    const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
+    
+    // แปลง Base64
+    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+    const blob = Utilities.newBlob(bytes, contentType, fileName);
+    
+    // สร้างไฟล์
+    const file = targetFolder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    return {
+      name: fileName,
+      url: file.getUrl(),
+      id: file.getId()
+    };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
