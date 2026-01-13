@@ -3257,17 +3257,24 @@ const handleEditItem = (index) => {
                            </div>
                            <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
                            
-                           {(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (
-                             <>
-                                {hasPermission(16) && (
-                                <button onClick={() => { 
-                            setShowAddInvModal(true); 
-                        setNewStockItem({ 
+               {(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (
+    <>
+        {hasPermission(16) && (
+            <button 
+                onClick={() => { 
+                    setShowAddInvModal(true); 
+                    setNewStockItem({ 
                         name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
-                        project: globalProjectFilter !== 'All' ? globalProjectFilter : '' // ⭐ Auto-fill Project
-                         });}} className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"><Plus className="w-4 h-4"/> เพิ่ม</button>
-                          </>
-                          )}
+                        project: globalProjectFilter !== 'All' ? globalProjectFilter : '' 
+                    });
+                }} 
+                className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
+            >
+                <Plus className="w-4 h-4"/> เพิ่ม
+            </button>
+        )} 
+    </>
+)}
 
                           {hasPermission(22) && (
                           <>
