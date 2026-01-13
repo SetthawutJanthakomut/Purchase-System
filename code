@@ -9,185 +9,7 @@ function doGet() {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-// --- HELPER FUNCTIONS ---
-function getSheetData(sheetName) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(sheetName);
-  const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return []; // Empty or header only
-  
-  // Assumes Column A is ID, Column B is JSON Data
-  const result = [];
-  // Skip header if exists, reading from row 2
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][1]) { // Check if JSON column exists
-      try {
-        result.push(JSON.parse(data[i][1]));
-      } catch (e) {
-        Logger.log('Error parsing JSON row ' + i);
-      }
-    }
-  }
-  return result;
-}
-
-function saveDataToSheet(sheetName, id, dataObj) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(sheetName);
-  const allData = sheet.getDataRange().getValues();
-  
-  let rowIndex = -1;
-  // Search for existing ID in Column A
-  for (let i = 0; i < allData.length; i++) {
-    if (allData[i][0] == id) {
-      rowIndex = i + 1; // 1-based index
-      break;
-    }
-  }
-  
-  const jsonString = JSON.stringify(dataObj);
-  
-  if (rowIndex > 0) {
-    // Update existing
-    sheet.getRange(rowIndex, 2).setValue(jsonString);
-  } else {
-    // Insert new
-    sheet.appendRow([id, jsonString]);
-  }
-  return true;
-}
-
-function deleteDataFromSheet(sheetName, id) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(sheetName);
-  const data = sheet.getDataRange().getValues();
-  
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] == id) {
-      sheet.deleteRow(i + 1);
-      break;
-    }
-  }
-}
-
-// --- API FOR FRONTEND ---
-
-// --- API FOR FRONTEND (Updated) ---
-
-function loadInitialData() {
-  return {
-    requests: getSheetData('Requests'),
-    inventory: getSheetData('Inventory'),
-    assets: getSheetData('Assets'),
-    logs: getSheetData('Logs'),
-    projects: getSheetData('Projects') // ⭐ เพิ่มบรรทัดนี้
-  };
-}
-
-// --- Specific Save Functions (Updated) ---
-// ... (ฟังก์ชันเดิม syncRequest, syncInventory, syncAsset, syncLog เก็บไว้เหมือนเดิม) ...
-
-// ⭐ เพิ่มฟังก์ชันจัดการ Project
-function syncProject(project) {
-  return saveDataToSheet('Projects', project.id, project);
-}
-
-function deleteProjectFromSheet(id) {
-  deleteDataFromSheet('Projects', id);
-}
-
-
-function syncRequest(request) {
-  return saveDataToSheet('Requests', request.id, request);
-}
-
-function syncInventory(item) {
-  return saveDataToSheet('Inventory', item.id, item);
-}
-
-function syncAsset(asset) {
-  return saveDataToSheet('Assets', asset.id, asset);
-}
-
-function syncLog(log) {
-  // Logs don't usually update, just append. using timestamp as ID
-  const id = log.date + '_' + Math.floor(Math.random() * 1000); 
-  return saveDataToSheet('Logs', id, log);
-}
-
-// --- Code.gs ---
-
-// ฟังก์ชันสำหรับอัปโหลดไฟล์ลง Drive
-function uploadFileToDrive(base64Data, fileName) {
-  try {
-    const FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // Folder ID ที่คุณระบุ
-    const folder = DriveApp.getFolderById(FOLDER_ID);
-    
-    // แปลง Base64 กลับเป็น Blob
-    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
-    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
-    const blob = Utilities.newBlob(bytes, contentType, fileName);
-    
-    // สร้างไฟล์
-    const file = folder.createFile(blob);
-    
-    // ตั้งค่าสิทธิ์ (เพื่อให้คนอื่นกดดูได้) - Optional
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    
-    return {
-      name: fileName,
-      url: file.getUrl(),
-      id: file.getId()
-    };
-  } catch (e) {
-    return { error: e.toString() };
-  }
-}
-
-
-// --- Code.gs (เพิ่มต่อท้าย) ---
-
-// ฟังก์ชันช่วยหาหรือสร้างโฟลเดอร์ย่อย
-function getOrCreateSubFolder(parentFolderId, subFolderName) {
-  const parentFolder = DriveApp.getFolderById(parentFolderId);
-  const folders = parentFolder.getFoldersByName(subFolderName);
-  
-  if (folders.hasNext()) {
-    return folders.next();
-  } else {
-    return parentFolder.createFolder(subFolderName);
-  }
-}
-
-// ฟังก์ชันอัปโหลดรูปทรัพย์สิน (แยกโฟลเดอร์)
-function uploadAssetImage(base64Data, fileName) {
-  try {
-    const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // Folder หลักที่คุณให้มา
-    const SUB_FOLDER_NAME = "Asset_Images"; // ชื่อโฟลเดอร์ย่อยที่จะเก็บรูปทรัพย์สิน
-    
-    // หาหรือสร้างโฟลเดอร์ย่อย
-    const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
-    
-    // แปลง Base64
-    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
-    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
-    const blob = Utilities.newBlob(bytes, contentType, fileName);
-    
-    // สร้างไฟล์
-    const file = targetFolder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    
-    return {
-      name: fileName,
-      url: file.getUrl(),
-      id: file.getId()
-    };
-  } catch (e) {
-    return { error: e.toString() };
-  }
-}
-
-// --- HELPER FUNCTIONS (UPDATED: Auto-create Sheet) ---
+// --- HELPER FUNCTIONS (Smart Sheet Creation) ---
 
 // ฟังก์ชันช่วยเรียก Sheet ถ้าไม่มีให้สร้างใหม่
 function getOrCreateSheet(sheetName) {
@@ -195,8 +17,8 @@ function getOrCreateSheet(sheetName) {
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
     sheet = ss.insertSheet(sheetName);
-    // สร้าง Header อัตโนมัติถ้าเป็น Sheet ใหม่
-    if (sheetName === 'Projects' || sheetName === 'Inventory' || sheetName === 'Assets' || sheetName === 'Requests') {
+    // ⭐ แก้ไข: เพิ่ม 'Users' เข้าไปในรายการที่จะสร้าง Header
+    if (['Projects', 'Inventory', 'Assets', 'Requests', 'Users'].includes(sheetName)) {
       sheet.appendRow(['ID', 'JSON_Data']); 
     }
   }
@@ -204,7 +26,7 @@ function getOrCreateSheet(sheetName) {
 }
 
 function getSheetData(sheetName) {
-  const sheet = getOrCreateSheet(sheetName); // ✅ ใช้ฟังก์ชันช่วยที่สร้าง Sheet ให้เอง
+  const sheet = getOrCreateSheet(sheetName);
   
   if (sheet.getLastRow() === 0) return []; // ถ้า Sheet ว่างเปล่า
   
@@ -229,7 +51,7 @@ function getSheetData(sheetName) {
 }
 
 function saveDataToSheet(sheetName, id, dataObj) {
-  const sheet = getOrCreateSheet(sheetName); // ✅ ใช้ฟังก์ชันช่วย
+  const sheet = getOrCreateSheet(sheetName);
   const allData = sheet.getDataRange().getValues();
   
   let rowIndex = -1;
@@ -254,7 +76,7 @@ function saveDataToSheet(sheetName, id, dataObj) {
 }
 
 function deleteDataFromSheet(sheetName, id) {
-  const sheet = getOrCreateSheet(sheetName); // ✅ ใช้ฟังก์ชันช่วย
+  const sheet = getOrCreateSheet(sheetName);
   const data = sheet.getDataRange().getValues();
   
   for (let i = 0; i < data.length; i++) {
@@ -265,12 +87,100 @@ function deleteDataFromSheet(sheetName, id) {
   }
 }
 
+// --- FILE UPLOAD FUNCTIONS ---
 
-// --- USER MANAGEMENT (UPDATED) ---
+// ฟังก์ชันสำหรับอัปโหลดไฟล์ลง Drive
+function uploadFileToDrive(base64Data, fileName) {
+  try {
+    const FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // Folder ID
+    const folder = DriveApp.getFolderById(FOLDER_ID);
+    
+    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+    const blob = Utilities.newBlob(bytes, contentType, fileName);
+    
+    const file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    return {
+      name: fileName,
+      url: file.getUrl(),
+      id: file.getId()
+    };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
 
-// 1. ฟังก์ชัน Login (Updated: Hardcoded Admin & Check Status)
+// ฟังก์ชันช่วยหาหรือสร้างโฟลเดอร์ย่อย
+function getOrCreateSubFolder(parentFolderId, subFolderName) {
+  const parentFolder = DriveApp.getFolderById(parentFolderId);
+  const folders = parentFolder.getFoldersByName(subFolderName);
+  
+  if (folders.hasNext()) {
+    return folders.next();
+  } else {
+    return parentFolder.createFolder(subFolderName);
+  }
+}
+
+// ฟังก์ชันอัปโหลดรูปทรัพย์สิน (แยกโฟลเดอร์)
+function uploadAssetImage(base64Data, fileName) {
+  try {
+    const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; 
+    const SUB_FOLDER_NAME = "Asset_Images"; 
+    
+    const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
+    
+    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+    const blob = Utilities.newBlob(bytes, contentType, fileName);
+    
+    const file = targetFolder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    return {
+      name: fileName,
+      url: file.getUrl(),
+      id: file.getId()
+    };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
+
+// --- SPECIFIC SYNC FUNCTIONS ---
+
+function syncProject(project) {
+  return saveDataToSheet('Projects', project.id, project);
+}
+
+function deleteProjectFromSheet(id) {
+  deleteDataFromSheet('Projects', id);
+}
+
+function syncRequest(request) {
+  return saveDataToSheet('Requests', request.id, request);
+}
+
+function syncInventory(item) {
+  return saveDataToSheet('Inventory', item.id, item);
+}
+
+function syncAsset(asset) {
+  return saveDataToSheet('Assets', asset.id, asset);
+}
+
+function syncLog(log) {
+  const id = log.date + '_' + Math.floor(Math.random() * 1000); 
+  return saveDataToSheet('Logs', id, log);
+}
+
+// --- USER MANAGEMENT & MAIN API ---
+
+// 1. Login
 function loginUser(username, password) {
-  // ⭐ Hardcoded Admin
+  // Hardcoded Admin (Backdoor)
   if (username === 'admin' && password === '1231') {
     return {
       success: true,
@@ -280,7 +190,7 @@ function loginUser(username, password) {
         lastName: 'Administrator',
         empId: 'ADMIN-001',
         role: 'Admin (ผู้ดูแลระบบ)',
-        isSuperAdmin: true, // Flag พิเศษ
+        isSuperAdmin: true,
         status: 'Activated'
       }
     };
@@ -290,7 +200,6 @@ function loginUser(username, password) {
   const user = users.find(u => u.username === username && u.password === password);
   
   if (user) {
-    // ⭐ เช็คสถานะ Activated
     if (user.status !== 'Activated') {
        return { success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน หรือรอการอนุมัติ' };
     }
@@ -307,18 +216,18 @@ function loginUser(username, password) {
   }
 }
 
-// 2. Register (Updated: Default Status)
+// 2. Register
 function registerUser(formData) {
   const users = getSheetData('Users');
   if (users.some(u => u.username === formData.username)) {
     return { success: false, message: 'Username นี้ถูกใช้งานแล้ว' };
   }
   
-const newUser = {
-    id: formData.username,
+  const newUser = {
+    id: formData.username, // ใช้ username เป็น ID
     ...formData,
     role: 'User', 
-    status: 'New', // ⭐ แก้จาก 'Activated' เป็น 'New'
+    status: 'New', 
     permissions: {}, 
     createdAt: new Date().toLocaleString('th-TH')
   };
@@ -327,12 +236,12 @@ const newUser = {
   return { success: true, message: 'ลงทะเบียนเรียบร้อย รอแอดมินอนุมัติ' };
 }
 
-// 3. ฟังก์ชันบันทึกข้อมูล User (สำหรับ Admin แก้ไขสิทธิ์/สถานะ)
+// 3. Save User Data (For Admin)
 function saveUserData(user) {
    return saveDataToSheet('Users', user.id, user);
 }
 
-// 4. Update loadInitialData (เพิ่ม users สำหรับ Admin)
+// 4. Main Load Data (Consolidated)
 function loadInitialData() {
   return {
     requests: getSheetData('Requests'),
@@ -340,6 +249,6 @@ function loadInitialData() {
     assets: getSheetData('Assets'),
     logs: getSheetData('Logs'),
     projects: getSheetData('Projects'),
-    users: getSheetData('Users') // ⭐ ส่งรายชื่อ User ไปให้ Admin จัดการ
+    users: getSheetData('Users') 
   };
 }
