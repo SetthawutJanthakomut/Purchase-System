@@ -50,8 +50,37 @@
       'Upload',
       'Settings' 
     ];
-
     const lucideReact = {};
+    // --- PERMISSION CONSTANTS ---
+    const PERMISSIONS = {
+        1:  'ดูอย่างเดียว (Read Only)',
+        2:  'Admin (ได้สิทธิ์ทุกสิทธิ์ในโครงการ)',
+        3:  'Sub-Admin (สร้างคำขอซื้อ/เบิก/ยืม ได้ทั้งหมด)',
+        4:  'สร้างคำขอ: ซื้อ Local',
+        5:  'สร้างคำขอ: ซื้อ HO',
+        6:  'สร้างคำขอ: เบิกวัสดุ',
+        7:  'สร้างคำขอ: ยืมทรัพย์สิน',
+        8:  'อนุมัติ: หัวหน้าแผนก (Level 1)',
+        9:  'อนุมัติ: PM (Level 2)',
+        10: 'ตรวจสอบเอกสาร (Verify)',
+        11: 'ออกใบขอซื้อ (Issue PR)',
+        12: 'ออกใบสั่งซื้อ (Issue PO)',
+        13: 'อัปเดตการจัดส่ง (Shipping)',
+        14: 'จัดการสัญญาเช่า (Contract)',
+        15: 'รับของเข้าคลัง (Receive Goods)',
+        16: 'เพิ่มสินค้า (Add Inv)',
+        17: 'แก้ไขสินค้า (Edit Inv)',
+        18: 'ลบสินค้า (Delete Inv)',
+        19: 'เพิ่มทรัพย์สิน (Add Asset)',
+        20: 'แก้ไขทรัพย์สิน (Edit Asset)',
+        21: 'ลบทรัพย์สิน (Delete Asset)',
+        22: 'Import CSV (สินค้า)',
+        23: 'Import CSV (ทรัพย์สิน)',
+        24: 'จ่ายของ/ยืม (Disburse)',
+        25: 'รับคืนทรัพย์สิน (Return Asset)',
+        26: 'จัดการโครงการ (Project Settings)',
+        27: 'กู้คืนข้อมูล (Restore)'
+    };
 
     // Helper: แปลง PascalCase -> kebab-case
     const pascalToKebab = (str) => str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase().replace(/^-/, '');
@@ -303,6 +332,11 @@ const {
 
     // --- MAIN APP COMPONENT ---
     const App = () => {
+      const [user, setUser] = useState(null);
+      const [allUsers, setAllUsers] = useState([]); // เก็บรายชื่อ User ทั้งหมด
+      const [showPermissionModal, setShowPermissionModal] = useState(false); // เปิด Modal จัดการสิทธิ์
+      const [selectedUserForEdit, setSelectedUserForEdit] = useState(null); // User ที่กำลังถูกแก้ไขสิทธิ์
+      const [permissionTab, setPermissionTab] = useState(''); // เก็บชื่อ Project ใน Modal จัดการสิทธิ์
       const [currentUserRole, setCurrentUserRole] = useState(ROLES.USER);
       const [activeTab, setActiveTab] = useState('dashboard');
       
@@ -332,6 +366,118 @@ const {
       const [assetProjectFilter, setAssetProjectFilter] = useState('All');
       const [projectDetailTab, setProjectDetailTab] = useState('SubJob'); // 'SubJob' หรือ 'EPCode'
       const [globalProjectFilter, setGlobalProjectFilter] = useState('All');
+
+const hasPermission = (permId, project = globalProjectFilter) => {
+          // 1. ถ้าเป็น Super Admin ให้ผ่านตลอด
+          if (user?.isSuperAdmin) return true;
+          
+          // 2. ถ้าไม่ได้เลือก Project (All) หรือเป็นการกระทำระดับ Global
+          if (!project || project === 'All') {
+              // เช็คว่ามีสิทธิ์นี้ใน "โปรเจกต์ใดโปรเจกต์หนึ่ง" หรือไม่ (User.permissions เก็บเป็น { "ProjectA": [1,2], "ProjectB": [] })
+              if (!user?.permissions) return false;
+              return Object.values(user.permissions).some(perms => 
+                  perms.includes(2) || perms.includes(permId) // สิทธิ์ 2 คือ Admin ของโปรเจกต์นั้น
+              );
+          }
+
+          // 3. เช็คสิทธิ์ใน Project ที่ระบุ
+          const userPerms = user?.permissions?.[project] || [];
+          
+          // - เป็น Admin ของโปรเจกต์นี้ (2)
+          if (userPerms.includes(2)) return true;
+
+          // - เป็น Sub-Admin (3) -> ได้สิทธิ์สร้างคำขอพื้นฐาน (4,5,6,7)
+          if (userPerms.includes(3) && [4, 5, 6, 7].includes(permId)) return true;
+
+          // - มีสิทธิ์ระบุเฉพาะเจาะจง
+          return userPerms.includes(permId);
+      };
+
+
+// --- AUTH SCREEN (Login / Register) ---
+    const AuthScreen = ({ onLoginSuccess }) => {
+        const [view, setView] = useState('login'); // 'login' | 'register'
+        const [loading, setLoading] = useState(false);
+        const [formData, setFormData] = useState({
+            username: '', password: '', email: '', empId: '', firstName: '', lastName: ''
+        });
+
+        const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+
+        const handleLogin = (e) => {
+            e.preventDefault();
+            setLoading(true);
+            google.script.run.withSuccessHandler((res) => {
+                setLoading(false);
+                if (res.success) {
+                    onLoginSuccess(res.user);
+                } else {
+                    alert(res.message);
+                }
+            }).loginUser(formData.username, formData.password);
+        };
+
+        const handleRegister = (e) => {
+            e.preventDefault();
+            if(!formData.username || !formData.password || !formData.firstName) {
+                alert('กรุณากรอกข้อมูลให้ครบ'); return;
+            }
+            setLoading(true);
+            google.script.run.withSuccessHandler((res) => {
+                setLoading(false);
+                if (res.success) {
+                    alert('ลงทะเบียนสำเร็จ! กรุณาเข้าสู่ระบบ');
+                    setView('login');
+                    setFormData({ ...formData, password: '' });
+                } else {
+                    alert(res.message);
+                }
+            }).registerUser(formData);
+        };
+
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4 font-sans">
+                <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md animate-in fade-in slide-in-from-bottom-4">
+                    <div className="text-center mb-6">
+                        <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 text-blue-600 rounded-full mb-4">
+                            <Package className="w-8 h-8" />
+                        </div>
+                        <h1 className="text-2xl font-bold text-gray-800">PurchaseHub System</h1>
+                        <p className="text-gray-500 text-sm mt-1">{view === 'login' ? 'เข้าสู่ระบบเพื่อใช้งาน' : 'ลงทะเบียนผู้ใช้งานใหม่'}</p>
+                    </div>
+
+                    <form onSubmit={view === 'login' ? handleLogin : handleRegister} className="space-y-4">
+                        {view === 'register' && (
+                            <>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <input name="firstName" placeholder="ชื่อ" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+                                    <input name="lastName" placeholder="นามสกุล" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+                                </div>
+                                <input name="empId" placeholder="รหัสพนักงาน" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+                                <input name="email" type="email" placeholder="อีเมล" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+                            </>
+                        )}
+                        
+                        <input name="username" placeholder="Username" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+                        <input name="password" type="password" placeholder="Password" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+
+                        <button type="submit" disabled={loading} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-lg transition-transform active:scale-95 flex justify-center gap-2">
+                            {loading ? 'กำลังโหลด...' : (view === 'login' ? 'เข้าสู่ระบบ' : 'ลงทะเบียน')}
+                        </button>
+                    </form>
+
+                    <div className="mt-6 text-center border-t pt-4">
+                        {view === 'login' ? (
+                            <p className="text-sm text-gray-600">ยังไม่มีบัญชี? <button onClick={() => setView('register')} className="text-blue-600 font-bold hover:underline">ลงทะเบียน</button></p>
+                        ) : (
+                            <p className="text-sm text-gray-600">มีบัญชีแล้ว? <button onClick={() => setView('login')} className="text-blue-600 font-bold hover:underline">กลับไปหน้า Login</button></p>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+      
 
 
 
@@ -2812,6 +2958,15 @@ const handleEditItem = (index) => {
       };
 
       // --- RENDER ---
+
+      // ⭐ 2. เพิ่มการตรวจสอบ Login (วางตรงนี้ เพื่อให้ผ่าน Hooks ด้านบนให้ครบก่อน)
+      if (!user) {
+          return <AuthScreen onLoginSuccess={(userData) => {
+              setUser(userData);
+              setCurrentUserRole(userData.role || ROLES.USER); // อัปเดต Role ตามข้อมูล User
+          }} />;
+      }
+      
       
       if (isLoading) {
          return <div className="flex h-screen items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>;
@@ -2864,9 +3019,33 @@ const handleEditItem = (index) => {
               <button onClick={() => setActiveTab('orders')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'orders' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><ShoppingCart className="w-5 h-5" /> รายการสั่งซื้อ/เบิก</button>
               <button onClick={() => setActiveTab('inventory')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'inventory' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Box className="w-5 h-5" /> คลังสินค้า (Store)</button>
               <button onClick={() => setActiveTab('assets')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'assets' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Monitor className="w-5 h-5" /> ทะเบียนทรัพย์สิน</button>
+              {hasPermission(26) && (
               <button onClick={() => setActiveTab('projects')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'projects' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Settings className="w-5 h-5" /> ตั้งค่าโครงการ (Projects)</button>
+              )}
             </nav>
-            <div className="p-4 bg-gray-50 m-4 rounded-xl border border-gray-200"><p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1"><User className="w-3 h-3"/> จำลองผู้ใช้งาน (Role)</p><select value={currentUserRole} onChange={(e) => setCurrentUserRole(e.target.value)} className="w-full p-2 text-sm border-gray-300 rounded-md focus:ring-blue-500 bg-white shadow-sm cursor-pointer">{Object.entries(ROLES).map(([key, role]) => <option key={key} value={role}>{role}</option>)}</select></div>
+           {/* ⭐ 3. ส่วนแสดงข้อมูล User และปุ่ม Logout (แทนที่ Role Simulation) */}
+            <div className="p-4 bg-slate-50 border-t border-gray-200 m-0"> {/* ปรับ style นิดหน่อย */}
+                <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold shadow-sm">
+                        {user?.firstName?.charAt(0) || 'U'}
+                    </div>
+                    <div className="overflow-hidden">
+                        <p className="text-sm font-bold text-gray-800 truncate">{user?.firstName} {user?.lastName}</p>
+                        <p className="text-xs text-gray-500 font-mono truncate">{user?.empId}</p>
+                    </div>
+                </div>
+                <button 
+                    onClick={() => {
+                        if(confirm('ต้องการออกจากระบบ?')) {
+                            setUser(null);
+                            setGlobalProjectFilter('All'); // Reset filter
+                        }
+                    }} 
+                    className="w-full py-2 bg-white border border-gray-300 text-red-600 rounded-lg text-sm font-bold hover:bg-red-50 flex items-center justify-center gap-2 transition-colors"
+                >
+                    <LogOut className="w-4 h-4"/> ออกจากระบบ
+                </button>
+            </div>
           </aside>
     
           <main className="flex-1 flex flex-col overflow-hidden relative no-print">
@@ -2878,9 +3057,13 @@ const handleEditItem = (index) => {
                  {activeTab === 'inventory' && 'คลังสินค้า (Inventory)'}
                  {activeTab === 'assets' && 'ทะเบียนทรัพย์สิน (Assets)'}
               </h2>
-              <div className="flex items-center gap-4">
-                 <div className="hidden md:flex items-center gap-2 text-sm text-gray-700 bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200"><span className="font-semibold">{currentUserRole}</span></div>
-                 <button onClick={handleOpenCreateModal} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 shadow-md"><Plus className="w-4 h-4" /> สร้างคำสั่งซื้อ/เบิก/ยืม</button>
+            <div className="flex items-center gap-4">
+                 {/* ⭐ ครอบด้วย hasPermission (4,5,6,7 คือสิทธิ์สร้างคำขอประเภทต่างๆ) */}
+                 {(hasPermission(4) || hasPermission(5) || hasPermission(6) || hasPermission(7)) && (
+                     <button onClick={handleOpenCreateModal} className="...">
+                         <Plus className="w-4 h-4" /> สร้างคำสั่งซื้อ/เบิก/ยืม
+                     </button>
+                 )}
               </div>
             </header>
     
@@ -2981,30 +3164,31 @@ const handleEditItem = (index) => {
                                         
                                         {req.status !== 'Draft' && (
                                             <>
-                                            {(currentUserRole === ROLES.DEPT_HEAD || currentUserRole === ROLES.ADMIN) && req.status === 'Pending Head' && (
+                                            {hasPermission(8) && req.status === 'Pending Head' && (
                                                 <>
                                                     <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
                                                     <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ PM'}</button>
                                                 </>
                                             )}
-                                            {(currentUserRole === ROLES.PM || currentUserRole === ROLES.ADMIN) && req.status === 'Pending PM' && (
+                                            {hasPermission(9) && req.status === 'Pending PM' && (
                                                 <>
                                                     <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
                                                     <button type="button" onClick={() => handleApprovalUpdate(req.id, 'Approved')} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">อนุมัติการสั่งซื้อ</button>
                                                 </>
                                             )}
-                                            {(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
+
+                                            {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
                                                 <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
                                             )}
                                             {(currentUserRole === ROLES.PURCHASING || currentUserRole === ROLES.ADMIN) && req.type === 'Local' && req.status === 'Approved' && (<button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>)}
                                             {(currentUserRole === ROLES.PURCHASING || currentUserRole === ROLES.ADMIN) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (<button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>)}
                                           
-                                            {(currentUserRole === ROLES.PURCHASING || currentUserRole === ROLES.ADMIN) && req.type === 'HO' && req.status === 'Pending Check' && (
+                                            {hasPermission(10) && req.status === 'Pending Check' && (
                                                 <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-4 h-4"/> ตรวจสอบเอกสาร (Verify)</button>
                                             )}
                                             
                                             {/* --- HO Buy Flow --- */}
-                                            {(currentUserRole === ROLES.PURCHASING || currentUserRole === ROLES.ADMIN) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'Approved' && (
+                                            {hasPermission(11) && req.status === 'Approved' && req.purchaseType === 'Buy' && (
                                                 <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
                                             )}
                                             {(currentUserRole === ROLES.PURCHASING || currentUserRole === ROLES.ADMIN) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (<button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>)}
@@ -3074,14 +3258,19 @@ const handleEditItem = (index) => {
                            <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
                            {(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (
                              <>
+                                
+                                {hasPermission(16) && (
                                 <button onClick={() => { 
-    setShowAddInvModal(true); 
-    setNewStockItem({ 
-        name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
-        project: globalProjectFilter !== 'All' ? globalProjectFilter : '' // ⭐ Auto-fill Project
-    });}} className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"><Plus className="w-4 h-4"/> เพิ่ม</button>
+                            setShowAddInvModal(true); 
+                        setNewStockItem({ 
+                        name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
+                        project: globalProjectFilter !== 'All' ? globalProjectFilter : '' // ⭐ Auto-fill Project
+                         });}} className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"><Plus className="w-4 h-4"/> เพิ่ม</button>
+                          )}
+                          {hasPermission(22) && (
                                 {/* ⭐ ปุ่ม Import Inventory */}
                                 <button onClick={() => setShowImportInvModal(true)} className="bg-teal-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-teal-700 transition-colors shadow-sm"><Download className="w-4 h-4 rotate-180"/> Import</button>
+                                )}
                              </>
                            )}
                          </div>
@@ -3198,13 +3387,17 @@ const handleEditItem = (index) => {
                     
                     {(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (
                         <>
+                             {hasPermission(19) && (
                              <button onClick={() => { 
     setShowAssetModal(true); 
     setNewAssetItem({ 
         id: '', isAutoId: false, name: '', serial: '', status: 'Available', condition: 'Good', ownerType: '', price: 0, rentalPrice: 0, rentalUnit: 'Month', images: [],
         project: globalProjectFilter !== 'All' ? globalProjectFilter : '' // ⭐ Auto-fill Project
     });}} className="bg-indigo-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-indigo-700"><Plus className="w-4 h-4"/> เพิ่ม</button>
+    )}
+                              {hasPermission(23) && (
                             <button onClick={() => setShowImportAssetModal(true)} className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"><Download className="w-4 h-4 rotate-180"/> Import</button>
+                            )}
                         </>
                     )}
                  </div>
@@ -3657,6 +3850,190 @@ const handleEditItem = (index) => {
               </div>
           </div>
       )}
+
+      {activeTab === 'users' && user.isSuperAdmin && (
+          <div className="space-y-6 max-w-7xl mx-auto">
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
+                      <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2"><User className="w-5 h-5"/> จัดการผู้ใช้งาน (User Management)</h3>
+                  </div>
+                  <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-left">
+                          <thead className="bg-gray-100 text-gray-600 font-bold border-b">
+                              <tr>
+                                  <th className="px-6 py-3">Username</th>
+                                  <th className="px-6 py-3">ชื่อ-นามสกุล</th>
+                                  <th className="px-6 py-3">รหัสพนักงาน</th>
+                                  <th className="px-6 py-3">สถานะ</th>
+                                  <th className="px-6 py-3 text-center">จัดการสิทธิ์</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                              {allUsers.map((u, idx) => (
+                                  <tr key={idx} className="hover:bg-gray-50">
+                                      <td className="px-6 py-4 font-bold text-gray-800">{u.username}</td>
+                                      <td className="px-6 py-4">{u.firstName} {u.lastName}</td>
+                                      <td className="px-6 py-4 font-mono text-gray-500">{u.empId}</td>
+                                      <td className="px-6 py-4">
+                                          <button 
+                                              onClick={() => {
+                                                  const newStatus = u.status === 'Activated' ? 'Deactivated' : 'Activated';
+                                                  const updatedUser = { ...u, status: newStatus };
+                                                  setAllUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
+                                                  google.script.run.saveUserData(updatedUser); // Save Backend
+                                              }}
+                                              className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${u.status === 'Activated' ? 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200' : 'bg-red-100 text-red-700 border-red-200 hover:bg-red-200'}`}
+                                          >
+                                              {u.status}
+                                          </button>
+                                      </td>
+                                      <td className="px-6 py-4 text-center">
+                                          <button 
+                                              onClick={() => {
+                                                  setSelectedUserForEdit(u);
+                                                  setPermissionTab(projects[0]?.name || ''); // Default to first project
+                                                  setShowPermissionModal(true);
+                                              }}
+                                              className="bg-blue-50 text-blue-600 p-2 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200"
+                                              title="จัดการสิทธิ์"
+                                          >
+                                              <Settings className="w-4 h-4"/>
+                                          </button>
+                                      </td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- PERMISSION MODAL --- */}
+      {showPermissionModal && selectedUserForEdit && (
+          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+                  {/* Header */}
+                  <div className="px-6 py-4 border-b bg-white flex justify-between items-center">
+                      <div>
+                          <h3 className="font-bold text-xl text-gray-800 flex items-center gap-2">
+                              <ShieldCheck className="w-6 h-6 text-blue-600"/> จัดการสิทธิ์: {selectedUserForEdit.firstName} {selectedUserForEdit.lastName}
+                          </h3>
+                          <p className="text-sm text-gray-500 mt-1">กำหนดสิทธิ์การใช้งานแยกตามโครงการ</p>
+                      </div>
+                      <button onClick={() => setShowPermissionModal(false)}><X className="w-6 h-6 text-gray-400 hover:text-gray-600"/></button>
+                  </div>
+
+                  {/* Body Layout: Left Projects, Right Permissions */}
+                  <div className="flex-1 flex overflow-hidden">
+                      
+                      {/* Left: Project List */}
+                      <div className="w-1/4 bg-gray-50 border-r overflow-y-auto">
+                          {projects.map(p => (
+                              <button 
+                                  key={p.id}
+                                  onClick={() => setPermissionTab(p.name)}
+                                  className={`w-full text-left px-4 py-3 text-sm font-bold border-b transition-colors flex justify-between items-center ${permissionTab === p.name ? 'bg-white text-blue-600 border-l-4 border-l-blue-600 shadow-sm' : 'text-gray-600 hover:bg-gray-100'}`}
+                              >
+                                  {p.name}
+                                  {/* Show count of permissions */}
+                                  <span className="bg-gray-200 text-gray-600 text-[10px] px-2 py-0.5 rounded-full">
+                                      {(selectedUserForEdit.permissions?.[p.name] || []).length}
+                                  </span>
+                              </button>
+                          ))}
+                      </div>
+
+                      {/* Right: Checkboxes List */}
+                      <div className="flex-1 overflow-y-auto p-6 bg-white">
+                          <div className="flex justify-between items-center mb-4">
+                              <h4 className="font-bold text-lg text-gray-800">สิทธิ์ในโครงการ: <span className="text-blue-600">{permissionTab}</span></h4>
+                              <div className="space-x-2">
+                                  <button 
+                                      onClick={() => {
+                                          // Select All Logic
+                                          const allIds = Object.keys(PERMISSIONS).map(Number);
+                                          const newPerms = { ...selectedUserForEdit.permissions, [permissionTab]: allIds };
+                                          setSelectedUserForEdit({ ...selectedUserForEdit, permissions: newPerms });
+                                      }}
+                                      className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded hover:bg-blue-100"
+                                  >
+                                      เลือกทั้งหมด
+                                  </button>
+                                  <button 
+                                      onClick={() => {
+                                          // Clear All Logic
+                                          const newPerms = { ...selectedUserForEdit.permissions, [permissionTab]: [] };
+                                          setSelectedUserForEdit({ ...selectedUserForEdit, permissions: newPerms });
+                                      }}
+                                      className="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded hover:bg-gray-200"
+                                  >
+                                      ล้าง
+                                  </button>
+                              </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                              {Object.entries(PERMISSIONS).map(([id, label]) => {
+                                  const permId = parseInt(id);
+                                  const currentProjectPerms = selectedUserForEdit.permissions?.[permissionTab] || [];
+                                  const isChecked = currentProjectPerms.includes(permId);
+
+                                  return (
+                                      <label key={id} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${isChecked ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100 hover:border-gray-300'}`}>
+                                          <div className="pt-0.5">
+                                              <input 
+                                                  type="checkbox" 
+                                                  className="w-4 h-4 accent-blue-600"
+                                                  checked={isChecked}
+                                                  onChange={(e) => {
+                                                      let newList = [...currentProjectPerms];
+                                                      if (e.target.checked) {
+                                                          newList.push(permId);
+                                                          // Logic พิเศษ: ถ้าติ๊ก Admin (2) หรือ SubAdmin (3) อาจจะ Auto tick ลูกน้องก็ได้
+                                                      } else {
+                                                          newList = newList.filter(x => x !== permId);
+                                                      }
+                                                      
+                                                      const updatedUser = {
+                                                          ...selectedUserForEdit,
+                                                          permissions: {
+                                                              ...selectedUserForEdit.permissions,
+                                                              [permissionTab]: newList
+                                                          }
+                                                      };
+                                                      setSelectedUserForEdit(updatedUser);
+                                                  }}
+                                              />
+                                          </div>
+                                          <div>
+                                              <span className={`text-sm ${isChecked ? 'font-bold text-gray-800' : 'text-gray-600'}`}>{label}</span>
+                                          </div>
+                                      </label>
+                                  );
+                              })}
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* Footer */}
+                  <div className="p-5 border-t bg-white flex justify-end gap-3">
+                      <button onClick={() => setShowPermissionModal(false)} className="px-6 py-2 border rounded-lg text-gray-600 hover:bg-gray-50">ปิด</button>
+                      <button 
+                          onClick={() => {
+                              google.script.run.saveUserData(selectedUserForEdit); // Save to Sheet
+                              setAllUsers(prev => prev.map(u => u.id === selectedUserForEdit.id ? selectedUserForEdit : u)); // Update State
+                              showToast('บันทึกสิทธิ์เรียบร้อย');
+                              setShowPermissionModal(false);
+                          }} 
+                          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold"
+                      >
+                          บันทึกการเปลี่ยนแปลง
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
             </div>
           </main>
     
@@ -3691,10 +4068,19 @@ const handleEditItem = (index) => {
             <form className="space-y-6">
               {/* Type Selection */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-2">
+                 {hasPermission(4) && (
                  <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Local'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Local' ? 'bg-orange-50 border-orange-500 text-orange-800 shadow-sm' : 'border-gray-200 bg-white hover:border-orange-200'}`}><HardHat className="w-5 h-5 mx-auto mb-1"/> ซื้อ (Local)</button>
+                  )}
+                 {hasPermission(5) && (
                  <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'HO'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'HO' ? 'bg-purple-50 border-purple-500 text-purple-800 shadow-sm' : 'border-gray-200 bg-white hover:border-purple-200'}`}><Building className="w-5 h-5 mx-auto mb-1"/> ซื้อ (HO)</button>
-                 <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Withdraw'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Withdraw' ? 'bg-pink-50 border-pink-500 text-pink-800 shadow-sm' : 'border-gray-200 bg-white hover:border-pink-200'}`}><Package className="w-5 h-5 mx-auto mb-1"/> เบิกวัสดุ</button>
+                )}
+                 {hasPermission(6) && (
+                <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Withdraw'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Withdraw' ? 'bg-pink-50 border-pink-500 text-pink-800 shadow-sm' : 'border-gray-200 bg-white hover:border-pink-200'}`}><Package className="w-5 h-5 mx-auto mb-1"/> เบิกวัสดุ</button>
+                )}
+
+                {hasPermission(7) && (
                  <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Borrow'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Borrow' ? 'bg-blue-50 border-blue-500 text-blue-800 shadow-sm' : 'border-gray-200 bg-white hover:border-blue-200'}`}><Monitor className="w-5 h-5 mx-auto mb-1"/> ยืมทรัพย์สิน</button>
+                 )}
               </div>
               
               {/* HO Purchase Type */}
