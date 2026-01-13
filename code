@@ -271,7 +271,7 @@ function deleteDataFromSheet(sheetName, id) {
 // 1. ฟังก์ชัน Login (Updated: Hardcoded Admin & Check Status)
 function loginUser(username, password) {
   // ⭐ Hardcoded Admin
-  if (username === 'admin' && password === 'admin65463213') {
+  if (username === 'admin' && password === '1231') {
     return {
       success: true,
       user: {
@@ -314,17 +314,17 @@ function registerUser(formData) {
     return { success: false, message: 'Username นี้ถูกใช้งานแล้ว' };
   }
   
-  const newUser = {
+const newUser = {
     id: formData.username,
     ...formData,
     role: 'User', 
-    status: 'Activated', // หรือ 'Deactivated' ถ้ารออนุมัติ
-    permissions: {}, // เก็บสิทธิ์ { "ProjectName": [1, 2, 5] }
+    status: 'New', // ⭐ แก้จาก 'Activated' เป็น 'New'
+    permissions: {}, 
     createdAt: new Date().toLocaleString('th-TH')
   };
   
   saveDataToSheet('Users', newUser.id, newUser);
-  return { success: true, message: 'ลงทะเบียนเรียบร้อย' };
+  return { success: true, message: 'ลงทะเบียนเรียบร้อย รอแอดมินอนุมัติ' };
 }
 
 // 3. ฟังก์ชันบันทึกข้อมูล User (สำหรับ Admin แก้ไขสิทธิ์/สถานะ)
