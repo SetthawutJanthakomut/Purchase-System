@@ -72,16 +72,30 @@ function deleteDataFromSheet(sheetName, id) {
 
 // --- API FOR FRONTEND ---
 
+// --- API FOR FRONTEND (Updated) ---
+
 function loadInitialData() {
   return {
     requests: getSheetData('Requests'),
     inventory: getSheetData('Inventory'),
     assets: getSheetData('Assets'),
-    logs: getSheetData('Logs')
+    logs: getSheetData('Logs'),
+    projects: getSheetData('Projects') // ⭐ เพิ่มบรรทัดนี้
   };
 }
 
-// --- Specific Save Functions ---
+// --- Specific Save Functions (Updated) ---
+// ... (ฟังก์ชันเดิม syncRequest, syncInventory, syncAsset, syncLog เก็บไว้เหมือนเดิม) ...
+
+// ⭐ เพิ่มฟังก์ชันจัดการ Project
+function syncProject(project) {
+  return saveDataToSheet('Projects', project.id, project);
+}
+
+function deleteProjectFromSheet(id) {
+  deleteDataFromSheet('Projects', id);
+}
+
 
 function syncRequest(request) {
   return saveDataToSheet('Requests', request.id, request);
@@ -170,5 +184,83 @@ function uploadAssetImage(base64Data, fileName) {
     };
   } catch (e) {
     return { error: e.toString() };
+  }
+}
+
+// --- HELPER FUNCTIONS (UPDATED: Auto-create Sheet) ---
+
+// ฟังก์ชันช่วยเรียก Sheet ถ้าไม่มีให้สร้างใหม่
+function getOrCreateSheet(sheetName) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    // สร้าง Header อัตโนมัติถ้าเป็น Sheet ใหม่
+    if (sheetName === 'Projects' || sheetName === 'Inventory' || sheetName === 'Assets' || sheetName === 'Requests') {
+      sheet.appendRow(['ID', 'JSON_Data']); 
+    }
+  }
+  return sheet;
+}
+
+function getSheetData(sheetName) {
+  const sheet = getOrCreateSheet(sheetName); // ✅ ใช้ฟังก์ชันช่วยที่สร้าง Sheet ให้เอง
+  
+  if (sheet.getLastRow() === 0) return []; // ถ้า Sheet ว่างเปล่า
+  
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return []; // Empty or header only
+  
+  const result = [];
+  // Skip header if exists, reading from row 2
+  for (let i = 0; i < data.length; i++) {
+    // เช็คว่าไม่ใช่ Header (แถวแรก) และมีข้อมูล JSON (คอลัมน์ 2)
+    if (i === 0 && data[i][0] === 'ID') continue; 
+    
+    if (data[i][1]) { 
+      try {
+        result.push(JSON.parse(data[i][1]));
+      } catch (e) {
+        Logger.log('Error parsing JSON row ' + i + ' in ' + sheetName);
+      }
+    }
+  }
+  return result;
+}
+
+function saveDataToSheet(sheetName, id, dataObj) {
+  const sheet = getOrCreateSheet(sheetName); // ✅ ใช้ฟังก์ชันช่วย
+  const allData = sheet.getDataRange().getValues();
+  
+  let rowIndex = -1;
+  // Search for existing ID in Column A
+  for (let i = 0; i < allData.length; i++) {
+    if (allData[i][0] == id) {
+      rowIndex = i + 1; // 1-based index
+      break;
+    }
+  }
+  
+  const jsonString = JSON.stringify(dataObj);
+  
+  if (rowIndex > 0) {
+    // Update existing
+    sheet.getRange(rowIndex, 2).setValue(jsonString);
+  } else {
+    // Insert new
+    sheet.appendRow([id, jsonString]);
+  }
+  return true;
+}
+
+function deleteDataFromSheet(sheetName, id) {
+  const sheet = getOrCreateSheet(sheetName); // ✅ ใช้ฟังก์ชันช่วย
+  const data = sheet.getDataRange().getValues();
+  
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][0] == id) {
+      sheet.deleteRow(i + 1);
+      break;
+    }
   }
 }
