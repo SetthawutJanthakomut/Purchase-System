@@ -264,3 +264,82 @@ function deleteDataFromSheet(sheetName, id) {
     }
   }
 }
+
+
+// --- USER MANAGEMENT (UPDATED) ---
+
+// 1. ฟังก์ชัน Login (Updated: Hardcoded Admin & Check Status)
+function loginUser(username, password) {
+  // ⭐ Hardcoded Admin
+  if (username === 'admin' && password === 'admin65463213') {
+    return {
+      success: true,
+      user: {
+        username: 'admin',
+        firstName: 'System',
+        lastName: 'Administrator',
+        empId: 'ADMIN-001',
+        role: 'Admin (ผู้ดูแลระบบ)',
+        isSuperAdmin: true, // Flag พิเศษ
+        status: 'Activated'
+      }
+    };
+  }
+
+  const users = getSheetData('Users');
+  const user = users.find(u => u.username === username && u.password === password);
+  
+  if (user) {
+    // ⭐ เช็คสถานะ Activated
+    if (user.status !== 'Activated') {
+       return { success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน หรือรอการอนุมัติ' };
+    }
+
+    return { 
+      success: true, 
+      user: {
+        ...user,
+        password: '' // ไม่ส่ง password กลับ
+      }
+    };
+  } else {
+    return { success: false, message: 'ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง' };
+  }
+}
+
+// 2. Register (Updated: Default Status)
+function registerUser(formData) {
+  const users = getSheetData('Users');
+  if (users.some(u => u.username === formData.username)) {
+    return { success: false, message: 'Username นี้ถูกใช้งานแล้ว' };
+  }
+  
+  const newUser = {
+    id: formData.username,
+    ...formData,
+    role: 'User', 
+    status: 'Activated', // หรือ 'Deactivated' ถ้ารออนุมัติ
+    permissions: {}, // เก็บสิทธิ์ { "ProjectName": [1, 2, 5] }
+    createdAt: new Date().toLocaleString('th-TH')
+  };
+  
+  saveDataToSheet('Users', newUser.id, newUser);
+  return { success: true, message: 'ลงทะเบียนเรียบร้อย' };
+}
+
+// 3. ฟังก์ชันบันทึกข้อมูล User (สำหรับ Admin แก้ไขสิทธิ์/สถานะ)
+function saveUserData(user) {
+   return saveDataToSheet('Users', user.id, user);
+}
+
+// 4. Update loadInitialData (เพิ่ม users สำหรับ Admin)
+function loadInitialData() {
+  return {
+    requests: getSheetData('Requests'),
+    inventory: getSheetData('Inventory'),
+    assets: getSheetData('Assets'),
+    logs: getSheetData('Logs'),
+    projects: getSheetData('Projects'),
+    users: getSheetData('Users') // ⭐ ส่งรายชื่อ User ไปให้ Admin จัดการ
+  };
+}
