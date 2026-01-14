@@ -976,110 +976,126 @@ const handleSaveProject = () => {
          google.script.run.syncLog(log);
       };
 
+// --- LOGIC: CREATE ORDER (UPDATED: Upload Item Images) ---
       const handleCreateOrder = async (e, isDraft = false) => {
-    e.preventDefault();
-    if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
-      showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
-      return;
-    }
-    if (orderItems.length === 0) { 
-      showToast("กรุณาเพิ่มรายการ", 'error'); 
-      return; 
-    }
-    
-    setIsLoading(true);
-    
-    let attachmentData = newOrderMeta.attachment;
-    let quotationData = newOrderMeta.quotation;
-    
-    try {
-      if (uploadFiles.email) {
-        const base64 = await fileToBase64(uploadFiles.email);
-        const result = await new Promise((resolve, reject) => {
-          google.script.run
-            .withSuccessHandler(resolve)
-            .withFailureHandler(reject)
-            .uploadFileToDrive(base64, uploadFiles.email.name);
-        });
-        if (result.error) throw new Error(result.error);
-        attachmentData = result;
-      }
-      
-      if (uploadFiles.quotation) {
-        const base64 = await fileToBase64(uploadFiles.quotation);
-        const result = await new Promise((resolve, reject) => {
-          google.script.run
-            .withSuccessHandler(resolve)
-            .withFailureHandler(reject)
-            .uploadFileToDrive(base64, uploadFiles.quotation.name);
-        });
-        if (result.error) throw new Error(result.error);
-        quotationData = result;
-      }
-    } catch (err) {
-      console.error("Upload Error:", err);
-      showToast("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + err.message, 'error');
-      setIsLoading(false);
-      return;
-    }
-    
-    // สร้าง Order
-    let nextStatus = 'Draft';
-    let isFullFlow = false;
-    const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
-    if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
-    
-    if (!isDraft) {
-      if (newOrderMeta.type === 'HO') {
-        nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
-      } else if (newOrderMeta.type === 'Local') {
-        nextStatus = 'Pending Head';
-      } else {
-        nextStatus = 'Pending Head';
-      }
-    }
-    
-const order = {
-      id: editingId || `REQ-00${requests.length + 1}`,
-      
-      // 1. แก้ไขชื่อผู้ขอ (Requester) เป็นชื่อจริง
-      requester: `${user.firstName} ${user.lastName}`, 
-      
-      status: nextStatus,
-      created: new Date().toISOString().split('T')[0],
-      items: orderItems,
-      ...newOrderMeta,
-      attachment: attachmentData,
-      quotation: quotationData,
-      docNumber: existingReq?.docNumber || null,
-      isFullApprovalFlow: isFullFlow,
-      
-      history: [
-        ...(existingReq?.history || []),
-        createLog(
-          isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'),
-          
-          // 2. แก้ไขผู้บันทึกประวัติ (จาก 'Current User' เป็น รหัส ชื่อ นามสกุล)
-          `${user.empId} ${user.firstName} ${user.lastName}`, 
-          
-          isFullFlow ? 'Submit (Full Flow)' : 'Submit'
-        )
-      ],
-      comments: existingReq?.comments || []
-    };
-    
-    setRequests(prev => 
-      editingId 
-        ? prev.map(r => r.id === editingId ? order : r) 
-        : [order, ...prev]
-    );
-    
-    saveRequestToSheet(order);
-    setIsLoading(false);
-    showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
-    setUploadFiles({ email: null, quotation: null });
-    handleCloseCreateModal();
-  };
+        e.preventDefault();
+        if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
+            showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
+            return;
+        }
+        if (orderItems.length === 0) { 
+            showToast("กรุณาเพิ่มรายการ", 'error'); 
+            return; 
+        }
+        
+        setIsLoading(true); // เริ่มโหลด
+        
+        let attachmentData = newOrderMeta.attachment;
+        let quotationData = newOrderMeta.quotation;
+        
+        try {
+            // 1. อัปโหลดไฟล์แนบหลัก (Email / Quotation)
+            if (uploadFiles.email) {
+                const base64 = await fileToBase64(uploadFiles.email);
+                const result = await new Promise((resolve, reject) => {
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.email.name);
+                });
+                if (result.error) throw new Error(result.error);
+                attachmentData = result;
+            }
+            
+            if (uploadFiles.quotation) {
+                const base64 = await fileToBase64(uploadFiles.quotation);
+                const result = await new Promise((resolve, reject) => {
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.quotation.name);
+                });
+                if (result.error) throw new Error(result.error);
+                quotationData = result;
+            }
+
+            // 2. ⭐ อัปโหลดรูปภาพของสินค้าแต่ละรายการ (Item Images)
+            const processedItems = await Promise.all(orderItems.map(async (item) => {
+                let processedImages = [];
+                
+                // ถ้ามีรูปภาพในรายการนี้
+                if (item.images && item.images.length > 0) {
+                    // วนลูปอัปโหลดทีละรูป (หรือใช้ Promise.all ซ้อนก็ได้)
+                    const itemImagePromises = item.images.map(imgObj => {
+                        // ถ้าเป็นรูปที่เพิ่งเพิ่ม (มี file object หรือ base64) ให้เช็คและอัปโหลด
+                        // (ใน Create Mode มักจะเป็นรูปใหม่ทั้งหมด)
+                        if (imgObj.base64) {
+                             return new Promise((resolve, reject) => {
+                                google.script.run
+                                    .withSuccessHandler(resolve)
+                                    .withFailureHandler(reject)
+                                    .uploadAssetImage(imgObj.base64, imgObj.name); // ใช้ Function เดียวกับ Asset ได้เลย
+                            });
+                        }
+                        return Promise.resolve(imgObj); // กรณีเป็นรูปเก่า (ถ้ามี logic แก้ไข)
+                    });
+
+                    const uploadedResults = await Promise.all(itemImagePromises);
+                    // แปลงผลลัพธ์ให้เหลือแค่ { name, url, type }
+                    processedImages = uploadedResults.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                }
+
+                // คืนค่า Item พร้อมรูปภาพที่อัปโหลดแล้ว (URL)
+                return { ...item, images: processedImages };
+            }));
+
+
+            // 3. สร้าง Order Object
+            let nextStatus = 'Draft';
+            let isFullFlow = false;
+            const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
+            if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
+            
+            if (!isDraft) {
+                if (newOrderMeta.type === 'HO') {
+                    nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
+                } else if (newOrderMeta.type === 'Local') {
+                    nextStatus = 'Pending Head';
+                } else {
+                    nextStatus = 'Pending Head';
+                }
+            }
+            
+            const order = {
+                id: editingId || `REQ-00${requests.length + 1}`,
+                requester: `${user.firstName} ${user.lastName}`,
+                status: nextStatus,
+                created: new Date().toISOString().split('T')[0],
+                items: processedItems, // ⭐ ใช้รายการที่อัปโหลดรูปแล้ว
+                ...newOrderMeta,
+                attachment: attachmentData,
+                quotation: quotationData,
+                docNumber: existingReq?.docNumber || null,
+                isFullApprovalFlow: isFullFlow,
+                history: [
+                    ...(existingReq?.history || []),
+                    createLog(
+                        isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'),
+                        `${user.empId} ${user.firstName} ${user.lastName}`,
+                        isFullFlow ? 'Submit (Full Flow)' : 'Submit'
+                    )
+                ],
+                comments: existingReq?.comments || []
+            };
+            
+            setRequests(prev => editingId ? prev.map(r => r.id === editingId ? order : r) : [order, ...prev]);
+            
+            saveRequestToSheet(order);
+            setIsLoading(false);
+            showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
+            setUploadFiles({ email: null, quotation: null });
+            handleCloseCreateModal();
+
+        } catch (err) {
+            console.error("Create Order Error:", err);
+            showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
+            setIsLoading(false);
+        }
+      };
 
 // --- FUNCTION: Handle Refresh Data (โหลดข้อมูลใหม่ไม่ออกระบบ) ---
       const handleRefresh = () => {
@@ -1099,6 +1115,44 @@ const order = {
       };
 
 
+// --- LOGIC: Sidebar Badge Count (นับงานค้างของฉัน/งานที่ต้องทำ) ---
+      const myPendingCount = useMemo(() => {
+          if (!user || !requests) return 0;
+          const myName = `${user.firstName} ${user.lastName}`;
+
+          return requests.filter(req => {
+              // 1. กรองตาม Project (ถ้ามีการเลือก)
+              if (globalProjectFilter !== 'All' && req.job !== globalProjectFilter) return false;
+
+              // 2. ตัดงานที่จบแล้วทิ้ง (Completed, Rejected, Returned)
+              if (['Completed', 'Rejected', 'Returned'].includes(req.status)) return false;
+
+              // 3. เช็คว่าเป็นงานที่เกี่ยวข้องไหม (เจ้าของ หรือ มีสิทธิ์ทำ)
+              // 3.1 เป็นของฉัน (รวมถึง Draft)
+              const isMine = req.requester === myName || req.requester === 'Current User';
+              
+              // 3.2 ฉันมีสิทธิ์กระทำ (Copy Logic มาจาก filteredRequests)
+              let canAct = false;
+              if (hasPermission(8) && req.status === 'Pending Head') canAct = true;
+              if (hasPermission(9) && req.status === 'Pending PM') canAct = true;
+              if (hasPermission(10) && req.status === 'Pending Check') canAct = true;
+              if (hasPermission(11) && req.status === 'Approved' && req.purchaseType === 'Buy') canAct = true;
+              if (hasPermission(12) && req.type === 'HO' && req.status === 'PR Issued') canAct = true;
+              if (hasPermission(12) && req.type === 'Local' && req.status === 'Approved') canAct = true;
+              if (hasPermission(13) && req.type === 'HO' && (req.status === 'PO Issued' || req.status === 'Contract Signed')) canAct = true;
+              if (hasPermission(14) && req.type === 'HO' && req.status === 'Contract Pending') canAct = true;
+              if (hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received')) canAct = true;
+              if (hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received')) canAct = true;
+              if (hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse') canAct = true;
+
+              // Admin เห็นทั้งหมดที่ค้าง
+              if (user.isSuperAdmin) return true;
+
+              return isMine || canAct;
+          }).length;
+      }, [requests, user, globalProjectFilter]);
+
+      
 // --- EFFECT: Load Data from Backend ---
       useEffect(() => {
         setIsLoading(true);
@@ -1188,7 +1242,7 @@ const order = {
       const [receiveItems, setReceiveItems] = useState([]);
       const [editingId, setEditingId] = useState(null);
       const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
-      const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [] });
+      const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', rentalUnit: 'Month', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '' });
       const [orderItems, setOrderItems] = useState([]);
       
       const [showSuggestions, setShowSuggestions] = useState(false);
@@ -1490,15 +1544,18 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
           action,
           item,
           change,
-          by: currentUserRole,
+          // ⭐ แก้ตรงนี้
+          by: user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole, 
           note,
           images,
           relatedRequestId,
-          assetId // ⭐ บันทึก ID ทรัพย์สินลงไปใน Log
+          assetId
         };
         setInvLogs(prev => [log, ...prev]);
         saveLogToSheet(log); 
       };
+
+
       // 2. ฟังก์ชันเปิดดูรายละเอียดเอกสารจากหน้าประวัติ
       const handleOpenRequestDetail = (reqId) => {
           const req = requests.find(r => r.id === reqId);
@@ -1943,9 +2000,10 @@ const handleEditItem = (index) => {
       const initiateRecall = (id) => {
           const updatedReqs = requests.map(r => {
               if (r.id === id) {
-                   const updated = { ...r, status: 'Draft', history: [...r.history, createLog('Revert to Draft', currentUserRole, 'User recalled request')] };
-                   saveRequestToSheet(updated); // Sync
-                   return updated;
+                    // ⭐ แก้ตรงนี้
+                    const updated = { ...r, status: 'Draft', history: [...r.history, createLog('Revert to Draft', `${user.empId} ${user.firstName} ${user.lastName}`, 'User recalled request')] };
+                    saveRequestToSheet(updated);
+                    return updated;
               }
               return r;
           });
@@ -2698,123 +2756,228 @@ const handleEditItem = (index) => {
       setShowReceiveGoodsModal(true);
   };
 
-  // 2. ฟังก์ชันยืนยันการรับของ (Save & Update Status) - FIXED IMAGE LOG ERROR
-// --- LOGIC: CONFIRM RECEIVE (UPDATED WITH REF ID) ---
-  const handleConfirmReceive = () => {
-      if (!selectedRequest) return;
-      const date = new Date().toLocaleString('th-TH');
-
-      // 1. Validation
-      for (const item of receiveItems) {
-          if (item.receivedQty <= 0) continue;
-          if (item.targetType === 'Asset') {
-              const assetsToCheck = item.assetsToRegister.slice(0, item.receivedQty);
-              for (let i = 0; i < assetsToCheck.length; i++) {
-                  const a = assetsToCheck[i];
-                  const rowNum = i + 1;
-                  
-                  if (!a.name) { showToast(`กรุณาระบุชื่อรายการ (รายการที่ ${rowNum} ของ ${item.name})`, 'error'); return; }
-                  if (!a.serial) { showToast(`กรุณาระบุ S/N (รายการที่ ${rowNum} ของ ${item.name})`, 'error'); return; }
-                  if (!a.isAutoId && !a.id) { showToast(`กรุณาระบุ Asset ID (รายการที่ ${rowNum} ของ ${item.name})`, 'error'); return; }
-
-                  if (item.isRent) {
-                      if (!a.rentalStart || !a.rentalEnd) { showToast(`กรุณาระบุวันเริ่ม-สิ้นสุดสัญญา (รายการที่ ${rowNum})`, 'error'); return; }
-                      if (!a.rentalPrice && a.rentalPrice !== 0) { showToast(`กรุณาระบุราคาเช่า (รายการที่ ${rowNum})`, 'error'); return; }
-                  } else {
-                      if (!a.price && a.price !== 0) { showToast(`กรุณาระบุราคา (รายการที่ ${rowNum})`, 'error'); return; }
+// --- LOGIC: CONFIRM RECEIVE (UPDATED: Preview & Upload) ---
+      const handleConfirmReceive = async () => {
+          if (!selectedRequest) return;
+          
+          // Validation
+          for (const item of receiveItems) {
+              if (item.receivedQty <= 0) continue;
+              if (item.targetType === 'Asset') {
+                  const assetsToCheck = item.assetsToRegister.slice(0, item.receivedQty);
+                  for (let i = 0; i < assetsToCheck.length; i++) {
+                      const a = assetsToCheck[i];
+                      if (!a.name) { showToast(`กรุณาระบุชื่อรายการ (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
+                      if (!a.serial) { showToast(`กรุณาระบุ S/N (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
+                      if (!a.isAutoId && !a.id) { showToast(`กรุณาระบุ Asset ID (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
                   }
               }
           }
-      }
-      
-      // 2. Update Request & Status
-      const updatedItems = selectedRequest.items.map(originalItem => {
-          const receivingItem = receiveItems.find(ri => ri.name === originalItem.name);
-          if (receivingItem) {
-              return { ...originalItem, receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty };
-          }
-          return originalItem;
-      });
 
-      const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
-      let newStatus = 'Completed';
-      if (!allComplete && !isForceClose) newStatus = 'Partially Received';
+          setIsLoading(true);
 
-      // 3. Process Inventory / Asset Updates
-      receiveItems.forEach(item => {
-          const qtyToReceive = item.receivedQty || 0;
-          if (qtyToReceive <= 0) return;
-          
-          const mapFiles = (files) => files ? files.map(file => ({ name: file.name, type: file.type })) : [];
-          const logImages = mapFiles(item.receiveImages);
+          try {
+              const date = new Date().toLocaleString('th-TH');
+              const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+              let currentAssetCount = assets.length;
 
-          if (item.targetType === 'Inventory') {
-              // Inventory Logic
-              const existing = inventory.find(inv => inv.name === item.name);
-              const mainImageName = item.receiveImages.length > 0 ? item.receiveImages[0].name : (existing ? existing.image : null);
-              
-              if (existing) {
-                  const updatedInv = { ...existing, qty: existing.qty + qtyToReceive, lastUpdated: date, image: mainImageName };
-                  setInventory(prev => prev.map(inv => inv.id === existing.id ? updatedInv : inv));
-                  saveInventoryToSheet(updatedInv); 
-                  // ⭐ ส่ง selectedRequest.id เป็น parameter สุดท้าย
-                  addInvLog('Stock In', item.name, `+${qtyToReceive}`, `รับของจาก ${selectedRequest.id}`, logImages, selectedRequest.id, updatedInv.id);
-              } else {
-                  const newInv = { id: `INV-${Date.now().toString().slice(-4)}`, name: item.name, qty: qtyToReceive, unit: item.unit || 'หน่วย', minStock: 0, price: item.actualPrice, lastUpdated: date, image: mainImageName };
-                  setInventory(prev => [...prev, newInv]);
-                  saveInventoryToSheet(newInv);
-                  // ⭐ ส่ง selectedRequest.id
-                  addInvLog('Create Item', item.name, `Start: ${qtyToReceive}`, `สินค้าใหม่จาก ${selectedRequest.id}`, logImages, selectedRequest.id, newInv.id);
+              for (const item of receiveItems) {
+                  const qtyToReceive = item.receivedQty || 0;
+                  if (qtyToReceive <= 0) continue;
+
+                  // --- กรณี Inventory ---
+                  if (item.targetType === 'Inventory') {
+                      let logImages = [];
+                      if (item.receiveImages && item.receiveImages.length > 0) {
+                          const uploadPromises = item.receiveImages.map(imgObj => {
+                              return new Promise((resolve, reject) => {
+                                  // ⭐ ใช้ imgObj.base64 ที่มีอยู่แล้วส่งไปเลย ไม่ต้อง read ใหม่
+                                  google.script.run
+                                    .withSuccessHandler(resolve)
+                                    .withFailureHandler(reject)
+                                    .uploadAssetImage(imgObj.base64, imgObj.name);
+                              });
+                          });
+                          const uploaded = await Promise.all(uploadPromises);
+                          logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                      }
+
+                      const existing = inventory.find(inv => inv.name === item.name);
+                      const mainImageName = logImages.length > 0 ? logImages[0].name : (existing ? existing.image : null);
+                      
+                      let invId = null;
+                      if (existing) {
+                          const updatedInv = { ...existing, qty: existing.qty + qtyToReceive, lastUpdated: date, image: mainImageName };
+                          setInventory(prev => prev.map(inv => inv.id === existing.id ? updatedInv : inv));
+                          saveInventoryToSheet(updatedInv);
+                          invId = updatedInv.id;
+                      } else {
+                          const newInv = { id: `INV-${Date.now().toString().slice(-4)}`, name: item.name, qty: qtyToReceive, unit: item.unit || 'หน่วย', minStock: 0, price: item.actualPrice, lastUpdated: date, image: mainImageName };
+                          setInventory(prev => [...prev, newInv]);
+                          saveInventoryToSheet(newInv);
+                          invId = newInv.id;
+                      }
+                      
+                      addInvLog('Stock In', item.name, `+${qtyToReceive}`, `รับของจาก ${selectedRequest.id}`, logImages, selectedRequest.id, invId);
+
+                  } else {
+                      // --- กรณี Asset ---
+                      const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
+                      
+                      for (const assetReg of assetsToProcess) {
+                          currentAssetCount++;
+                          let assetLogImages = [];
+                          
+                          if (assetReg.images && assetReg.images.length > 0) {
+                              const uploadPromises = assetReg.images.map(imgObj => {
+                                  return new Promise((resolve, reject) => {
+                                      google.script.run
+                                        .withSuccessHandler(resolve)
+                                        .withFailureHandler(reject)
+                                        .uploadAssetImage(imgObj.base64, imgObj.name);
+                                  });
+                              });
+                              const uploaded = await Promise.all(uploadPromises);
+                              assetLogImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                          }
+
+                          const assetId = assetReg.isAutoId 
+                              ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(currentAssetCount).padStart(3,'0')}` 
+                              : assetReg.id;
+
+                          const mainImageName = assetLogImages.length > 0 ? assetLogImages[0].name : null;
+
+                          const newAsset = { 
+                              id: assetId,
+                              name: assetReg.name,
+                              serial: assetReg.serial,
+                              status: 'Available',
+                              condition: 'Good',
+                              holder: '-',
+                              currentRequestId: null,
+                              price: item.isRent ? 0 : assetReg.price,
+                              image: mainImageName,
+                              lastUpdated: date,
+                              ownerType: item.isRent ? 'Rent' : 'Company',
+                              rentalStart: assetReg.rentalStart || null,
+                              rentalEnd: assetReg.rentalEnd || null,
+                              rentalPrice: assetReg.rentalPrice || 0,
+                              rentalUnit: assetReg.rentalUnit || 'Month',
+                              note: assetReg.note 
+                          };
+
+                          setAssets(prev => [...prev, newAsset]);
+                          saveAssetToSheet(newAsset);
+                          addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียน ${assetId} (S/N: ${newAsset.serial})`, assetLogImages, selectedRequest.id, assetId);
+                      }
+                  }
               }
-          } else {
-              // Asset Logic
-              const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
-              
-              assetsToProcess.forEach((assetReg, idx) => {
-                  const assetId = assetReg.isAutoId 
-                      ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(assets.length + idx + 1).padStart(3,'0')}` 
-                      : assetReg.id;
-                  
-                  const assetImages = assetReg.images || [];
-                  const mainImageName = assetImages.length > 0 ? assetImages[0].name : null;
-                  const assetLogImages = mapFiles(assetImages);
 
-                  const newAsset = { 
-                      id: assetId, 
-                      name: assetReg.name, 
-                      serial: assetReg.serial, 
-                      status: 'Available', 
-                      condition: 'Good', 
-                      holder: '-', 
-                      currentRequestId: null, 
-                      price: item.isRent ? 0 : assetReg.price, 
-                      image: mainImageName, 
-                      lastUpdated: date, 
-                      ownerType: item.isRent ? 'Rent' : 'Company', 
-                      rentalStart: assetReg.rentalStart || null, 
-                      rentalEnd: assetReg.rentalEnd || null, 
-                      rentalPrice: assetReg.rentalPrice || 0, 
-                      rentalUnit: assetReg.rentalUnit || 'Month',
-                      note: assetReg.note 
-                  };
-                  setAssets(prev => [...prev, newAsset]);
-                  saveAssetToSheet(newAsset);
-                  // ⭐ ส่ง selectedRequest.id
-                  addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียน ${assetId} (S/N: ${newAsset.serial})`, assetLogImages, selectedRequest.id);
+              const updatedItems = selectedRequest.items.map(originalItem => {
+                  const receivingItem = receiveItems.find(ri => ri.name === originalItem.name);
+                  if (receivingItem) {
+                      return { ...originalItem, receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty };
+                  }
+                  return originalItem;
               });
+
+              const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
+              let newStatus = 'Completed';
+              if (!allComplete && !isForceClose) newStatus = 'Partially Received';
+
+              const updatedReq = { 
+                  ...selectedRequest, 
+                  items: updatedItems, 
+                  status: newStatus, 
+                  history: [...selectedRequest.history, createLog(STATUS_LABELS[newStatus], userSignature, `รับของเพิ่ม (สถานะ: ${newStatus})`)] 
+              };
+              
+              setRequests(prev => prev.map(req => req.id === selectedRequest.id ? updatedReq : req));
+              saveRequestToSheet(updatedReq);
+
+              setShowReceiveGoodsModal(false);
+              showToast(`บันทึกรับของเรียบร้อย (${STATUS_LABELS[newStatus]})`);
+
+          } catch (err) {
+              console.error(err);
+              showToast("เกิดข้อผิดพลาดในการบันทึก: " + err.message, 'error');
+          } finally {
+              setIsLoading(false);
           }
-      });
+      };
+
+      // --- Helper: จัดการรูปภาพในหน้ารับของ (เพิ่ม/ลบ) ---
       
-      const updatedReq = { ...selectedRequest, items: updatedItems, status: newStatus, history: [...selectedRequest.history, createLog(STATUS_LABELS[newStatus], currentUserRole, `รับของเพิ่ม (สถานะ: ${newStatus})`)] };
-      setRequests(prev => prev.map(req => req.id === selectedRequest.id ? updatedReq : req));
-      saveRequestToSheet(updatedReq);
-
-      setShowReceiveGoodsModal(false);
-      showToast(`บันทึกรับของเรียบร้อย (${STATUS_LABELS[newStatus]})`);
-  };
-
+      // 1. ฟังก์ชันเลือกรูป (รองรับทั้ง Inventory และ Asset รายตัว)
+      const handleReceiveImageSelect = async (e, itemIdx, assetIdx = null) => {
+          if (!e.target.files || e.target.files.length === 0) return;
           
+          // แปลงไฟล์เป็น Base64 เพื่อแสดงตัวอย่าง
+          const files = Array.from(e.target.files);
+          const newImages = await Promise.all(files.map(file => new Promise(resolve => {
+              const reader = new FileReader();
+              reader.onload = (x) => resolve({ base64: x.target.result, file, name: file.name });
+              reader.readAsDataURL(file);
+          })));
 
+          setReceiveItems(prev => {
+              const newData = [...prev];
+              if (assetIdx === null) {
+                  // กรณี: Inventory (เพิ่มรูปเข้า Array ของสินค้านั้น)
+                  const current = newData[itemIdx].receiveImages || [];
+                  newData[itemIdx].receiveImages = [...current, ...newImages];
+              } else {
+                  // กรณี: Asset รายตัว
+                  const current = newData[itemIdx].assetsToRegister[assetIdx].images || [];
+                  newData[itemIdx].assetsToRegister[assetIdx].images = [...current, ...newImages];
+              }
+              return newData;
+          });
+          
+          e.target.value = ''; // Reset input
+      };
+
+      // 2. ฟังก์ชันลบรูป
+      const handleRemoveReceiveImage = (itemIdx, imgIdx, assetIdx = null) => {
+          setReceiveItems(prev => {
+              const newData = [...prev];
+              if (assetIdx === null) {
+                  // ลบรูป Inventory
+                  newData[itemIdx].receiveImages = newData[itemIdx].receiveImages.filter((_, i) => i !== imgIdx);
+              } else {
+                  // ลบรูป Asset
+                  newData[itemIdx].assetsToRegister[assetIdx].images = newData[itemIdx].assetsToRegister[assetIdx].images.filter((_, i) => i !== imgIdx);
+              }
+              return newData;
+          });
+      };    
+
+
+// --- Helper: จัดการรูปภาพในหน้า "สร้างคำขอ" (tempItem) ---
+      const handleTempItemImageSelect = async (e) => {
+          if (!e.target.files || e.target.files.length === 0) return;
+          
+          const files = Array.from(e.target.files);
+          const newImages = await Promise.all(files.map(file => new Promise(resolve => {
+              const reader = new FileReader();
+              reader.onload = (x) => resolve({ base64: x.target.result, file, name: file.name });
+              reader.readAsDataURL(file);
+          })));
+
+          setTempItem(prev => ({
+              ...prev,
+              images: [...(prev.images || []), ...newImages]
+          }));
+          
+          e.target.value = ''; // Reset input
+      };
+
+      const handleRemoveTempItemImage = (index) => {
+          setTempItem(prev => ({
+              ...prev,
+              images: prev.images.filter((_, i) => i !== index)
+          }));
+      };
 
       const openDisburseModal = (reqId) => { setDisburseData({ requestId: reqId, note: '', images: [] }); setShowDisburseModal(true); };
       
@@ -2865,10 +3028,21 @@ const handleEditItem = (index) => {
       const openRejectModal = (reqId) => { setRejectData({ requestId: reqId, reason: '' }); setShowRejectModal(true); };
       const handleConfirmReject = () => { handleUpdateStatus(rejectData.requestId, 'Rejected', `ไม่อนุมัติ: ${rejectData.reason}`); setShowRejectModal(false); showToast('บันทึกการไม่อนุมัติเรียบร้อย'); };
 
+// --- Helper: Update Status & History (UPDATED: User Signature) ---
       const handleUpdateStatus = (id, newStatus, note = '', images = [], attachments = []) => {
+        // ⭐ สร้างตัวแปรชื่อผู้ใช้จริง
+        const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+
         setRequests(prev => prev.map(r => {
           if (r.id === id) {
-            let updateData = { ...r, status: newStatus, history: [...r.history, createLog(STATUS_LABELS[newStatus], currentUserRole, note, images)] };
+            let updateData = { 
+                ...r, 
+                status: newStatus, 
+                // ⭐ ใช้ userSignature แทน currentUserRole
+                history: [...r.history, createLog(STATUS_LABELS[newStatus], userSignature, note, images)] 
+            };
+
+            // Logic Gen Doc Number (คงเดิม)
             if (!r.docNumber && ['Ordered', 'PR Issued', 'Ready to Disburse', 'Approved'].includes(newStatus)) {
                 const shouldGenerate = (r.type === 'Local' && newStatus === 'Ordered') || (r.type === 'HO' && newStatus === 'PO Issued') || (r.type === 'Withdraw' && newStatus === 'Ready to Disburse') || (r.type === 'Borrow' && newStatus === 'Ready to Disburse');
                 if (shouldGenerate) {
@@ -2876,6 +3050,7 @@ const handleEditItem = (index) => {
                     updateData.docNumber = generateDocId(r.type, count, r.purchaseType);
                 }
             }
+
             if (selectedRequest && selectedRequest.id === id) setSelectedRequest(updateData);
             saveRequestToSheet(updateData); // Sync
             return updateData;
@@ -2885,50 +3060,111 @@ const handleEditItem = (index) => {
       };
 
       const openPRModal = (id) => { setPrData({ requestId: id, file: null, prNumber: '' }); setShowPRModal(true); };
-     const handleSubmitPR = () => { 
-      if (!prData.prNumber && !prData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
-      
-      const note = `PR: ${prData.prNumber} ${prData.file ? `[File: ${prData.file.name}]` : ''}`;
-      
-      // อัปเดตสถานะ และ "บันทึกไฟล์ PR" ลงใน Request Object โดยตรง
-      setRequests(prev => prev.map(r => {
-          if (r.id === prData.requestId) {
-              return { 
-                  ...r, 
-                  status: 'PR Issued', 
-                  prFile: prData.file, // ⭐ บันทึกไฟล์ PR ไว้ตรงนี้
-                  prNumber: prData.prNumber,
-                  history: [...r.history, createLog('PR Issued', currentUserRole, note)] 
-              };
-          }
-          return r;
-      }));
-      setShowPRModal(false); 
-      showToast('บันทึก PR เรียบร้อย');
-  };
+
+
+const handleSubmitPR = async () => { 
+        if (!prData.prNumber && !prData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
+        
+        setIsLoading(true); // เริ่มโหลด
+        let uploadedFile = null;
+
+        try {
+            // 1. อัปโหลดไฟล์ (ถ้ามี)
+            if (prData.file) {
+                const base64 = await fileToBase64(prData.file);
+                const result = await new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .uploadFileToDrive(base64, prData.file.name);
+                });
+                
+                if (result.error) throw new Error(result.error);
+                uploadedFile = result; // ได้ object {name, url, id} กลับมา
+            }
+
+            const note = `PR: ${prData.prNumber}`;
+            
+            // 2. อัปเดตข้อมูล
+setRequests(prev => prev.map(r => {
+                if (r.id === prData.requestId) {
+                    const updatedReq = { 
+                        ...r, 
+                        status: 'PR Issued', 
+                        prFile: uploadedFile || r.prFile,
+                        prNumber: prData.prNumber,
+                        // ⭐ แก้ตรงนี้
+                        history: [...r.history, createLog('PR Issued', `${user.empId} ${user.firstName} ${user.lastName}`, note)] 
+                    };
+                    saveRequestToSheet(updatedReq);
+                    return updatedReq;
+                }
+                return r;
+            }));
+
+            setShowPRModal(false); 
+            showToast('บันทึกและอัปโหลด PR เรียบร้อย');
+
+        } catch (err) {
+            console.error(err);
+            showToast('เกิดข้อผิดพลาดในการอัปโหลด: ' + err.message, 'error');
+        } finally {
+            setIsLoading(false);
+        }
+      };
 
       const openPOModal = (id) => { setPoData({ requestId: id, file: null, poNumber: '' }); setShowPOModal(true); };
-     const handleSubmitPO = () => { 
-      if (!poData.poNumber && !poData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
-      
-      const note = `PO: ${poData.poNumber} ${poData.file ? `[File: ${poData.file.name}]` : ''}`;
-      
-      // อัปเดตสถานะ และ "บันทึกไฟล์ PO" ลงใน Request Object โดยตรง
-      setRequests(prev => prev.map(r => {
-          if (r.id === poData.requestId) {
-              return { 
-                  ...r, 
-                  status: 'PO Issued', 
-                  poFile: poData.file, // ⭐ บันทึกไฟล์ PO ไว้ตรงนี้
-                  poNumber: poData.poNumber,
-                  history: [...r.history, createLog('PO Issued', currentUserRole, note)] 
-              };
-          }
-          return r;
-      }));
-      setShowPOModal(false); 
-      showToast('บันทึก PO เรียบร้อย');
-  };
+
+// --- LOGIC: ISSUE PO (UPDATED: Upload File) ---
+      const handleSubmitPO = async () => { 
+        if (!poData.poNumber && !poData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
+        
+        setIsLoading(true); // เริ่มโหลด
+        let uploadedFile = null;
+
+        try {
+            // 1. อัปโหลดไฟล์ (ถ้ามี)
+            if (poData.file) {
+                const base64 = await fileToBase64(poData.file);
+                const result = await new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .uploadFileToDrive(base64, poData.file.name);
+                });
+
+                if (result.error) throw new Error(result.error);
+                uploadedFile = result; // ได้ object {name, url, id} กลับมา
+            }
+
+            const note = `PO: ${poData.poNumber}`;
+            
+            // 2. อัปเดตข้อมูล
+setRequests(prev => prev.map(r => {
+                if (r.id === poData.requestId) {
+                    const updatedReq = { 
+                        ...r, 
+                        status: 'PO Issued', 
+                        poFile: uploadedFile || r.poFile,
+                        poNumber: poData.poNumber,
+                        // ⭐ แก้ตรงนี้
+                        history: [...r.history, createLog('PO Issued', `${user.empId} ${user.firstName} ${user.lastName}`, note)] 
+                    };
+                    saveRequestToSheet(updatedReq); 
+                    return updatedReq;
+                }
+                return r;
+}));
+            setShowPOModal(false); 
+            showToast('บันทึกและอัปโหลด PO เรียบร้อย');
+
+        } catch (err) {
+            console.error(err);
+            showToast('เกิดข้อผิดพลาดในการอัปโหลด: ' + err.message, 'error');
+        } finally {
+            setIsLoading(false);
+        }
+      };
 
       const openViewItem = (item) => { setViewingItem(item); setHistoryFilterItem(null); setHistorySearch(''); setShowItemDetailModal(true); };
       const openGeneralHistory = () => { setViewingItem(null); setHistoryFilterItem(null); setHistorySearch(''); setShowItemDetailModal(true); }
@@ -3078,8 +3314,14 @@ const handleEditItem = (index) => {
               <button onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><LayoutDashboard className="w-5 h-5" /> ภาพรวม (Dashboard)</button>
               <button onClick={() => setActiveTab('orders')} className={`flex items-center justify-between w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'orders' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>
                   <div className="flex items-center gap-3"><ShoppingCart className="w-5 h-5" /> รายการสั่งซื้อ/เบิก</div>
-                  {pendingOrdersCount > 0 && <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">{pendingOrdersCount}</span>}
+
+                  {myPendingCount > 0 && (
+                      <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm min-w-[20px] text-center">
+                          {myPendingCount}
+                      </span>
+                  )}
               </button>
+
               <button onClick={() => setActiveTab('inventory')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'inventory' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Box className="w-5 h-5" /> คลังสินค้า (Store)</button>
               <button onClick={() => setActiveTab('assets')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'assets' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Monitor className="w-5 h-5" /> ทะเบียนทรัพย์สิน</button>
               {hasPermission(26) && (
@@ -4226,11 +4468,20 @@ const handleEditItem = (index) => {
                               <input type="number" min="1" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm text-center" value={tempItem.qty} onChange={e => setTempItem({...tempItem, qty: parseInt(e.target.value) || 0})} disabled={newOrderMeta.type === 'Borrow'} />
                           </div>
                           <div className="col-span-2">
-                              <label className="text-xs font-bold text-gray-500 mb-1 block">หน่วย</label>
-                              <select className="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white" value={tempItem.unit} onChange={e => setTempItem({...tempItem, unit: e.target.value})} disabled={newOrderMeta.type === 'Borrow'}>
-                                  {ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                              </select>
-                          </div>
+                                      <label className="text-xs font-bold text-gray-500 mb-1 block">หน่วย</label>
+                                      <select 
+                                          className="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white" 
+                                          value={tempItem.unit} 
+                                          onChange={e => setTempItem({...tempItem, unit: e.target.value})} 
+                                          disabled={newOrderMeta.type === 'Borrow'}
+                                      >
+                                          {/* ⭐ Logic เลือกหน่วย: ถ้าเป็น HO+Rent ให้ใช้หน่วยเช่า, อื่นๆ ใช้หน่วยปกติ */}
+                                          {(newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' 
+                                              ? ['บาท/วัน', 'บาท/เดือน', 'บาท/ปี'] 
+                                              : ITEM_UNITS
+                                          ).map(u => <option key={u} value={u}>{u}</option>)}
+                                      </select>
+                                  </div>
                       </div>
 
             {newOrderMeta.type !== 'Borrow' && (
@@ -4290,15 +4541,39 @@ const handleEditItem = (index) => {
                         </div>
                       )}
 
-                      {/* Image Upload: แสดงเฉพาะ Local และ HO */}
+                      {/* Image Upload: แสดงเฉพาะ Local และ HO (Updated: Multi-Image UI) */}
                       {(newOrderMeta.type === 'Local' || newOrderMeta.type === 'HO') && (
-                          <div className="animate-in fade-in">
-                              <label className="text-xs font-bold text-gray-500 mb-1 flex items-center gap-1"><ImageIcon className="w-3 h-3"/> รูปตัวอย่างสินค้า (ถ้ามี)</label>
-                              <input 
-                                type="file" 
-                                className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
-                                onChange={(e) => setTempItem({...tempItem, images: e.target.files ? [e.target.files[0]] : []})}
-                              />
+                          <div className="animate-in fade-in mb-4">
+                              <label className="text-xs font-bold text-gray-500 mb-1 flex items-center gap-1">
+                                  <ImageIcon className="w-3 h-3"/> รูปตัวอย่างสินค้า (เลือกได้หลายรูป)
+                              </label>
+                              
+                              <div className="flex flex-col gap-2">
+                                  {/* ปุ่มเลือกรูป */}
+                                  <label className="cursor-pointer bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200 flex items-center gap-2 transition-colors w-fit">
+                                      <Camera className="w-4 h-4"/> เพิ่มรูปภาพ
+                                      <input type="file" multiple className="hidden" onChange={handleTempItemImageSelect}/>
+                                  </label>
+
+                                  {/* ตารางแสดงรูป (Preview Grid) */}
+                                  {tempItem.images && tempItem.images.length > 0 && (
+                                      <div className="grid grid-cols-4 md:grid-cols-6 gap-2 mt-2">
+                                          {tempItem.images.map((img, idx) => (
+                                              <div key={idx} className="relative group w-full h-20 bg-gray-100 rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                                                  <img src={img.base64 || img.url} alt="preview" className="w-full h-full object-cover" />
+                                                  <button 
+                                                      type="button"
+                                                      onClick={() => handleRemoveTempItemImage(idx)} 
+                                                      className="absolute top-0 right-0 bg-red-500 text-white p-0.5 rounded-bl opacity-0 group-hover:opacity-100 transition-all hover:scale-110" 
+                                                      title="ลบรูป"
+                                                  >
+                                                      <X size={12} strokeWidth={3}/>
+                                                  </button>
+                                              </div>
+                                          ))}
+                                      </div>
+                                  )}
+                              </div>
                           </div>
                       )}
                   </div>
@@ -4308,80 +4583,78 @@ const handleEditItem = (index) => {
                   {/* Items Table */}
                   <div className="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden mt-6">
                     <table className="w-full text-sm">
-                       <thead className="bg-gray-100 text-gray-600 text-left text-xs uppercase tracking-wider">
-                           <tr>
-                               <th className="p-3 font-bold">รายการ</th>
-                               {newOrderMeta.type === 'Borrow' ? (
-                                   <>
-                                      <th className="p-3 font-bold">Asset ID</th>
-                                      <th className="p-3 font-bold">Serial No.</th>
-                                      <th className="p-3 font-bold text-center">รูป</th>
+                      <thead className="bg-gray-100 text-gray-600 text-left text-xs uppercase tracking-wider">
+                            <tr>
+                                <th className="p-3 font-bold">รายการ</th>
+                                {newOrderMeta.type === 'Borrow' ? (
+                                    <>
+                                        <th className="p-3 font-bold">Asset ID</th>
+                                        <th className="p-3 font-bold">Serial No.</th>
+                                        <th className="p-3 font-bold text-center">รูป</th>
+                                    </>
+                                ) : (
+                                    <><th className="p-3 font-bold">SubJob/EP</th><th className="p-3 font-bold">หมายเหตุ</th></>
+                                )}
+                                {/* ⭐ เพิ่มหัวตารางราคา */}
+                                <th className="p-3 text-right font-bold">ราคา</th>
+                                <th className="p-3 text-center font-bold">Qty</th>
+                                <th className="p-3 text-right font-bold">Unit</th>
+                                <th className="p-3"></th>
+                            </tr>
+                        </thead>
+ <tbody className="divide-y divide-gray-200 bg-white">
+                            {orderItems.map((itm, idx) => (
+                            <tr key={idx}>
+                                <td className="p-3 text-gray-800 font-bold">{itm.name}</td>
+                                
+                                {newOrderMeta.type === 'Borrow' ? (
+                                    <>
+                                        <td className="p-3 text-xs text-gray-500 font-mono">{itm.assetId || '-'}</td>
+                                        <td className="p-3 text-xs text-gray-500 font-mono">{itm.serial || '-'}</td>
+                                        <td className="p-3 text-center">
+                                             {itm.images && itm.images.length > 0 ? (
+                                                 <button type="button" onClick={() => setViewingAttachments({ attachments: itm.images })} className="text-blue-600 hover:text-blue-800"><ImageIcon className="w-4 h-4 mx-auto"/></button>
+                                             ) : '-'}
+                                        </td>
                                    </>
-                               ) : (
-                                   <><th className="p-3 font-bold">SubJob/EP</th><th className="p-3 font-bold">หมายเหตุ</th></>
-                               )}
-                               <th className="p-3 text-center font-bold">Qty</th>
-                               <th className="p-3 text-right font-bold">Unit</th>
-                               <th className="p-3"></th>
-                           </tr>
-                       </thead>
-                       <tbody className="divide-y divide-gray-200 bg-white">
-                           {orderItems.map((itm, idx) => (
-                           <tr key={idx}>
-                               <td className="p-3 text-gray-800 font-bold">{itm.name}</td>
-                               
-                               {newOrderMeta.type === 'Borrow' ? (
-                                   <>
-                                       <td className="p-3 text-xs text-gray-500 font-mono">{itm.assetId || '-'}</td>
-                                       <td className="p-3 text-xs text-gray-500 font-mono">{itm.serial || '-'}</td>
-                                       <td className="p-3 text-center">
-                                            {itm.image ? (
-                                                <button type="button" onClick={() => handleViewFile(itm.image, itm.name)} className="text-blue-600 hover:text-blue-800"><ImageIcon className="w-4 h-4 mx-auto"/></button>
-                                            ) : '-'}
-                                       </td>
+                                ) : (
+                                    <>
+                                        <td className="p-3 text-xs text-gray-500">
+                                            {itm.subJob && <div>S: {itm.subJob}</div>}
+                                            {itm.epCode && <div>E: {itm.epCode}</div>}
+                                            {!itm.subJob && !itm.epCode && '-'}
+                                        </td>
+                                        <td className="p-3 text-xs text-gray-500">{itm.note || '-'}</td>
                                    </>
-                               ) : (
-                                   <>
-                                       <td className="p-3 text-xs text-gray-500">
-                                           {itm.subJob && <div>S: {itm.subJob}</div>}
-                                           {itm.epCode && <div>E: {itm.epCode}</div>}
-                                           {!itm.subJob && !itm.epCode && '-'}
-                                       </td>
-                                       <td className="p-3 text-xs text-gray-500">{itm.note || '-'}</td>
-                                   </>
-                               )}
+                                )}
 
-                               <td className="p-3 text-center font-bold">{itm.qty}</td>
-                               <td className="p-3 text-right text-xs text-gray-500">{itm.unit}</td>
-                               <td className="p-3 text-center flex items-center justify-center gap-1">
-                                   {/* ⭐ ปุ่มแก้ไข (Pencil) - ใช้ SVG เพื่อให้เห็นแน่นอน */}
-                                   <button 
-                                        type="button" 
-                                        onClick={() => handleEditItem(idx)} 
-                                        className="text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors"
-                                        title="แก้ไข"
-                                   >
-                                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                           <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-                                           <path d="m15 5 4 4"/>
-                                       </svg>
-                                   </button>
-                                   {/* ⭐ ปุ่มลบ (Trash) - ใช้ SVG เพื่อให้เห็นแน่นอน */}
-                                   <button 
-                                        type="button" 
-                                        onClick={() => handleRemoveItem(idx)} 
-                                        className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-lg transition-colors"
-                                        title="ลบ"
-                                   >
-                                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                           <path d="M3 6h18"/>
-                                           <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-                                           <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-                                       </svg>
-                                   </button>
-                               </td>
-                           </tr>
-                       ))}</tbody>
+                                {/* ⭐ เพิ่มช่องแสดงราคา */}
+                                <td className="p-3 text-right text-gray-700">
+                                    {itm.unitPrice > 0 ? (
+                                        <div className="flex flex-col items-end">
+                                            {/* แสดงตัวเลขราคา */}
+                                            <span className="font-mono font-bold">{itm.unitPrice.toLocaleString()} บาท</span>
+                                            
+                                            {/* แสดงหน่วยย่อย */}
+                                            <span className="text-[10px] text-gray-500">
+                                                {selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent'
+                                                    ? `/${itm.rentalUnit === 'Day' ? 'วัน' : itm.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}/${itm.unit}`
+                                                    : `/${itm.unit}`
+                                                }
+                                            </span>
+                                        </div>
+                                    ) : '-'}
+                                </td>
+
+                                <td className="p-3 text-center font-bold">{itm.qty}</td>
+                                <td className="p-3 text-right text-xs text-gray-500">{itm.unit}</td>
+                                <td className="p-3 text-center flex items-center justify-center gap-1">
+                                    {/* ... (ปุ่มแก้ไข/ลบ เหมือนเดิม) ... */}
+                                    <button type="button" onClick={() => handleEditItem(idx)} className="text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button>
+                                    <button type="button" onClick={() => handleRemoveItem(idx)} className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-lg transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+                                </td>
+                            </tr>
+                        ))}</tbody>
                     </table>
                     {orderItems.length === 0 && <div className="p-8 text-center text-gray-400 text-xs bg-white">ยังไม่มีรายการ</div>}
                   </div>
@@ -4562,10 +4835,24 @@ const handleEditItem = (index) => {
                                             <div className="flex-1">
                                                 <div className="flex justify-between items-start"><h5 className="font-bold text-gray-900">{item.name}</h5><span className="text-sm font-bold text-blue-600">x{item.qty} {item.unit}</span></div>
                                                 <div className="text-xs text-gray-500 mt-1 grid grid-cols-2 gap-2">{item.subJob && <span>Sub: {item.subJob}</span>}{item.epCode && <span>EP: {item.epCode}</span>}</div>
-                                                <div className="flex flex-wrap gap-2 mt-2">
-                                                    {item.note && <span className="text-xs text-gray-600 bg-white px-2 py-1 rounded border border-dashed">Note: {item.note}</span>}
-                                                    {item.images && item.images.length > 0 && (<button onClick={() => handleViewFile(item.images[0], item.name)} className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 flex items-center gap-1 hover:bg-blue-100"><ImageIcon className="w-3 h-3"/> ดูรูปตัวอย่าง</button>)}
-                                                </div>
+                                                
+                                               <div className="flex flex-wrap gap-2 mt-2">
+                                                {item.note && <span className="text-xs text-gray-600 bg-white px-2 py-1 rounded border border-dashed">Note: {item.note}</span>}
+                                                
+                                                {/* ⭐ ปุ่มดูรูปภาพ (Updated: รองรับ Array และเปิด Viewer) */}
+                                                {item.images && item.images.length > 0 && (
+                                                    <button 
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            // ใช้ Viewer เดียวกับ History เพื่อดูรูปทั้งหมด
+                                                            setViewingAttachments({ attachments: item.images }); 
+                                                        }} 
+                                                        className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 flex items-center gap-1 hover:bg-blue-100 transition-colors"
+                                                    >
+                                                        <ImageIcon className="w-3 h-3"/> ดูรูปตัวอย่าง ({item.images.length})
+                                                    </button>
+                                                )}
+                                            </div>
                                             </div>
                                         </div>
                                     ))}
@@ -4924,25 +5211,32 @@ const handleEditItem = (index) => {
                       </div>
                   </div>
 
-                  {/* Row 3: Image (For Inventory Only) - ⭐ Updated Multiple Images */}
+                  
+                  {/* Row 3: Image (For Inventory) - ⭐ Updated Grid Preview */}
                   {item.targetType === 'Inventory' && (
                       <div className="mb-2">
                            <label className="text-xs text-gray-500 font-bold mb-1 flex items-center gap-1"><ImageIcon className="w-3 h-3"/> รูปภาพสินค้า (สำหรับ Stock) - เลือกได้หลายรูป</label>
-                           <div className="flex items-center gap-3">
-                              <label className="cursor-pointer bg-gray-50 text-gray-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-gray-100 border border-gray-300 flex items-center gap-2 transition-colors">
-                                  <Camera className="w-4 h-4"/> อัปโหลดรูป
-                                  <input 
-                                      type="file" multiple className="hidden" 
-                                      onChange={(e) => { 
-                                          const n = [...receiveItems]; 
-                                          n[idx].receiveImages = Array.from(e.target.files); // Store array
-                                          setReceiveItems(n); 
-                                      }} 
-                                  />
-                              </label>
-                              <span className="text-xs text-gray-400">
-                                  {item.receiveImages.length > 0 ? `เลือกแล้ว ${item.receiveImages.length} ไฟล์` : 'ยังไม่ได้เลือกไฟล์'}
-                              </span>
+                           
+                           <div className="flex flex-col gap-2">
+                               {/* ปุ่มเลือกรูป */}
+                               <label className="cursor-pointer bg-gray-50 text-gray-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-gray-100 border border-gray-300 flex items-center gap-2 transition-colors w-fit">
+                                   <Camera className="w-4 h-4"/> เพิ่มรูปภาพ
+                                   <input type="file" multiple className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx)}/>
+                               </label>
+                               
+                               {/* ตารางแสดงรูป (Preview Grid) */}
+                               {item.receiveImages && item.receiveImages.length > 0 && (
+                                   <div className="grid grid-cols-4 md:grid-cols-6 gap-2">
+                                       {item.receiveImages.map((img, imgI) => (
+                                           <div key={imgI} className="relative group w-full h-20 bg-gray-100 rounded border overflow-hidden">
+                                               <img src={img.base64} className="w-full h-full object-cover" />
+                                               <button onClick={() => handleRemoveReceiveImage(idx, imgI)} className="absolute top-0 right-0 bg-red-500 text-white p-0.5 rounded-bl opacity-0 group-hover:opacity-100 transition-all hover:scale-110" title="ลบรูป">
+                                                   <X size={12} strokeWidth={3}/>
+                                               </button>
+                                           </div>
+                                       ))}
+                                   </div>
+                               )}
                            </div>
                       </div>
                   )}
@@ -5044,24 +5338,32 @@ const handleEditItem = (index) => {
                                               <label className="text-[10px] font-bold text-gray-400 block mb-1">หมายเหตุ (Note)</label>
                                               <input type="text" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500" placeholder="สภาพ, สี, ตำหนิ..." value={assetReg.note} onChange={(e) => { const n = [...receiveItems]; n[idx].assetsToRegister[assetIdx].note = e.target.value; setReceiveItems(n); }} />
                                           </div>
+                                          
                                           <div className="md:col-span-4">
-                                              <label className="text-[10px] font-bold text-gray-400 block mb-1">รูปภาพ (Images)</label>
-                                              <div className="flex items-center gap-2">
-                                                  <label className="cursor-pointer bg-white border border-gray-300 text-gray-600 px-3 py-1 rounded text-xs hover:bg-gray-50 flex items-center gap-1 shadow-sm w-full justify-center">
-                                                      <Camera className="w-3 h-3"/> {(assetReg.images && assetReg.images.length > 0) ? `เลือกแล้ว ${assetReg.images.length} รูป` : 'ถ่าย/เลือกรูป'}
-                                                      {/* ⭐ Multiple File Input for Asset */}
-                                                      <input type="file" multiple className="hidden" 
-                                                          onChange={(e) => { 
-                                                              if(e.target.files) { 
-                                                                  const n = [...receiveItems]; 
-                                                                  n[idx].assetsToRegister[assetIdx].images = Array.from(e.target.files); 
-                                                                  setReceiveItems(n); 
-                                                              }
-                                                          }} 
-                                                      />
-                                                  </label>
-                                              </div>
+                                          <label className="text-[10px] font-bold text-gray-400 block mb-1">รูปภาพ (Images)</label>
+                                          
+                                          <div className="flex flex-col gap-2">
+                                              {/* ปุ่มเลือกรูป */}
+                                              <label className="cursor-pointer bg-white border border-gray-300 text-gray-600 px-3 py-1 rounded text-xs hover:bg-gray-50 flex items-center justify-center gap-1 shadow-sm w-full">
+                                                  <Camera className="w-3 h-3"/> เพิ่มรูป
+                                                  <input type="file" multiple className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx, assetIdx)}/>
+                                              </label>
+
+                                              {/* ตารางแสดงรูป (Preview Grid) */}
+                                              {assetReg.images && assetReg.images.length > 0 && (
+                                                  <div className="grid grid-cols-3 gap-1">
+                                                      {assetReg.images.map((img, imgI) => (
+                                                          <div key={imgI} className="relative group w-full h-12 bg-gray-100 rounded border overflow-hidden">
+                                                              <img src={img.base64} className="w-full h-full object-cover"/>
+                                                              <button onClick={() => handleRemoveReceiveImage(idx, imgI, assetIdx)} className="absolute top-0 right-0 bg-red-500 text-white p-0.5 rounded-bl opacity-0 group-hover:opacity-100 transition-all hover:scale-110" title="ลบรูป">
+                                                                  <X size={10} strokeWidth={3}/>
+                                                              </button>
+                                                          </div>
+                                                      ))}
+                                                  </div>
+                                              )}
                                           </div>
+                                      </div>
                                       </div>
                                   </div>
                               ))}
@@ -5434,7 +5736,7 @@ const handleEditItem = (index) => {
                                         }} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200">แก้ไข</button>
                                     )}
                                 </div>
-                                )}
+                                
 
                                 <h4 className="font-bold text-gray-800 border-b pb-2 mb-4 flex items-center gap-2"><Info className="w-4 h-4 text-blue-600"/> ข้อมูลสินค้า / ทรัพย์สิน</h4>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-y-6 gap-x-8 text-sm">
@@ -5665,11 +5967,15 @@ const handleEditItem = (index) => {
                       
                       <div className="grid grid-cols-2 gap-3">
                         <div><label className="text-xs font-bold text-gray-500 mb-1 block">คงเหลือ (Qty)</label><input type="number" className="w-full p-2 border rounded" value={editingStockItem.qty} onChange={e => setEditingStockItem({...editingStockItem, qty: parseInt(e.target.value)||0})}/></div>
+                        
+                        
                         <div><label className="text-xs font-bold text-gray-500 mb-1 block">หน่วยนับ</label><select className="w-full p-2 border rounded bg-white" value={editingStockItem.unit} onChange={e => setEditingStockItem({...editingStockItem, unit: e.target.value})}>{ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}</select></div>
                       </div>
                       
                       <div className="grid grid-cols-2 gap-3">
                         <div><label className="text-xs font-bold text-gray-500 mb-1 block">Min Stock</label><input type="number" className="w-full p-2 border rounded" value={editingStockItem.minStock} onChange={e => setEditingStockItem({...editingStockItem, minStock: parseInt(e.target.value)||0})}/></div>
+                       
+                       
                         <div><label className="text-xs font-bold text-gray-500 mb-1 block">ราคาต่อหน่วย</label><input type="number" className="w-full p-2 border rounded" value={editingStockItem.price} onChange={e => setEditingStockItem({...editingStockItem, price: parseFloat(e.target.value)||0})}/></div>
                       </div>
 
