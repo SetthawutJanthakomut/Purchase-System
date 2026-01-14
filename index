@@ -3204,157 +3204,159 @@ const handleEditItem = (index) => {
                 </div>
               )}
     
-               {activeTab === 'orders' && (
-                 <div className="space-y-6 max-w-7xl mx-auto">
-                    <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
-                          <div className="flex items-center gap-4 flex-1 min-w-[200px]">
-                              <div className="relative flex-1">
-                                  <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
-                                  <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none" placeholder="ค้นหา..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
-                              </div>
-                              {/* ⭐ เพิ่มตัวกรองสถานะ */}
-                              <select 
-                                  value={statusFilter} 
-                                  onChange={(e) => setStatusFilter(e.target.value)}
-                                  className="p-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
-                              >
-                                  <option value="All">ทุกสถานะ</option>
-                                  {Object.keys(STATUS_LABELS).map(key => <option key={key} value={key}>{STATUS_LABELS[key]}</option>)}
-                              </select>
-                          </div>
-                     </div>
-                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                        <div className="divide-y divide-gray-100">
-                    {filteredRequests.map(req => {
-                                // --- ส่วนที่ 1: คำนวณวันแจ้งเตือน ---
-                                const getDaysDiff = (d) => {
-                                    if(!d) return 999;
-                                    const diff = new Date(d) - new Date();
-                                    return Math.ceil(diff / (1000 * 60 * 60 * 24));
-                                };
-                                const daysLeft = getDaysDiff(req.dateRequired);
-                                let alertBadge = null;
-
-                                // เงื่อนไขแจ้งเตือน: 1 เดือน(30), 14, 7, 3, 1 วัน และสถานะยังไม่เสร็จ
-                                if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
-                                    if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
-                                    else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
-                                    else if (daysLeft <= 7) alertBadge = { text: 'อีก 1 สัปดาห์', color: 'bg-orange-100 text-orange-700' };
-                                    else if (daysLeft <= 14) alertBadge = { text: 'อีก 2 สัปดาห์', color: 'bg-yellow-100 text-yellow-800' };
-                                    else if (daysLeft <= 30) alertBadge = { text: 'อีก 1 เดือน', color: 'bg-blue-50 text-blue-600' };
-                                }
-                                
-                                // --- ส่วนที่ 2: การแสดงผล Card ---
-                                return (
-                                 <div key={req.id} className="p-5 hover:bg-slate-50 transition-colors group">
-                                     <div className="flex justify-between mb-2">
-                                        <div className="flex items-center gap-3">
-                                            {/* Badge ประเภทคำขอ (Code เดิม) */}
-                                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>{req.type}</span>
-                                            
-                                            {/* ⭐ แสดง Alert Badge ตรงนี้ (เพิ่มใหม่) */}
-                                            {alertBadge && (
-                                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 animate-pulse ${alertBadge.color}`}>
-                                                    <Clock className="w-3 h-3"/> {alertBadge.text}
-                                                </span>
-                                            )}
-
-                                            <span className="text-xs text-gray-400">{req.id}</span>
-                                            <DocIdBadge type={req.type} id={req.docNumber} />
-                                            <h4 className="font-bold text-gray-900 text-sm">{req.items[0]?.name}</h4>
-                                        </div>
-                                        <StatusBadge status={req.status} />
-                                    </div>
-
-                                    {filteredRequests.length === 0 && (
-                            <div className="p-12 text-center text-gray-400 bg-white border-t border-gray-100">
-                                <div className="bg-gray-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3">
-                                    <FileText className="w-8 h-8 text-gray-300"/>
-                                </div>
-                                <p className="text-lg font-bold text-gray-500">ไม่มีรายการ</p>
-                                <p className="text-sm">คุณไม่มีรายการที่ต้องดำเนินการในขณะนี้</p>
-                            </div>
-                        )}
-                                    
-                                    <ProgressBar request={req} />
-                                    <div className="flex justify-end gap-2 mt-2">
-                                        {currentUserRole === ROLES.USER && req.status === 'Draft' && (<button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Edit className="w-4 h-4"/> แก้ไขแบบร่าง</button>)}
-                                        {currentUserRole === ROLES.USER && req.status === 'Revise Needed' && (<button type="button" onClick={() => handleRevise(req)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm animate-pulse"><Edit className="w-4 h-4"/> แก้ไขข้อมูล/ส่งใหม่</button>)}
-                                        {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
-                                        {(req.status === 'Approved' || req.status === 'Ordered') && req.type === 'Local' && (
-                                           <button type="button" onClick={() => openPOPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-4 h-4"/> พิมพ์</button>
-                                        )}
-                                        
-                                        <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
-                                        
-                                        {req.status !== 'Draft' && (
-                                            <>
-                                            {hasPermission(8) && req.status === 'Pending Head' && (
-                                                <>
-                                                    <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                                                    <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ PM'}</button>
-                                                </>
-                                            )}
-                                            {hasPermission(9) && req.status === 'Pending PM' && (
-                                                <>
-                                                    <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                                                    <button type="button" onClick={() => handleApprovalUpdate(req.id, 'Approved')} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">อนุมัติการสั่งซื้อ</button>
-                                                </>
-                                            )}
-
-                                            {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
-                                                <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
-                                            )}
-                                            {hasPermission(12) && req.type === 'Local' && req.status === 'Approved' && (
-                                                <button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>
-                                            )}
-                                            {hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (
-                                                <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>
-                                            )}
-                                          
-                                            {hasPermission(10) && req.status === 'Pending Check' && (
-                                                <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-4 h-4"/> ตรวจสอบเอกสาร (Verify)</button>
-                                            )}
-                                            
-                                            {/* --- HO Buy Flow --- */}
-                                            {hasPermission(11) && req.type === 'HO' && req.status === 'Approved' && req.purchaseType === 'Buy' && (
-                                             <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
-                                              )}
-
-                                            {hasPermission(12) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (
-                                                <button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>
-                                            )}
-
-                                            {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PO Issued' && (
-                                                <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">อัปเดตส่งของ</button>
-                                            )}
-                                            
-                                            {/* --- HO Rent Flow --- */}
-                                           {hasPermission(14) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Pending' && (
-                                                <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Signed')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm"><FileSignature className="w-4 h-4"/> บันทึกทำสัญญาแล้ว</button>
-                                            )}
-                                            {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Signed' && (
-                                                <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Truck className="w-4 h-4"/> เริ่มจัดส่ง/ส่งมอบ</button>
-                                            )}
+              {activeTab === 'orders' && (
+  <div className="space-y-6 max-w-7xl mx-auto">
+    <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
+      <div className="flex items-center gap-4 flex-1 min-w-[200px]">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
+          <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none" placeholder="ค้นหา..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
+        </div>
+        {/* ⭐ เพิ่มตัวกรองสถานะ */}
+        <select 
+          value={statusFilter} 
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="p-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
+        >
+          <option value="All">ทุกสถานะ</option>
+          {Object.keys(STATUS_LABELS).map(key => <option key={key} value={key}>{STATUS_LABELS[key]}</option>)}
+        </select>
+      </div>
+    </div>
     
-                                            {hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received') && (
-                                                <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">ยืนยันได้รับของ</button>
-                                            )}
-                                            
-                                            {(hasPermission(14) || hasPermission(13)) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Approved' && (
-                                                req.needContract !== false 
-                                                ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ (หลังอนุมัติ)</button>)
-                                                : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ (หลังอนุมัติ)</button>)
-                                            )}
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                     </div>
-                 </div>
-              )}
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="divide-y divide-gray-100">
+        {filteredRequests.length === 0 ? (
+          <div className="p-12 text-center text-gray-400 bg-white border-t border-gray-100">
+            <div className="bg-gray-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3">
+              <FileText className="w-8 h-8 text-gray-300"/>
+            </div>
+            <p className="text-lg font-bold text-gray-500">ไม่มีรายการ</p>
+            <p className="text-sm">คุณไม่มีรายการที่ต้องดำเนินการในขณะนี้</p>
+          </div>
+        ) : (
+          filteredRequests.map(req => {
+            // --- ส่วนที่ 1: คำนวณวันแจ้งเตือน ---
+            const getDaysDiff = (d) => {
+              if(!d) return 999;
+              const diff = new Date(d) - new Date();
+              return Math.ceil(diff / (1000 * 60 * 60 * 24));
+            };
+            const daysLeft = getDaysDiff(req.dateRequired);
+            let alertBadge = null;
+
+            // เงื่อนไขแจ้งเตือน: 1 เดือน(30), 14, 7, 3, 1 วัน และสถานะยังไม่เสร็จ
+            if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
+              if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
+              else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
+              else if (daysLeft <= 7) alertBadge = { text: 'อีก 1 สัปดาห์', color: 'bg-orange-100 text-orange-700' };
+              else if (daysLeft <= 14) alertBadge = { text: 'อีก 2 สัปดาห์', color: 'bg-yellow-100 text-yellow-800' };
+              else if (daysLeft <= 30) alertBadge = { text: 'อีก 1 เดือน', color: 'bg-blue-50 text-blue-600' };
+            }
+            
+            // --- ส่วนที่ 2: การแสดงผล Card ---
+            return (
+              <div key={req.id} className="p-5 hover:bg-slate-50 transition-colors group">
+                <div className="flex justify-between mb-2">
+                  <div className="flex items-center gap-3">
+                    {/* Badge ประเภทคำขอ (Code เดิม) */}
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>{req.type}</span>
+                    
+                    {/* ⭐ แสดง Alert Badge ตรงนี้ (เพิ่มใหม่) */}
+                    {alertBadge && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 animate-pulse ${alertBadge.color}`}>
+                        <Clock className="w-3 h-3"/> {alertBadge.text}
+                      </span>
+                    )}
+
+                    <span className="text-xs text-gray-400">{req.id}</span>
+                    <DocIdBadge type={req.type} id={req.docNumber} />
+                    <h4 className="font-bold text-gray-900 text-sm">{req.items[0]?.name}</h4>
+                  </div>
+                  <StatusBadge status={req.status} />
+                </div>
+                
+                <ProgressBar request={req} />
+                <div className="flex justify-end gap-2 mt-2">
+                  {currentUserRole === ROLES.USER && req.status === 'Draft' && (<button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Edit className="w-4 h-4"/> แก้ไขแบบร่าง</button>)}
+                  {currentUserRole === ROLES.USER && req.status === 'Revise Needed' && (<button type="button" onClick={() => handleRevise(req)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm animate-pulse"><Edit className="w-4 h-4"/> แก้ไขข้อมูล/ส่งใหม่</button>)}
+                  {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
+                  {(req.status === 'Approved' || req.status === 'Ordered') && req.type === 'Local' && (
+                    <button type="button" onClick={() => openPOPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-4 h-4"/> พิมพ์</button>
+                  )}
+                  
+                  <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
+                  
+                  {req.status !== 'Draft' && (
+                    <>
+                      {hasPermission(8) && req.status === 'Pending Head' && (
+                        <>
+                          <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
+                          <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ PM'}</button>
+                        </>
+                      )}
+                      {hasPermission(9) && req.status === 'Pending PM' && (
+                        <>
+                          <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
+                          <button type="button" onClick={() => handleApprovalUpdate(req.id, 'Approved')} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">อนุมัติการสั่งซื้อ</button>
+                        </>
+                      )}
+
+                      {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
+                        <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
+                      )}
+                      {hasPermission(12) && req.type === 'Local' && req.status === 'Approved' && (
+                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>
+                      )}
+                      {hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (
+                        <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>
+                      )}
+                    
+                      {hasPermission(10) && req.status === 'Pending Check' && (
+                        <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-4 h-4"/> ตรวจสอบเอกสาร (Verify)</button>
+                      )}
+                      
+                      {/* --- HO Buy Flow --- */}
+                      {hasPermission(11) && req.type === 'HO' && req.status === 'Approved' && req.purchaseType === 'Buy' && (
+                        <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
+                      )}
+
+                      {hasPermission(12) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (
+                        <button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>
+                      )}
+
+                      {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PO Issued' && (
+                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">อัปเดตส่งของ</button>
+                      )}
+                      
+                      {/* --- HO Rent Flow --- */}
+                      {hasPermission(14) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Pending' && (
+                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Signed')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm"><FileSignature className="w-4 h-4"/> บันทึกทำสัญญาแล้ว</button>
+                      )}
+                      {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Signed' && (
+                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Truck className="w-4 h-4"/> เริ่มจัดส่ง/ส่งมอบ</button>
+                      )}
+
+                      {hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received') && (
+                        <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">ยืนยันได้รับของ</button>
+                      )}
+                      
+                      {(hasPermission(14) || hasPermission(13)) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Approved' && (
+                        req.needContract !== false 
+                        ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ (หลังอนุมัติ)</button>)
+                        : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ (หลังอนุมัติ)</button>)
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  </div>
+)} 
     
 {/* INVENTORY TAB (UPDATED WITH MULTI-DELETE) */}
               {activeTab === 'inventory' && (
