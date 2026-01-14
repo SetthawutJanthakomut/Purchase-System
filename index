@@ -4467,21 +4467,17 @@ setRequests(prev => prev.map(r => {
                               <label className="text-xs font-bold text-gray-500 mb-1 block">จำนวน</label>
                               <input type="number" min="1" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm text-center" value={tempItem.qty} onChange={e => setTempItem({...tempItem, qty: parseInt(e.target.value) || 0})} disabled={newOrderMeta.type === 'Borrow'} />
                           </div>
-                          <div className="col-span-2">
-                                      <label className="text-xs font-bold text-gray-500 mb-1 block">หน่วย</label>
-                                      <select 
-                                          className="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white" 
-                                          value={tempItem.unit} 
-                                          onChange={e => setTempItem({...tempItem, unit: e.target.value})} 
-                                          disabled={newOrderMeta.type === 'Borrow'}
-                                      >
-                                          {/* ⭐ Logic เลือกหน่วย: ถ้าเป็น HO+Rent ให้ใช้หน่วยเช่า, อื่นๆ ใช้หน่วยปกติ */}
-                                          {(newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' 
-                                              ? ['บาท/วัน', 'บาท/เดือน', 'บาท/ปี'] 
-                                              : ITEM_UNITS
-                                          ).map(u => <option key={u} value={u}>{u}</option>)}
-                                      </select>
-                                  </div>
+                         <div className="col-span-2">
+    <label className="text-xs font-bold text-gray-500 mb-1 block">หน่วยนับ</label>
+    <select 
+        className="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white" 
+        value={tempItem.unit} 
+        onChange={e => setTempItem({...tempItem, unit: e.target.value})} 
+        disabled={newOrderMeta.type === 'Borrow'}
+    >
+        {ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+    </select>
+</div>
                       </div>
 
             {newOrderMeta.type !== 'Borrow' && (
@@ -4528,9 +4524,32 @@ setRequests(prev => prev.map(r => {
                             })()}
                             
                             <div className="col-span-4">
-                                <label className="text-xs font-bold text-gray-500 mb-1 block">ราคา/หน่วย</label>
-                                <input type="number" min="0" disabled={newOrderMeta.type === 'Withdraw'} className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" value={tempItem.unitPrice} onChange={e => setTempItem({...tempItem, unitPrice: parseFloat(e.target.value) || 0})} />
-                            </div>
+                                        <label className="text-xs font-bold text-gray-500 mb-1 block">
+                                            {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' ? 'ราคาเช่า (บาท)' : 'ราคาต่อหน่วย (บาท)'}
+                                        </label>
+                                        
+                                        <div className="flex gap-2">
+                                            <input 
+                                                type="number" min="0" 
+                                                disabled={newOrderMeta.type === 'Withdraw'} 
+                                                className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" 
+                                                value={tempItem.unitPrice} 
+                                                onChange={e => setTempItem({...tempItem, unitPrice: parseFloat(e.target.value) || 0})} 
+                                            />
+                                            
+                                            {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' && (
+                                                <select 
+                                                    className="w-32 p-2.5 border border-gray-300 rounded-lg text-sm bg-white text-gray-700 font-medium"
+                                                    value={tempItem.rentalUnit || 'Month'}
+                                                    onChange={e => setTempItem({...tempItem, rentalUnit: e.target.value})}
+                                                >
+                                                    <option value="Day">บาท/วัน</option>
+                                                    <option value="Month">บาท/เดือน</option>
+                                                    <option value="Year">บาท/ปี</option>
+                                                </select>
+                                            )}
+                                        </div>
+                                    </div>
                         </div>
                       )}
                       
