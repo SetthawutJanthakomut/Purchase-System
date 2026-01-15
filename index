@@ -988,6 +988,46 @@ const handleSaveProject = () => {
             return; 
         }
         
+
+        if (!isDraft) { // เช็คเฉพาะตอนกดส่งจริง (Draft ไม่ต้องเช็คก็ได้)
+        const targetProject = newOrderMeta.job;
+        
+        for (const item of orderItems) {
+            // 1. กรณีเบิก (Withdraw): เช็คของในคลังโครงการนั้น
+            if (newOrderMeta.type === 'Withdraw') {
+                const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
+                if (!stockItem) {
+                    showToast(`ผิดพลาด: สินค้า "${item.name}" ไม่มีในโครงการ ${targetProject}`, 'error');
+                    return; // หยุดการทำงาน
+                }
+                if (item.qty > stockItem.qty) {
+                    showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
+                    return; // หยุดการทำงาน
+                }
+            } 
+            // 2. กรณียืม (Borrow): เช็คสถานะ Asset ID
+            else if (newOrderMeta.type === 'Borrow') {
+                // ต้องมี Asset ID (ถ้าเลือกมาถูกต้อง)
+                if (item.assetId) {
+                    const assetItem = assets.find(a => a.id === item.assetId);
+                    if (!assetItem) {
+                        showToast(`ผิดพลาด: ไม่พบทรัพย์สินรหัส ${item.assetId}`, 'error');
+                        return;
+                    }
+                    // เช็คว่าอยู่โครงการที่เลือกไหม (ถ้าต้องการบังคับข้ามโครงการต้องแก้ตรงนี้)
+                    if (assetItem.project !== targetProject) {
+                         // อาจจะอนุญาตหรือแจ้งเตือน ตาม Policy (ในที่นี้แจ้งเตือนไว้ก่อน)
+                         // showToast(`ทรัพย์สิน ${item.assetId} ไม่ใช่ของโครงการ ${targetProject}`, 'error');
+                         // return;
+                    }
+                    if (assetItem.status !== 'Available') {
+                        showToast(`ผิดพลาด: ทรัพย์สิน "${item.name}" ไม่ว่าง (สถานะ: ${assetItem.status})`, 'error');
+                        return;
+                    }
+                }
+            }
+        }
+    }
         setIsLoading(true); // เริ่มโหลด
         
         let attachmentData = newOrderMeta.attachment;
@@ -1242,16 +1282,21 @@ const handleSaveProject = () => {
       const [receiveItems, setReceiveItems] = useState([]);
       const [editingId, setEditingId] = useState(null);
       const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
-      const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', rentalUnit: 'Month', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '' });
+      // แก้ไขบรรทัดนี้
+const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '', duration: 1 });
       const [orderItems, setOrderItems] = useState([]);
       
       const [showSuggestions, setShowSuggestions] = useState(false);
       const [suggestions, setSuggestions] = useState([]);
       const [stockSuggestion, setStockSuggestion] = useState(null);
+      const [foundSuggestions, setFoundSuggestions] = useState([]);
       const [selectionSearch, setSelectionSearch] = useState('');
 
       const [prData, setPrData] = useState({ requestId: null, file: null, prNumber: '' });
       const [poData, setPoData] = useState({ requestId: null, file: null, poNumber: '' });
+      const [showContractModal, setShowContractModal] = useState(false);
+const [contractData, setContractData] = useState({ requestId: null, file: null });
+
 const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' });
       const [historyActionFilter, setHistoryActionFilter] = useState('All');
 
@@ -1439,83 +1484,59 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
       }, [filteredRequests]);
 
 
-// --- LOGIC: Filtered Logs (FIXED: Show logs with missing ID by Name & Type Check) ---
-      const filteredLogs = useMemo(() => {
-          let data = invLogs;
+// --- LOGIC: Filtered Logs (Updated with Project Filter) ---
+const filteredLogs = useMemo(() => {
+    let data = invLogs;
 
-          if (viewingItem) {
-               // 🟢 กรณี 1: ดูแบบรวม (Summary) -> ดึงประวัติของทุก ID ย่อย
-               if (viewingItem.isSummary && viewingItem.combinedIds) {
-                  data = data.filter(l => viewingItem.combinedIds.includes(l.assetId));
-               }
-               // 🟢 กรณี 2: ดูรายการเดียว (Single Item)
-               else {
-                   // เช็คว่าสิ่งที่เรากำลังดูคือ Asset หรือ Inventory
-                   const isAssetView = viewingItem.serial !== undefined; 
+    // 1. กรองตาม Project (ถ้ามีการเลือก และไม่ได้ดู item เฉพาะเจาะจง)
+    if (!viewingItem && globalProjectFilter !== 'All') {
+        // กรองจาก Note หรือต้องมีการเก็บ Project ลง Log (ซึ่งเราเพิ่งเพิ่มไปใน Step ก่อนหน้า)
+        // เพื่อความชัวร์ ให้กรองแบบ Loose (Text Search) ไปก่อนใน Note
+        data = data.filter(l => 
+            (l.note && l.note.includes(globalProjectFilter)) || // เช็คใน Note
+            (l.project && l.project === globalProjectFilter) // เช็คใน Field project (ถ้ามี)
+        );
+    }
 
-                   data = data.filter(l => {
-                       // A. ถ้ามี ID ใน Log ตรงกันเป๊ะๆ (Best Case) -> เอาเลย
-                       if (l.assetId === viewingItem.id) return true;
+    if (viewingItem) {
+         // ... (Logic เดิมสำหรับ Single Item) ...
+         if (viewingItem.isSummary && viewingItem.combinedIds) {
+             data = data.filter(l => viewingItem.combinedIds.includes(l.assetId));
+         } else {
+             const isAssetView = viewingItem.serial !== undefined; 
+             data = data.filter(l => {
+                 if (l.assetId === viewingItem.id) return true;
+                 if (!l.assetId && l.item === viewingItem.name) {
+                     const assetOnlyActions = ['Import Assets', 'Add Asset', 'Register Asset', 'Return Asset', 'Restore Asset', 'Delete Asset'];
+                     const isLogForAsset = assetOnlyActions.includes(l.action) || (l.action === 'Borrow' && isAssetView) || (l.action === 'Return' && isAssetView);
+                     return isAssetView ? isLogForAsset : !isLogForAsset;
+                 }
+                 return false;
+             });
+         }
+    }
 
-                       // B. ถ้า Log ไม่มี ID (เช่น Create Item ตอนรับของ หรือ Log เก่า) -> ให้เช็คด้วยชื่อ
-                       if (!l.assetId && l.item === viewingItem.name) {
-                           
-                           // รายชื่อ Action ที่เป็นของ Asset แน่ๆ (เพื่อกันไม่ให้หลุดมา Inventory)
-                           const assetOnlyActions = [
-                               'Import Assets', 'Add Asset', 'Register Asset', 
-                               'Return Asset', 'Restore Asset', 'Delete Asset'
-                           ];
+    // ... (Search Logic เดิม) ...
+    if (historySearch) {
+        const lower = historySearch.toLowerCase();
+        data = data.filter(l => 
+            l.action.toLowerCase().includes(lower) ||
+            l.item.toLowerCase().includes(lower) ||
+            l.by.toLowerCase().includes(lower) ||
+            l.note.toLowerCase().includes(lower) ||
+            (l.relatedRequestId && l.relatedRequestId.toLowerCase().includes(lower))
+        );
+    }
+    // ... (Filter Action เดิม) ...
+    if (historyActionFilter !== 'All') {
+        data = data.filter(l => l.action === historyActionFilter);
+    }
+    
+    // ... (Sort Logic เดิม) ...
+    const parseLogDate = (dStr) => { /* ... */ };
+    return [...data].sort((a, b) => { /* ... */ });
 
-                           // ถ้า Action นี้เป็นของ Asset
-                           const isLogForAsset = assetOnlyActions.includes(l.action) || 
-                                                 (l.action === 'Borrow' && isAssetView) || // Borrow/Return เช็คบริบท
-                                                 (l.action === 'Return' && isAssetView);
-
-                           // ถ้าเราดู Asset -> ให้แสดง Log ที่เป็น Asset
-                           // ถ้าเราดู Inventory -> ให้แสดง Log ที่ *ไม่ใช่* Asset
-                           return isAssetView ? isLogForAsset : !isLogForAsset;
-                       }
-
-                       return false;
-                   });
-               }
-          }
-
-          // --- ส่วนค้นหา (Search) และตัวกรอง (Filter) คงเดิม ---
-          if (historySearch) {
-              const lower = historySearch.toLowerCase();
-              data = data.filter(l => 
-                  l.action.toLowerCase().includes(lower) ||
-                  l.item.toLowerCase().includes(lower) ||
-                  l.by.toLowerCase().includes(lower) ||
-                  l.note.toLowerCase().includes(lower) ||
-                  (l.relatedRequestId && l.relatedRequestId.toLowerCase().includes(lower))
-              );
-          }
-          if (historyActionFilter !== 'All') {
-              data = data.filter(l => l.action === historyActionFilter);
-          }
-          
-          // --- การเรียงลำดับ (Sorting) คงเดิม ---
-          const parseLogDate = (dStr) => { 
-             if(!dStr) return 0; 
-             try { 
-                 const [d,t] = dStr.split(' '); 
-                 const [day,m,y] = d.split('/').map(Number); 
-                 const [h,min,s] = t?t.split(':'):[0,0,0]; 
-                 return new Date(y-543,m-1,day,h,min,s).getTime(); 
-             } catch(e){return 0;} 
-          };
-          
-          return [...data].sort((a, b) => {
-              let aValue = a[historySort.key];
-              let bValue = b[historySort.key];
-              if (historySort.key === 'date') { aValue = parseLogDate(a.date); bValue = parseLogDate(b.date); }
-              if (aValue < bValue) return historySort.direction === 'asc' ? -1 : 1;
-              if (aValue > bValue) return historySort.direction === 'asc' ? 1 : -1;
-              return 0;
-          });
-      }, [invLogs, viewingItem, historySearch, historyActionFilter, historySort]);
+}, [invLogs, viewingItem, historySearch, historyActionFilter, historySort, globalProjectFilter]); // ⭐ อย่าลืมเพิ่ม globalProjectFilter ใน dependency
 
 
 
@@ -1668,14 +1689,14 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
               data = data.filter(i => i.project === globalProjectFilter);
           }
 
-          // 1. Search
           if (invSearch) {
-              const lower = invSearch.toLowerCase();
-              data = data.filter(i => 
-                  i.name.toLowerCase().includes(lower) || 
-                  i.id.toLowerCase().includes(lower)
-              );
-          }
+    const lower = invSearch.toLowerCase();
+    data = data.filter(i => 
+        i.name.toLowerCase().includes(lower) || 
+        i.id.toLowerCase().includes(lower) ||
+        (i.project && i.project.toLowerCase().includes(lower)) // ⭐ เพิ่มค้นหาโครงการ
+    );
+}
 
           if (inventoryProjectFilter !== 'All') {
               data = data.filter(i => i.project === inventoryProjectFilter);
@@ -1707,7 +1728,7 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
               return getSortedData(data, invSort);
           }
 
-      }, [inventory, invSearch, invSort, invTabMode]);
+      }, [inventory, invSearch, invSort, invTabMode, globalProjectFilter, inventoryProjectFilter]);
 
 
 // --- LOGIC: Filter & Sort Assets (Updated with Summary Grouping) ---
@@ -1721,13 +1742,14 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
           
           // 1. Search (กรองก่อนรวมกลุ่ม)
           if (assetSearch) {
-              const lower = assetSearch.toLowerCase();
-              data = data.filter(a => 
-                  a.name.toLowerCase().includes(lower) || 
-                  a.id.toLowerCase().includes(lower) || 
-                  (a.holder && a.holder.toLowerCase().includes(lower))
-              );
-          }
+    const lower = assetSearch.toLowerCase();
+    data = data.filter(a => 
+        a.name.toLowerCase().includes(lower) || 
+        a.id.toLowerCase().includes(lower) || 
+        (a.holder && a.holder.toLowerCase().includes(lower)) ||
+        (a.project && a.project.toLowerCase().includes(lower)) // ⭐ เพิ่มค้นหาโครงการ
+    );
+}
 
           // 🟢 เพิ่มส่วนนี้: กรอง Project
           if (assetProjectFilter !== 'All') {
@@ -1794,48 +1816,79 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
                   return 0;
               });
           }
-      }, [assets, assetSearch, assetSort, assetTabMode]);
+      }, [assets, assetSearch, assetSort, assetTabMode, globalProjectFilter, assetProjectFilter]);
 
       // --- Functions & Handlers (Logic from original file) ---
       
-      // Smart Suggestion
+// Smart Suggestion (Multi-Project Search)
 useEffect(() => {
-        let timeoutId;
-        setStockSuggestion(null);
-        
-        // ทำงานเฉพาะตอนพิมพ์ชื่อ และไม่ใช่โหมดเบิก/ยืมอยู่แล้ว
-        if (tempItem.name && tempItem.name.length > 2 && (newOrderMeta.type === 'Local' || newOrderMeta.type === 'HO')) {
-            timeoutId = setTimeout(() => {
-                 // 1. เช็คในคลัง (Inventory) -> แนะนำให้เบิก
-                 const stockMatch = inventory.find(i => i.name.toLowerCase().includes(tempItem.name.toLowerCase()) && i.qty > 0);
-                 if (stockMatch) {
-                     setStockSuggestion({ ...stockMatch, type: 'Material', matchType: 'Withdraw' });
-                 } else {
-                     // 2. เช็คในทะเบียน (Assets) -> แนะนำให้ยืม
-                     const assetMatch = assets.find(a => a.name.toLowerCase().includes(tempItem.name.toLowerCase()) && a.status === 'Available');
-                     if (assetMatch) {
-                         setStockSuggestion({ ...assetMatch, type: 'Asset', matchType: 'Borrow' });
-                     }
-                 }
-            }, 500); // Delay 0.5s กันหน่วง
-        }
-        return () => clearTimeout(timeoutId);
-      }, [tempItem.name, newOrderMeta.type, inventory, assets]);
+    let timeoutId;
+    setFoundSuggestions([]);
+    
+    // ทำงานเฉพาะตอนพิมพ์ชื่อ และไม่ใช่โหมดเบิก/ยืม (หรือจะให้หาตลอดก็ได้แล้วแต่สะดวก)
+    // เงื่อนไข: พิมพ์มากกว่า 2 ตัวอักษร
+    if (tempItem.name && tempItem.name.length > 2) {
+        timeoutId = setTimeout(() => {
+            const lowerName = tempItem.name.toLowerCase();
+            let matches = [];
 
-// ฟังก์ชันเลือก Suggestion (ปรับปรุงใหม่)
-      const selectSuggestion = (item) => {
-        setNewOrderMeta({...newOrderMeta, type: item.matchType}); // เปลี่ยนโหมดเป็น Withdraw/Borrow
-        setTempItem({ 
-            ...tempItem, 
-            name: item.name, // เอาแค่ชื่อ
-            unitPrice: 0,
-            unit: item.unit || 'เครื่อง',
-            assetId: item.id, // เก็บ ID ไว้เช็ค
-            serial: item.serial,
+            // 1. ค้นหาในคลัง (Inventory) -> แนะนำให้เบิก
+            inventory.forEach(inv => {
+                if (inv.name.toLowerCase().includes(lowerName) && inv.qty > 0) {
+                    matches.push({ 
+                        ...inv, 
+                        type: 'Material', 
+                        matchType: 'Withdraw',
+                        sourceLabel: 'คลังวัสดุ'
+                    });
+                }
+            });
+
+            // 2. ค้นหาในทะเบียน (Assets) -> แนะนำให้ยืม
+            assets.forEach(ast => {
+                if (ast.name.toLowerCase().includes(lowerName) && ast.status === 'Available') {
+                    matches.push({ 
+                        ...ast, 
+                        type: 'Asset', 
+                        matchType: 'Borrow',
+                        sourceLabel: 'ทะเบียนทรัพย์สิน'
+                    });
+                }
+            });
+
+            setFoundSuggestions(matches);
+        }, 500);
+    }
+    return () => clearTimeout(timeoutId);
+}, [tempItem.name, inventory, assets]);
+
+// ฟังก์ชันเลือก Suggestion (Auto Switch Project)
+const selectSuggestion = (item) => {
+    if (confirm(`ต้องการเปลี่ยนไป "${item.matchType === 'Withdraw' ? 'เบิก' : 'ยืม'}" รายการนี้จากโครงการ "${item.project}" หรือไม่?`)) {
+        
+        // 1. เปลี่ยน Meta Data (Type & Project)
+        setNewOrderMeta(prev => ({
+            ...prev,
+            type: item.matchType, // เปลี่ยนเป็น Withdraw หรือ Borrow
+            job: item.project || 'ส่วนกลาง' // ⭐ เปลี่ยนโครงการตามของที่เจอ
+        }));
+
+        // 2. ใส่ข้อมูลลงในฟอร์ม
+        setTempItem(prev => ({ 
+            ...prev, 
+            name: item.name, 
+            unit: item.unit || 'ชิ้น',
+            qty: 1, // Default 1
+            unitPrice: 0, // เบิก/ยืม ไม่มีราคา
+            assetId: item.id, // เก็บ ID
+            serial: item.serial || '',
             image: item.image
-        });
-        setStockSuggestion(null);
-      };
+        }));
+
+        // 3. เคลียร์ Suggestion
+        setFoundSuggestions([]);
+    }
+};
 
 // --- LOGIC: Add Item & Validation (ตรวจสอบก่อนเพิ่ม) ---
       const handleAddItem = () => {
@@ -1843,18 +1896,20 @@ useEffect(() => {
         
         const currentType = newOrderMeta.type;
 
-        // 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
-        if (currentType === 'Withdraw') {
-            const stockItem = inventory.find(i => i.name === tempItem.name);
-            if (!stockItem) {
-                showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลัง`, 'error');
-                return;
-            }
-            if (tempItem.qty > stockItem.qty) {
-                showToast(`จำนวนในคลังไม่พอ (มี: ${stockItem.qty} ${stockItem.unit})`, 'error');
-                return;
-            }
-        }
+// 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
+if (currentType === 'Withdraw') {
+    // ⭐ เช็คทั้งชื่อ และ โครงการ
+    const stockItem = inventory.find(i => i.name === tempItem.name && i.project === newOrderMeta.job);
+    
+    if (!stockItem) {
+        showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลังของโครงการ ${newOrderMeta.job}`, 'error');
+        return;
+    }
+    if (tempItem.qty > stockItem.qty) {
+        showToast(`จำนวนในคลังไม่พอ (มี: ${stockItem.qty} ${stockItem.unit})`, 'error');
+        return;
+    }
+}
 
         // 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow)
         if (currentType === 'Borrow') {
@@ -1900,31 +1955,59 @@ const handleEditItem = (index) => {
           newItems.splice(index, 1);
           setOrderItems(newItems);
       };
-// --- UPDATED: Selection Logic ---
-      const getSelectionItems = () => {
-          const type = newOrderMeta.type;
-          let items = [];
 
-          // กำหนด Source ตามประเภทคำขอ
-          if (type === 'Local' || type === 'Withdraw') {
-              items = inventory; // Local & Withdraw -> Inventory Only
-          } else if (type === 'HO') {
-              items = [...inventory, ...assets]; // HO -> Inventory + Assets
-          } else if (type === 'Borrow') {
-              items = assets.filter(a => a.status === 'Available'); // Borrow -> Available Assets Only
-          }
+// --- HELPER: ดึงรูปภาพล่าสุดจากประวัติ (Smart Image Fetcher) ---
+const getItemLatestImage = (item) => {
+    // ค้นหาใน invLogs (ซึ่งเรียงจาก ใหม่ -> เก่า อยู่แล้ว)
+    const log = invLogs.find(l => {
+        // ต้องมีรูปเท่านั้น
+        if (!l.images || l.images.length === 0) return false;
+        
+        // ถ้าเป็น Asset ให้เช็ค ID (แม่นยำกว่า)
+        if (item.id && item.id.startsWith('AST')) {
+            return l.assetId === item.id;
+        }
+        // ถ้าเป็น Inventory หรือ Asset ที่ไม่มี ID ให้เช็คจากชื่อ
+        return l.item === item.name;
+    });
 
-          // Search Logic
-          if (selectionSearch) {
-              const lower = selectionSearch.toLowerCase();
-              items = items.filter(i => 
-                  i.name.toLowerCase().includes(lower) || 
-                  (i.serial && i.serial.toLowerCase().includes(lower)) ||
-                  (i.id && i.id.toLowerCase().includes(lower))
-              );
-          }
-          return items;
-      };
+    // ถ้าเจอ Log ที่มีรูป ให้คืนค่ารูปแรก
+    if (log) return log.images[0];
+    return null;
+};
+// --- UPDATED: Selection Logic (Project Filtered) ---
+const getSelectionItems = () => {
+    const type = newOrderMeta.type;
+    const targetProject = newOrderMeta.job; // ⭐ กรองตามโครงการที่เลือก
+    let items = [];
+
+    // ถ้ายังไม่ได้เลือกโครงการ ให้คืนค่าว่าง (บังคับเลือกโครงการก่อน)
+    if (!targetProject) return [];
+
+    // 1. กรอง Source ตามโครงการ
+    const projectInventory = inventory.filter(i => i.project === targetProject);
+    const projectAssets = assets.filter(a => a.project === targetProject);
+
+    // 2. กำหนด Source ตามประเภทคำขอ
+    if (type === 'Local' || type === 'Withdraw') {
+        items = projectInventory;
+    } else if (type === 'HO') {
+        items = [...projectInventory, ...projectAssets];
+    } else if (type === 'Borrow') {
+        items = projectAssets.filter(a => a.status === 'Available');
+    }
+
+    // 3. Search Logic
+    if (selectionSearch) {
+        const lower = selectionSearch.toLowerCase();
+        items = items.filter(i => 
+            i.name.toLowerCase().includes(lower) || 
+            (i.serial && i.serial.toLowerCase().includes(lower)) ||
+            (i.id && i.id.toLowerCase().includes(lower))
+        );
+    }
+    return items;
+};
 
 // --- LOGIC: Handle Selection (Updated) ---
       const handleSelectFromModal = (item) => {
@@ -2756,155 +2839,158 @@ const handleEditItem = (index) => {
       setShowReceiveGoodsModal(true);
   };
 
-// --- LOGIC: CONFIRM RECEIVE (UPDATED: Preview & Upload) ---
-      const handleConfirmReceive = async () => {
-          if (!selectedRequest) return;
-          
-          // Validation
-          for (const item of receiveItems) {
-              if (item.receivedQty <= 0) continue;
-              if (item.targetType === 'Asset') {
-                  const assetsToCheck = item.assetsToRegister.slice(0, item.receivedQty);
-                  for (let i = 0; i < assetsToCheck.length; i++) {
-                      const a = assetsToCheck[i];
-                      if (!a.name) { showToast(`กรุณาระบุชื่อรายการ (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
-                      if (!a.serial) { showToast(`กรุณาระบุ S/N (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
-                      if (!a.isAutoId && !a.id) { showToast(`กรุณาระบุ Asset ID (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
-                  }
-              }
-          }
+// --- LOGIC: CONFIRM RECEIVE (UPDATED: Project Support) ---
+const handleConfirmReceive = async () => {
+    if (!selectedRequest) return;
+    // ... (Validation Loop เดิม - ละไว้เพื่อความกระชับ ใส่เหมือนเดิมได้เลย) ...
+    for (const item of receiveItems) {
+        if (item.receivedQty <= 0) continue;
+        if (item.targetType === 'Asset') {
+            // Check Asset Fields...
+             const assetsToCheck = item.assetsToRegister.slice(0, item.receivedQty);
+             for (let i = 0; i < assetsToCheck.length; i++) {
+                  const a = assetsToCheck[i];
+                  if (!a.name) { showToast(`กรุณาระบุชื่อรายการ (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
+                  if (!a.serial) { showToast(`กรุณาระบุ S/N (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
+                  if (!a.isAutoId && !a.id) { showToast(`กรุณาระบุ Asset ID (รายการที่ ${i+1} ของ ${item.name})`, 'error'); return; }
+             }
+        }
+    }
 
-          setIsLoading(true);
+    setIsLoading(true);
+    try {
+        const date = new Date().toLocaleString('th-TH');
+        const project = selectedRequest.job; // ⭐ รับเข้าโครงการนี้
+        let currentAssetCount = assets.length;
 
-          try {
-              const date = new Date().toLocaleString('th-TH');
-              const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
-              let currentAssetCount = assets.length;
+        for (const item of receiveItems) {
+            const qtyToReceive = item.receivedQty || 0;
+            if (qtyToReceive <= 0) continue;
 
-              for (const item of receiveItems) {
-                  const qtyToReceive = item.receivedQty || 0;
-                  if (qtyToReceive <= 0) continue;
+            // --- กรณี Inventory ---
+            if (item.targetType === 'Inventory') {
+                let logImages = [];
+                // ... (Image Upload Logic เหมือนเดิม) ...
+                if (item.receiveImages && item.receiveImages.length > 0) {
+                    const uploadPromises = item.receiveImages.map(imgObj => {
+                        return new Promise((resolve, reject) => {
+                            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
+                        });
+                    });
+                    const uploaded = await Promise.all(uploadPromises);
+                    logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                }
 
-                  // --- กรณี Inventory ---
-                  if (item.targetType === 'Inventory') {
-                      let logImages = [];
-                      if (item.receiveImages && item.receiveImages.length > 0) {
-                          const uploadPromises = item.receiveImages.map(imgObj => {
-                              return new Promise((resolve, reject) => {
-                                  // ⭐ ใช้ imgObj.base64 ที่มีอยู่แล้วส่งไปเลย ไม่ต้อง read ใหม่
-                                  google.script.run
-                                    .withSuccessHandler(resolve)
-                                    .withFailureHandler(reject)
-                                    .uploadAssetImage(imgObj.base64, imgObj.name);
-                              });
-                          });
-                          const uploaded = await Promise.all(uploadPromises);
-                          logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
-                      }
+                // ⭐ เช็คของเดิมในโครงการนี้
+                const existing = inventory.find(inv => inv.name === item.name && inv.project === project);
+                const mainImageName = logImages.length > 0 ? logImages[0].name : (existing ? existing.image : null);
+                
+                let invId = null;
+                if (existing) {
+                    const updatedInv = { ...existing, qty: existing.qty + qtyToReceive, lastUpdated: date, image: mainImageName };
+                    setInventory(prev => prev.map(inv => inv.id === existing.id ? updatedInv : inv));
+                    saveInventoryToSheet(updatedInv);
+                    invId = updatedInv.id;
+                } else {
+                    const newInv = { 
+                        id: `INV-${Date.now().toString().slice(-4)}`, 
+                        name: item.name, 
+                        qty: qtyToReceive, 
+                        unit: item.unit || 'หน่วย', 
+                        minStock: 0, 
+                        price: item.actualPrice, 
+                        lastUpdated: date, 
+                        image: mainImageName,
+                        project: project, // ⭐ ระบุโครงการ
+                        stockType: 'System'
+                    };
+                    setInventory(prev => [...prev, newInv]);
+                    saveInventoryToSheet(newInv);
+                    invId = newInv.id;
+                }
+                
+                // ⭐ Log: ระบุโครงการ
+                addInvLog('Stock In', item.name, `+${qtyToReceive}`, `รับเข้าโครงการ ${project} (Doc: ${selectedRequest.docNumber || selectedRequest.id})`, logImages, selectedRequest.id, invId);
 
-                      const existing = inventory.find(inv => inv.name === item.name);
-                      const mainImageName = logImages.length > 0 ? logImages[0].name : (existing ? existing.image : null);
-                      
-                      let invId = null;
-                      if (existing) {
-                          const updatedInv = { ...existing, qty: existing.qty + qtyToReceive, lastUpdated: date, image: mainImageName };
-                          setInventory(prev => prev.map(inv => inv.id === existing.id ? updatedInv : inv));
-                          saveInventoryToSheet(updatedInv);
-                          invId = updatedInv.id;
-                      } else {
-                          const newInv = { id: `INV-${Date.now().toString().slice(-4)}`, name: item.name, qty: qtyToReceive, unit: item.unit || 'หน่วย', minStock: 0, price: item.actualPrice, lastUpdated: date, image: mainImageName };
-                          setInventory(prev => [...prev, newInv]);
-                          saveInventoryToSheet(newInv);
-                          invId = newInv.id;
-                      }
-                      
-                      addInvLog('Stock In', item.name, `+${qtyToReceive}`, `รับของจาก ${selectedRequest.id}`, logImages, selectedRequest.id, invId);
+            } else {
+                // --- กรณี Asset ---
+                const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
+                for (const assetReg of assetsToProcess) {
+                    currentAssetCount++;
+                    let assetLogImages = [];
+                    // ... (Image Upload Logic เหมือนเดิม) ...
+                    if (assetReg.images && assetReg.images.length > 0) {
+                        const uploadPromises = assetReg.images.map(imgObj => {
+                            return new Promise((resolve, reject) => {
+                                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
+                            });
+                        });
+                        const uploaded = await Promise.all(uploadPromises);
+                        assetLogImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                    }
 
-                  } else {
-                      // --- กรณี Asset ---
-                      const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
-                      
-                      for (const assetReg of assetsToProcess) {
-                          currentAssetCount++;
-                          let assetLogImages = [];
-                          
-                          if (assetReg.images && assetReg.images.length > 0) {
-                              const uploadPromises = assetReg.images.map(imgObj => {
-                                  return new Promise((resolve, reject) => {
-                                      google.script.run
-                                        .withSuccessHandler(resolve)
-                                        .withFailureHandler(reject)
-                                        .uploadAssetImage(imgObj.base64, imgObj.name);
-                                  });
-                              });
-                              const uploaded = await Promise.all(uploadPromises);
-                              assetLogImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
-                          }
+                    const assetId = assetReg.isAutoId 
+                        ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(currentAssetCount).padStart(3,'0')}` 
+                        : assetReg.id;
+                    const mainImageName = assetLogImages.length > 0 ? assetLogImages[0].name : null;
+                    
+                    const newAsset = { 
+                        id: assetId,
+                        name: assetReg.name,
+                        serial: assetReg.serial,
+                        status: 'Available',
+                        condition: 'Good',
+                        holder: '-',
+                        currentRequestId: null,
+                        price: item.isRent ? 0 : assetReg.price,
+                        image: mainImageName,
+                        lastUpdated: date,
+                        ownerType: item.isRent ? 'Rent' : 'Company',
+                        rentalStart: assetReg.rentalStart || null,
+                        rentalEnd: assetReg.rentalEnd || null,
+                        rentalPrice: assetReg.rentalPrice || 0,
+                        rentalUnit: assetReg.rentalUnit || 'Month',
+                        note: assetReg.note,
+                        project: project // ⭐ ระบุโครงการ
+                    };
+                    setAssets(prev => [...prev, newAsset]);
+                    saveAssetToSheet(newAsset);
+                    addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียนเข้าโครงการ ${project}`, assetLogImages, selectedRequest.id, assetId);
+                }
+            }
+        }
 
-                          const assetId = assetReg.isAutoId 
-                              ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(currentAssetCount).padStart(3,'0')}` 
-                              : assetReg.id;
+        // Update Request Status (เหมือนเดิม)
+        const updatedItems = selectedRequest.items.map(originalItem => {
+            const receivingItem = receiveItems.find(ri => ri.name === originalItem.name);
+            if (receivingItem) {
+                return { ...originalItem, receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty };
+            }
+            return originalItem;
+        });
+        const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
+        let newStatus = 'Completed';
+        if (!allComplete && !isForceClose) newStatus = 'Partially Received';
 
-                          const mainImageName = assetLogImages.length > 0 ? assetLogImages[0].name : null;
+        const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+        const updatedReq = { 
+            ...selectedRequest, 
+            items: updatedItems, 
+            status: newStatus, 
+            history: [...selectedRequest.history, createLog(STATUS_LABELS[newStatus], userSignature, `รับของเพิ่ม (สถานะ: ${newStatus})`)] 
+        };
+        setRequests(prev => prev.map(req => req.id === selectedRequest.id ? updatedReq : req));
+        saveRequestToSheet(updatedReq);
 
-                          const newAsset = { 
-                              id: assetId,
-                              name: assetReg.name,
-                              serial: assetReg.serial,
-                              status: 'Available',
-                              condition: 'Good',
-                              holder: '-',
-                              currentRequestId: null,
-                              price: item.isRent ? 0 : assetReg.price,
-                              image: mainImageName,
-                              lastUpdated: date,
-                              ownerType: item.isRent ? 'Rent' : 'Company',
-                              rentalStart: assetReg.rentalStart || null,
-                              rentalEnd: assetReg.rentalEnd || null,
-                              rentalPrice: assetReg.rentalPrice || 0,
-                              rentalUnit: assetReg.rentalUnit || 'Month',
-                              note: assetReg.note 
-                          };
-
-                          setAssets(prev => [...prev, newAsset]);
-                          saveAssetToSheet(newAsset);
-                          addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียน ${assetId} (S/N: ${newAsset.serial})`, assetLogImages, selectedRequest.id, assetId);
-                      }
-                  }
-              }
-
-              const updatedItems = selectedRequest.items.map(originalItem => {
-                  const receivingItem = receiveItems.find(ri => ri.name === originalItem.name);
-                  if (receivingItem) {
-                      return { ...originalItem, receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty };
-                  }
-                  return originalItem;
-              });
-
-              const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
-              let newStatus = 'Completed';
-              if (!allComplete && !isForceClose) newStatus = 'Partially Received';
-
-              const updatedReq = { 
-                  ...selectedRequest, 
-                  items: updatedItems, 
-                  status: newStatus, 
-                  history: [...selectedRequest.history, createLog(STATUS_LABELS[newStatus], userSignature, `รับของเพิ่ม (สถานะ: ${newStatus})`)] 
-              };
-              
-              setRequests(prev => prev.map(req => req.id === selectedRequest.id ? updatedReq : req));
-              saveRequestToSheet(updatedReq);
-
-              setShowReceiveGoodsModal(false);
-              showToast(`บันทึกรับของเรียบร้อย (${STATUS_LABELS[newStatus]})`);
-
-          } catch (err) {
-              console.error(err);
-              showToast("เกิดข้อผิดพลาดในการบันทึก: " + err.message, 'error');
-          } finally {
-              setIsLoading(false);
-          }
-      };
+        setShowReceiveGoodsModal(false);
+        showToast(`บันทึกรับของเรียบร้อย (${STATUS_LABELS[newStatus]})`);
+    } catch (err) {
+        console.error(err);
+        showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
       // --- Helper: จัดการรูปภาพในหน้ารับของ (เพิ่ม/ลบ) ---
       
@@ -2981,49 +3067,110 @@ const handleEditItem = (index) => {
 
       const openDisburseModal = (reqId) => { setDisburseData({ requestId: reqId, note: '', images: [] }); setShowDisburseModal(true); };
       
-// --- LOGIC: CONFIRM DISBURSE (UPDATED WITH REF ID) ---
-      const handleConfirmDisburse = () => {
-          const req = requests.find(r => r.id === disburseData.requestId);
-          if (!req) return;
-          
-          if (req.type === 'Withdraw') {
-              req.items.forEach(item => {
-                 const stockItem = inventory.find(i => i.name === item.name);
-                 if (stockItem) {
-                     const updatedStock = { ...stockItem, qty: Math.max(0, stockItem.qty - item.qty), lastUpdated: new Date().toLocaleString('th-TH') };
-                     setInventory(inv => inv.map(x => x.id === stockItem.id ? updatedStock : x));
-                     saveInventoryToSheet(updatedStock); 
-                     // ⭐ ส่ง req.id
-                     addInvLog('Withdraw', item.name, `-${item.qty}`, `จ่ายของเอกสาร ${req.id} (${disburseData.note})`, disburseData.images, req.id);
-                 }
-              });
-          } else if (req.type === 'Borrow') {
-              req.items.forEach(item => {
-                  const assetName = item.name.split(' (')[0];
-                  // ใช้ Logic เดิมในการหา Asset
-                  setAssets(assets => assets.map(a => {
-                      if (a.name === assetName || item.name.includes(a.serial) || (item.assetId && a.id === item.assetId)) {
-                          const updatedAsset = { 
-                              ...a, 
-                              status: 'Borrowed', 
-                              holder: req.requester, 
-                              currentRequestId: req.id, 
-                              lastUpdated: new Date().toLocaleString('th-TH'), 
-                              image: disburseData.images.length > 0 ? disburseData.images[0].name : a.image 
-                          };
-                          saveAssetToSheet(updatedAsset);
-                          // ⭐ ส่ง req.id (ทำนอก map ไม่ได้เพราะต้องทำทีละตัว)
-                          addInvLog('Borrow', item.name, 'Out', `ยืมโดย ${req.requester} (${req.id})`, disburseData.images, req.id);
-                          return updatedAsset;
-                      } return a;
-                  }));
-              });
-          }
-          
-          handleUpdateStatus(req.id, 'Completed', `จ่ายของ/ยืมของเรียบร้อย ${disburseData.note}`, disburseData.images);
-          setShowDisburseModal(false);
-          showToast('จ่ายของและบันทึกข้อมูลเรียบร้อย');
-      };
+      // --- HELPER: จัดการรูปภาพหน้าจ่ายของ (Disburse) ---
+const handleDisburseImageSelect = async (e) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const files = Array.from(e.target.files);
+    const newImages = await Promise.all(files.map(file => new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = (x) => resolve({ base64: x.target.result, file, name: file.name });
+        reader.readAsDataURL(file);
+    })));
+    setDisburseData(prev => ({
+        ...prev,
+        images: [...(prev.images || []), ...newImages]
+    }));
+    e.target.value = ''; // Reset input
+};
+
+const handleRemoveDisburseImage = (index) => {
+    setDisburseData(prev => ({
+        ...prev,
+        images: prev.images.filter((_, i) => i !== index)
+    }));
+};
+
+
+// --- LOGIC: CONFIRM DISBURSE (UPDATED: Multi-Image Upload) ---
+const handleConfirmDisburse = async () => {
+    const req = requests.find(r => r.id === disburseData.requestId);
+    if (!req) return;
+
+    setIsLoading(true); // เริ่มโหลด
+    try {
+        // 1. อัปโหลดรูปภาพ (ถ้ามี)
+        let logImages = [];
+        if (disburseData.images && disburseData.images.length > 0) {
+            const uploadPromises = disburseData.images.map(imgObj => {
+                return new Promise((resolve, reject) => {
+                    // ใช้ฟังก์ชันเดียวกับ Asset (uploadAssetImage) เพื่อเก็บในโฟลเดอร์ Asset_Images หรือจะสร้างใหม่ก็ได้
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .uploadAssetImage(imgObj.base64, imgObj.name);
+                });
+            });
+            const uploaded = await Promise.all(uploadPromises);
+            // แปลงรูปแบบให้ตรงกับที่ History Viewer รองรับ ({ name, type, url })
+            logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+        }
+
+        // 2. ดำเนินการตัดสต็อก / ยืม
+if (req.type === 'Withdraw') {
+    const project = req.job; // ⭐ โครงการต้นทาง
+    req.items.forEach(item => {
+        // ⭐ หาของในโครงการนี้เท่านั้น
+        const stockItem = inventory.find(i => i.name === item.name && i.project === project);
+        if (stockItem) {
+            const updatedStock = { ...stockItem, qty: Math.max(0, stockItem.qty - item.qty), lastUpdated: new Date().toLocaleString('th-TH') };
+            setInventory(inv => inv.map(x => x.id === stockItem.id ? updatedStock : x));
+            saveInventoryToSheet(updatedStock);
+            
+            // ⭐ Log ระบุโครงการ
+            addInvLog('Withdraw', item.name, `-${item.qty}`, `จ่ายของโครงการ ${project} (${disburseData.note})`, logImages, req.id);
+        }
+    });
+        } else if (req.type === 'Borrow') {
+            // Logic ยืม (ตามที่คุณแก้ไขล่าสุด)
+            const targetAssetsMap = new Map();
+            req.items.forEach(item => {
+                if (item.assetId) targetAssetsMap.set(item.assetId, item);
+            });
+
+            setAssets(prevAssets => prevAssets.map(asset => {
+                if (targetAssetsMap.has(asset.id)) {
+                    const item = targetAssetsMap.get(asset.id);
+                    const updatedAsset = { 
+                        ...asset, 
+                        status: 'Borrowed', 
+                        holder: req.requester, 
+                        currentRequestId: req.id, 
+                        lastUpdated: new Date().toLocaleString('th-TH'), 
+                        // ถ้า Asset เดิมไม่มีรูป ให้ใช้รูปจากการจ่ายของ (รูปแรก) เป็นรูปปกชั่วคราวได้
+                        image: logImages.length > 0 ? logImages[0].name : asset.image 
+                    };
+                    saveAssetToSheet(updatedAsset);
+                    // ⭐ ส่ง logImages
+                    addInvLog('Borrow', item.name, 'Out', `ยืมโดย ${req.requester} (${req.id})`, logImages, req.id, asset.id);
+                    return updatedAsset;
+                }
+                return asset;
+            }));
+        }
+
+        // 3. อัปเดตสถานะเอกสาร
+        handleUpdateStatus(req.id, 'Completed', `จ่ายของ/ยืมของเรียบร้อย ${disburseData.note}`, logImages);
+        
+        setShowDisburseModal(false);
+        showToast('จ่ายของและบันทึกข้อมูลเรียบร้อย');
+
+    } catch (err) {
+        console.error(err);
+        showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
+    } finally {
+        setIsLoading(false); // จบการโหลด
+    }
+};
 
       const openRejectModal = (reqId) => { setRejectData({ requestId: reqId, reason: '' }); setShowRejectModal(true); };
       const handleConfirmReject = () => { handleUpdateStatus(rejectData.requestId, 'Rejected', `ไม่อนุมัติ: ${rejectData.reason}`); setShowRejectModal(false); showToast('บันทึกการไม่อนุมัติเรียบร้อย'); };
@@ -3165,6 +3312,57 @@ setRequests(prev => prev.map(r => {
             setIsLoading(false);
         }
       };
+
+      // --- LOGIC: CONTRACT SIGNED (With File Upload) ---
+const openContractModal = (id) => { 
+    setContractData({ requestId: id, file: null });
+    setShowContractModal(true); 
+};
+
+const handleSubmitContract = async () => {
+    setIsLoading(true);
+    let uploadedFile = null;
+    try {
+        // 1. อัปโหลดไฟล์ (ถ้ามี)
+        if (contractData.file) {
+            const base64 = await fileToBase64(contractData.file);
+            const result = await new Promise((resolve, reject) => {
+                google.script.run
+                    .withSuccessHandler(resolve)
+                    .withFailureHandler(reject)
+                    .uploadFileToDrive(base64, contractData.file.name);
+            });
+            if (result.error) throw new Error(result.error);
+            uploadedFile = result;
+        }
+
+        const note = uploadedFile ? `แนบไฟล์สัญญา: ${uploadedFile.name}` : 'บันทึกทำสัญญาแล้ว';
+        const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+
+        // 2. อัปเดตข้อมูล
+        setRequests(prev => prev.map(r => {
+            if (r.id === contractData.requestId) {
+                const updatedReq = { 
+                    ...r, 
+                    status: 'Contract Signed', 
+                    contractFile: uploadedFile || r.contractFile, // ⭐ เก็บข้อมูลไฟล์สัญญา
+                    history: [...r.history, createLog('Contract Signed', userSignature, note)] 
+                };
+                saveRequestToSheet(updatedReq); 
+                return updatedReq;
+            }
+            return r;
+        }));
+
+        setShowContractModal(false); 
+        showToast('บันทึกการทำสัญญาเรียบร้อย');
+    } catch (err) {
+        console.error(err);
+        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
       const openViewItem = (item) => { setViewingItem(item); setHistoryFilterItem(null); setHistorySearch(''); setShowItemDetailModal(true); };
       const openGeneralHistory = () => { setViewingItem(null); setHistoryFilterItem(null); setHistorySearch(''); setShowItemDetailModal(true); }
@@ -3477,123 +3675,149 @@ setRequests(prev => prev.map(r => {
             <p className="text-sm">คุณไม่มีรายการที่ต้องดำเนินการในขณะนี้</p>
           </div>
         ) : (
-          filteredRequests.map(req => {
-            // --- ส่วนที่ 1: คำนวณวันแจ้งเตือน ---
-            const getDaysDiff = (d) => {
-              if(!d) return 999;
-              const diff = new Date(d) - new Date();
-              return Math.ceil(diff / (1000 * 60 * 60 * 24));
-            };
-            const daysLeft = getDaysDiff(req.dateRequired);
-            let alertBadge = null;
+         
+         
+filteredRequests.map(req => {
+  // --- คำนวณวันคงเหลือ ---
+  const getDaysDiff = (d) => {
+    if(!d) return 999;
+    const diff = new Date(d) - new Date();
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  };
+  const daysLeft = getDaysDiff(req.dateRequired);
+  let alertBadge = null;
 
-            // เงื่อนไขแจ้งเตือน: 1 เดือน(30), 14, 7, 3, 1 วัน และสถานะยังไม่เสร็จ
-            if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
-              if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
-              else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
-              else if (daysLeft <= 7) alertBadge = { text: 'อีก 1 สัปดาห์', color: 'bg-orange-100 text-orange-700' };
-              else if (daysLeft <= 14) alertBadge = { text: 'อีก 2 สัปดาห์', color: 'bg-yellow-100 text-yellow-800' };
-              else if (daysLeft <= 30) alertBadge = { text: 'อีก 1 เดือน', color: 'bg-blue-50 text-blue-600' };
-            }
+  // เงื่อนไขแจ้งเตือน (เพิ่ม: เลยกำหนด)
+  if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
+    if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse border-red-700' };
+    else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
+    else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
+    else if (daysLeft <= 7) alertBadge = { text: 'อีก 1 สัปดาห์', color: 'bg-orange-100 text-orange-700' };
+    else if (daysLeft <= 14) alertBadge = { text: 'อีก 2 สัปดาห์', color: 'bg-yellow-100 text-yellow-800' };
+    else if (daysLeft <= 30) alertBadge = { text: 'อีก 1 เดือน', color: 'bg-blue-50 text-blue-600' };
+  }
+  
+  return (
+    <div key={req.id} className="p-5 hover:bg-slate-50 transition-colors group">
+      <div className="flex justify-between mb-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          
+          {/* 1. Badge ประเภทคำขอ (แก้ไข: แสดง HO Rent/Buy) */}
+          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>
+              {req.type === 'HO' ? `HO (${req.purchaseType || 'Buy'})` : req.type}
+          </span>
+          
+          {/* 2. Alert Badge (รวมถึงเลยกำหนด) */}
+          {alertBadge && (
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${alertBadge.color}`}>
+              <Clock className="w-3 h-3"/> {alertBadge.text}
+            </span>
+          )}
+
+          <span className="text-xs text-gray-400">{req.id}</span>
+          <DocIdBadge type={req.type} id={req.docNumber} />
+
+          {/* 3. เพิ่ม: แสดงวันที่ต้องการ (Date Required) */}
+          {req.dateRequired && (
+             <span className="text-[10px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded border flex items-center gap-1" title="วันที่ต้องการใช้ของ">
+                 <Calendar className="w-3 h-3"/> {req.dateRequired}
+             </span>
+          )}
+
+          {/* 4. ชื่อสินค้า + จำนวนที่เหลือ */}
+          <h4 className="font-bold text-gray-900 text-sm flex items-center">
+              {req.items[0]?.name}
+              {req.items.length > 1 && (
+                  <span className="text-gray-500 font-normal text-xs ml-1 bg-gray-200 px-1.5 rounded-full">
+                      +{req.items.length - 1}
+                  </span>
+              )}
+          </h4>
+        </div>
+        <StatusBadge status={req.status} />
+      </div>
+      
+      <ProgressBar request={req} />
+      
+      {/* ส่วนปุ่ม Action คงเดิม */}
+      <div className="flex justify-end gap-2 mt-2">
+        {currentUserRole === ROLES.USER && req.status === 'Draft' && (<button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Edit className="w-4 h-4"/> แก้ไขแบบร่าง</button>)}
+        {currentUserRole === ROLES.USER && req.status === 'Revise Needed' && (<button type="button" onClick={() => handleRevise(req)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm animate-pulse"><Edit className="w-4 h-4"/> แก้ไขข้อมูล/ส่งใหม่</button>)}
+        {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
+        {(req.status === 'Approved' || req.status === 'Ordered') && req.type === 'Local' && (
+          <button type="button" onClick={() => openPOPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-4 h-4"/> พิมพ์</button>
+        )}
+        
+        <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
+        
+        {req.status !== 'Draft' && (
+          <>
+            {hasPermission(8) && req.status === 'Pending Head' && (
+              <>
+                <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
+                <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ PM'}</button>
+              </>
+            )}
             
-            // --- ส่วนที่ 2: การแสดงผล Card ---
-            return (
-              <div key={req.id} className="p-5 hover:bg-slate-50 transition-colors group">
-                <div className="flex justify-between mb-2">
-                  <div className="flex items-center gap-3">
-                    {/* Badge ประเภทคำขอ (Code เดิม) */}
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>{req.type}</span>
-                    
-                    {/* ⭐ แสดง Alert Badge ตรงนี้ (เพิ่มใหม่) */}
-                    {alertBadge && (
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 animate-pulse ${alertBadge.color}`}>
-                        <Clock className="w-3 h-3"/> {alertBadge.text}
-                      </span>
-                    )}
+            {hasPermission(9) && req.status === 'Pending PM' && (
+              <>
+                <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
+                <button type="button" onClick={() => handleApprovalUpdate(req.id, 'Approved')} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">อนุมัติการสั่งซื้อ</button>
+              </>
+            )}
 
-                    <span className="text-xs text-gray-400">{req.id}</span>
-                    <DocIdBadge type={req.type} id={req.docNumber} />
-                    <h4 className="font-bold text-gray-900 text-sm">{req.items[0]?.name}</h4>
-                  </div>
-                  <StatusBadge status={req.status} />
-                </div>
-                
-                <ProgressBar request={req} />
-                <div className="flex justify-end gap-2 mt-2">
-                  {currentUserRole === ROLES.USER && req.status === 'Draft' && (<button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Edit className="w-4 h-4"/> แก้ไขแบบร่าง</button>)}
-                  {currentUserRole === ROLES.USER && req.status === 'Revise Needed' && (<button type="button" onClick={() => handleRevise(req)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm animate-pulse"><Edit className="w-4 h-4"/> แก้ไขข้อมูล/ส่งใหม่</button>)}
-                  {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
-                  {(req.status === 'Approved' || req.status === 'Ordered') && req.type === 'Local' && (
-                    <button type="button" onClick={() => openPOPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-4 h-4"/> พิมพ์</button>
-                  )}
-                  
-                  <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
-                  
-                  {req.status !== 'Draft' && (
-                    <>
-                      {hasPermission(8) && req.status === 'Pending Head' && (
-                        <>
-                          <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                          <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ PM'}</button>
-                        </>
-                      )}
-                      {hasPermission(9) && req.status === 'Pending PM' && (
-                        <>
-                          <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                          <button type="button" onClick={() => handleApprovalUpdate(req.id, 'Approved')} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">อนุมัติการสั่งซื้อ</button>
-                        </>
-                      )}
+            {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
+              <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
+            )}
+            {hasPermission(12) && req.type === 'Local' && req.status === 'Approved' && (
+              <button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>
+            )}
+            {hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (
+              <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>
+            )}
+          
+            {hasPermission(10) && req.status === 'Pending Check' && (
+              <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-4 h-4"/> ตรวจสอบเอกสาร (Verify)</button>
+            )}
+            
+            {/* --- HO Buy Flow --- */}
+            {hasPermission(11) && req.type === 'HO' && req.status === 'Approved' && req.purchaseType === 'Buy' && (
+              <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
+            )}
 
-                      {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
-                        <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
-                      )}
-                      {hasPermission(12) && req.type === 'Local' && req.status === 'Approved' && (
-                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>
-                      )}
-                      {hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (
-                        <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>
-                      )}
-                    
-                      {hasPermission(10) && req.status === 'Pending Check' && (
-                        <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-4 h-4"/> ตรวจสอบเอกสาร (Verify)</button>
-                      )}
-                      
-                      {/* --- HO Buy Flow --- */}
-                      {hasPermission(11) && req.type === 'HO' && req.status === 'Approved' && req.purchaseType === 'Buy' && (
-                        <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
-                      )}
+            {hasPermission(12) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (
+              <button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>
+            )}
 
-                      {hasPermission(12) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (
-                        <button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>
-                      )}
+            {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PO Issued' && (
+              <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">อัปเดตส่งของ</button>
+            )}
+            
+            {/* --- HO Rent Flow --- */}
+            {hasPermission(14) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Pending' && (
+              <button type="button" onClick={() => openContractModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">
+    <FileSignature className="w-4 h-4"/> บันทึกทำสัญญาแล้ว
+</button>
+            )}
+            {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Signed' && (
+              <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Truck className="w-4 h-4"/> เริ่มจัดส่ง/ส่งมอบ</button>
+            )}
 
-                      {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PO Issued' && (
-                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">อัปเดตส่งของ</button>
-                      )}
-                      
-                      {/* --- HO Rent Flow --- */}
-                      {hasPermission(14) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Pending' && (
-                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Signed')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm"><FileSignature className="w-4 h-4"/> บันทึกทำสัญญาแล้ว</button>
-                      )}
-                      {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Signed' && (
-                        <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Truck className="w-4 h-4"/> เริ่มจัดส่ง/ส่งมอบ</button>
-                      )}
-
-                      {hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received') && (
-                        <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">ยืนยันได้รับของ</button>
-                      )}
-                      
-                      {(hasPermission(14) || hasPermission(13)) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Approved' && (
-                        req.needContract !== false 
-                        ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ (หลังอนุมัติ)</button>)
-                        : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ (หลังอนุมัติ)</button>)
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            );
-          })
+            {hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received') && (
+              <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">ยืนยันได้รับของ</button>
+            )}
+            
+            {(hasPermission(14) || hasPermission(13)) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Approved' && (
+              req.needContract !== false 
+              ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ (หลังอนุมัติ)</button>)
+              : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ (หลังอนุมัติ)</button>)
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+})
         )}
       </div>
     </div>
@@ -3682,6 +3906,12 @@ setRequests(prev => prev.map(r => {
                                 
                                 <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleSort('id', invSort, setInvSort)}>รหัส <ArrowUpDown className="w-3 h-3 inline"/></th>
                                 <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleSort('name', invSort, setInvSort)}>ชื่อสินค้า <ArrowUpDown className="w-3 h-3 inline"/></th>
+{globalProjectFilter === 'All' && invTabMode !== 'Summary' && (
+    <th className="px-6 py-3 text-center cursor-pointer hover:bg-gray-200" onClick={() => handleSort('project', invSort, setInvSort)}>
+    โครงการ <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+</th>
+)}
+
                                 <th className="px-6 py-3 text-center cursor-pointer hover:bg-gray-200" onClick={() => handleSort('qty', invSort, setInvSort)}>คงเหลือ <ArrowUpDown className="w-3 h-3 inline"/></th>
                                 <th className="px-6 py-3 text-center">สถานะ</th>
                                 <th className="px-6 py-3 text-center">อัปเดตล่าสุด</th>
@@ -3713,6 +3943,14 @@ setRequests(prev => prev.map(r => {
                                           </div>
                                       )}
                                   </td>
+
+                                  {globalProjectFilter === 'All' && invTabMode !== 'Summary' && (
+    <td className="px-6 py-4 text-center">
+        <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded text-xs font-bold border border-indigo-100">
+            {inv.project || 'ส่วนกลาง'}
+        </span>
+    </td>
+)}
                                   <td className="px-6 py-4 text-center">
                                       <span className={`text-lg font-bold ${inv.isSummary ? 'text-purple-600' : 'text-blue-600'}`}>
                                           {inv.qty}
@@ -3828,6 +4066,12 @@ setRequests(prev => prev.map(r => {
                                 <>
                                     <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleSort('id', assetSort, setAssetSort)}>รหัสทรัพย์สิน <ArrowUpDown className="w-3 h-3 inline"/></th>
                                     <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleSort('name', assetSort, setAssetSort)}>รายการ <ArrowUpDown className="w-3 h-3 inline"/></th>
+{globalProjectFilter === 'All' && assetTabMode !== 'Summary' && (
+    <th className="px-6 py-3 text-center cursor-pointer hover:bg-gray-200" onClick={() => handleSort('project', assetSort, setAssetSort)}>
+    โครงการ <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+</th>
+)}
+
                                     <th className="px-6 py-3">Serial No.</th>
                                     <th className="px-6 py-3 text-center">สถานะ</th>
                                     {assetTabMode === 'Rent' && <th className="px-6 py-3">ระยะเวลาเช่า</th>}
@@ -3880,6 +4124,14 @@ setRequests(prev => prev.map(r => {
                                            {ast.alertType === 'overdue' && <span className="block text-[9px] text-orange-600 font-bold">ยืมเกินกำหนด</span>}
                                        </td>
                                        <td className="px-6 py-4 font-medium text-gray-900">{ast.name}</td>
+{globalProjectFilter === 'All' && assetTabMode !== 'Summary' && (
+    <td className="px-6 py-4 text-center">
+        <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded text-xs font-bold border border-indigo-100">
+            {ast.project || 'ส่วนกลาง'}
+        </span>
+    </td>
+)}
+
                                        <td className="px-6 py-4 text-gray-500">{ast.serial}</td>
                                        <td className="px-6 py-4 text-center">
                                            <span className={`px-2 py-1 rounded text-xs font-bold ${
@@ -4415,23 +4667,44 @@ setRequests(prev => prev.map(r => {
                 </div>
               </div>
 
-              {/* Suggestion Alert */}
-              {stockSuggestion && (
-                 <div className="bg-green-50 border border-green-200 p-4 rounded-xl flex justify-between items-center shadow-sm animate-in zoom-in-95 duration-200">
-                    <div className="flex items-center gap-3">
-                        <div className="bg-green-100 p-2 rounded-full text-green-600"><CheckCircle className="w-6 h-6"/></div>
-                        <div>
-                            <p className="text-sm font-bold text-green-900">พบรายการในระบบ!</p>
-                            <p className="text-xs text-green-700">
-                                มี <b>{stockSuggestion.name}</b> {stockSuggestion.matchType === 'Withdraw' ? `ในคลัง ${stockSuggestion.qty} ${stockSuggestion.unit}` : 'ว่างพร้อมให้ยืม'}
-                            </p>
+{/* Suggestion Alert (Multi-Project List) */}
+{foundSuggestions.length > 0 && (
+    <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4 animate-in zoom-in-95 shadow-sm">
+        <div className="flex items-center gap-2 mb-2 pb-2 border-b border-green-200">
+            <div className="bg-green-100 p-1.5 rounded-full text-green-600"><CheckCircle className="w-4 h-4"/></div>
+            <p className="text-sm font-bold text-green-800">พบรายการในระบบ ({foundSuggestions.length})</p>
+        </div>
+        
+        <div className="max-h-40 overflow-y-auto space-y-2 pr-1">
+            {foundSuggestions.map((item, idx) => (
+                <div key={idx} className="flex justify-between items-center bg-white p-2 rounded-lg border border-green-100 shadow-sm">
+                    <div className="flex-1 min-w-0 mr-2">
+                        <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm text-gray-800 truncate">{item.name}</span>
+                            <span className={`text-[10px] px-1.5 rounded border ${item.matchType === 'Withdraw' ? 'bg-pink-50 text-pink-700 border-pink-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                                {item.matchType === 'Withdraw' ? 'วัสดุ' : 'ทรัพย์สิน'}
+                            </span>
+                        </div>
+                        <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
+                            <Building className="w-3 h-3"/> โครงการ: <span className="font-bold text-gray-700">{item.project || 'ส่วนกลาง'}</span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                            มีอยู่: <span className="font-bold text-green-600">{item.qty || 1} {item.unit}</span> ({item.sourceLabel})
                         </div>
                     </div>
-                    <button type="button" onClick={() => selectSuggestion(stockSuggestion)} className="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm">
-                        เปลี่ยนเป็น "{stockSuggestion.matchType === 'Withdraw' ? 'เบิก' : 'ยืม'}"
+                    
+                    <button 
+                        type="button" 
+                        onClick={() => selectSuggestion(item)} 
+                        className="bg-green-600 text-white text-xs px-3 py-1.5 rounded-lg font-bold hover:bg-green-700 shadow-sm whitespace-nowrap transition-colors"
+                    >
+                        เลือก ({item.matchType === 'Withdraw' ? 'เบิก' : 'ยืม'})
                     </button>
-                 </div>
-              )}
+                </div>
+            ))}
+        </div>
+    </div>
+)}
 
               {/* Item Input Section */}
               <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm relative">
@@ -4462,7 +4735,7 @@ setRequests(prev => prev.map(r => {
                                 </button>
                               </div>
                           </div>
-                          
+
                           <div className="col-span-2">
                               <label className="text-xs font-bold text-gray-500 mb-1 block">จำนวน</label>
                               <input type="number" min="1" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm text-center" value={tempItem.qty} onChange={e => setTempItem({...tempItem, qty: parseInt(e.target.value) || 0})} disabled={newOrderMeta.type === 'Borrow'} />
@@ -4478,6 +4751,8 @@ setRequests(prev => prev.map(r => {
         {ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
     </select>
 </div>
+
+
                       </div>
 
             {newOrderMeta.type !== 'Borrow' && (
@@ -4523,36 +4798,54 @@ setRequests(prev => prev.map(r => {
                                 );
                             })()}
                             
-                            <div className="col-span-4">
-                                        <label className="text-xs font-bold text-gray-500 mb-1 block">
-                                            {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' ? 'ราคาเช่า (บาท)' : 'ราคาต่อหน่วย (บาท)'}
-                                        </label>
-                                        
-                                        <div className="flex gap-2">
-                                            <input 
-                                                type="number" min="0" 
-                                                disabled={newOrderMeta.type === 'Withdraw'} 
-                                                className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" 
-                                                value={tempItem.unitPrice} 
-                                                onChange={e => setTempItem({...tempItem, unitPrice: parseFloat(e.target.value) || 0})} 
-                                            />
-                                            
-                                            {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' && (
-                                                <select 
-                                                    className="w-32 p-2.5 border border-gray-300 rounded-lg text-sm bg-white text-gray-700 font-medium"
-                                                    value={tempItem.rentalUnit || 'Month'}
-                                                    onChange={e => setTempItem({...tempItem, rentalUnit: e.target.value})}
-                                                >
-                                                    <option value="Day">บาท/วัน</option>
-                                                    <option value="Month">บาท/เดือน</option>
-                                                    <option value="Year">บาท/ปี</option>
-                                                </select>
-                                            )}
-                                        </div>
-                                    </div>
+<div className="col-span-4">
+    <label className="text-xs font-bold text-gray-500 mb-1 block">
+        {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' 
+            ? 'ราคาเช่า (บาท)' 
+            : 'ราคาต่อหน่วย (บาท)'}
+    </label>
+    
+    <div className="flex gap-2">
+        {/* ช่องกรอกตัวเลขราคา */}
+        <input 
+            type="number" min="0" 
+            disabled={newOrderMeta.type === 'Withdraw'} 
+            className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" 
+            value={tempItem.unitPrice} 
+            onChange={e => setTempItem({...tempItem, unitPrice: parseFloat(e.target.value) || 0})} 
+        />
+        
+        {/* Dropdown หน่วยเวลา (แสดงเฉพาะ HO Rent) */}
+        {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' && (
+            <select 
+                className="w-24 p-2.5 border border-gray-300 rounded-lg text-sm bg-white text-gray-700 font-medium"
+                value={tempItem.rentalUnit || 'Month'}
+                onChange={e => setTempItem({...tempItem, rentalUnit: e.target.value})}
+            >
+                <option value="Day">/ วัน</option>
+                <option value="Month">/ เดือน</option>
+                <option value="Year">/ ปี</option>
+            </select>
+        )}
+    </div>
+</div>
+
+                      {/* --- เพิ่มช่องกรอกระยะเวลาเช่า (เฉพาะ HO Rent) --- */}
+{newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' && (
+    <div className="col-span-2">
+        <label className="text-xs font-bold text-gray-500 mb-1 block">ระยะเวลาเช่า</label>
+        <input 
+            type="number" min="1" 
+            className="w-full p-2.5 border border-gray-300 rounded-lg text-sm text-center font-bold text-indigo-700 bg-indigo-50"
+            value={tempItem.duration || 1} 
+            onChange={e => setTempItem({...tempItem, duration: parseFloat(e.target.value) || 1})} 
+        />
+    </div>
+)}
                         </div>
                       )}
                       
+
                       {newOrderMeta.type !== 'Borrow' && (
                         <div>
                             <label className="text-xs font-bold text-gray-500 mb-1 block">หมายเหตุ</label>
@@ -4654,13 +4947,12 @@ setRequests(prev => prev.map(r => {
                                             {/* แสดงตัวเลขราคา */}
                                             <span className="font-mono font-bold">{itm.unitPrice.toLocaleString()} บาท</span>
                                             
-                                            {/* แสดงหน่วยย่อย */}
                                             <span className="text-[10px] text-gray-500">
-                                                {selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent'
-                                                    ? `/${itm.rentalUnit === 'Day' ? 'วัน' : itm.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}/${itm.unit}`
-                                                    : `/${itm.unit}`
-                                                }
-                                            </span>
+    {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent'
+        ? `/${itm.rentalUnit === 'Day' ? 'วัน' : itm.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}/${itm.unit}`
+        : `/${itm.unit}`
+    }
+</span>
                                         </div>
                                     ) : '-'}
                                 </td>
@@ -4753,9 +5045,39 @@ setRequests(prev => prev.map(r => {
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                      {getSelectionItems().map((item, idx) => (
                          <div key={idx} onClick={() => handleSelectFromModal(item)} className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm hover:border-blue-400 hover:shadow-md cursor-pointer transition-all flex gap-3 items-center group">
-                             <div className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 border overflow-hidden">
-                                {item.image ? <ImageIcon className="w-6 h-6 text-blue-500"/> : (item.id && item.id.startsWith('AST') ? <Monitor className="w-6 h-6 text-indigo-400"/> : <Package className="w-6 h-6 text-gray-300"/>)}
-                             </div>
+                             {/* ⭐ ส่วนแสดงรูปภาพ (Updated) */}
+<div 
+    className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 border overflow-hidden relative cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all"
+    onClick={(e) => {
+        const img = getItemLatestImage(item);
+        if (img) {
+            e.stopPropagation(); // ป้องกันไม่ให้ไป trigger การเลือกรายการ
+            setViewingAttachments({ attachments: [img] }); // เปิดดูรูปขยาย
+        }
+    }}
+    title="คลิกเพื่อดูรูปภาพขยาย"
+>
+    {(() => {
+        const img = getItemLatestImage(item);
+        if (img) {
+            return (
+                <>
+                    <img 
+                        src={getDriveImageUrl(img.url || img.base64)} 
+                        alt="preview" 
+                        className="w-full h-full object-cover hover:scale-110 transition-transform duration-300" 
+                        onError={(e) => e.target.style.display = 'none'}
+                    />
+                    <div className="absolute bottom-0 right-0 bg-black/50 text-white p-0.5 rounded-tl-md">
+                        <ImageIcon className="w-3 h-3"/>
+                    </div>
+                </>
+            );
+        } else {
+            return <span className="text-[10px] text-gray-400 font-bold">ไม่มีภาพ</span>;
+        }
+    })()}
+</div>
                              <div className="flex-1 min-w-0">
                                  <h4 className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors">{item.name}</h4>
                                  <p className="text-xs text-gray-500 truncate font-mono">{item.id || item.serial || '-'}</p>
@@ -4843,39 +5165,115 @@ setRequests(prev => prev.map(r => {
                             })()}
                             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
                                 <h4 className="font-bold text-gray-700 mb-4 flex items-center gap-2 border-b pb-2"><ShoppingCart className="w-4 h-4"/> รายการสินค้า ({selectedRequest.items.length})</h4>
-                                <div className="space-y-3">
-                                    {selectedRequest.items.map((item, idx) => (
-                                        <div key={idx} className="flex gap-4 p-3 bg-gray-50 rounded-lg border border-gray-100 items-start">
-                                            <div className="w-12 h-12 bg-white rounded-lg border flex items-center justify-center shrink-0 overflow-hidden">
-                                                {item.images && item.images.length > 0 ? (
-                                                    <div className="w-full h-full bg-gray-100 flex items-center justify-center cursor-pointer hover:opacity-80" onClick={() => handleViewFile(item.images[0], item.name)}><ImageIcon className="w-5 h-5 text-blue-500"/></div>
-                                                ) : (<Package className="w-6 h-6 text-gray-300"/>)}
-                                            </div>
-                                            <div className="flex-1">
-                                                <div className="flex justify-between items-start"><h5 className="font-bold text-gray-900">{item.name}</h5><span className="text-sm font-bold text-blue-600">x{item.qty} {item.unit}</span></div>
-                                                <div className="text-xs text-gray-500 mt-1 grid grid-cols-2 gap-2">{item.subJob && <span>Sub: {item.subJob}</span>}{item.epCode && <span>EP: {item.epCode}</span>}</div>
-                                                
-                                               <div className="flex flex-wrap gap-2 mt-2">
-                                                {item.note && <span className="text-xs text-gray-600 bg-white px-2 py-1 rounded border border-dashed">Note: {item.note}</span>}
-                                                
-                                                {/* ⭐ ปุ่มดูรูปภาพ (Updated: รองรับ Array และเปิด Viewer) */}
-                                                {item.images && item.images.length > 0 && (
-                                                    <button 
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            // ใช้ Viewer เดียวกับ History เพื่อดูรูปทั้งหมด
-                                                            setViewingAttachments({ attachments: item.images }); 
-                                                        }} 
-                                                        className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 flex items-center gap-1 hover:bg-blue-100 transition-colors"
-                                                    >
-                                                        <ImageIcon className="w-3 h-3"/> ดูรูปตัวอย่าง ({item.images.length})
-                                                    </button>
-                                                )}
-                                            </div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
+                                
+<div className="overflow-x-auto border border-gray-200 rounded-lg">
+    
+<table className="w-full text-sm">
+    <thead className="bg-gray-100 text-gray-700 border-b">
+        <tr>
+            <th className="p-3 text-left font-bold">รายการ</th>
+            <th className="p-3 text-right font-bold">ราคา/หน่วย</th>
+            <th className="p-3 text-center font-bold">จำนวน</th>
+            {/* ตัดคอลัมน์ "หน่วย" เดิมออกไป */}
+            <th className="p-3 text-right font-bold">รวมเงิน</th>
+            {/* เพิ่มคอลัมน์ "หมายเหตุ" */}
+            <th className="p-3 text-left font-bold w-32">หมายเหตุ</th>
+        </tr>
+    </thead>
+
+
+ <tbody className="divide-y divide-gray-100">
+    {selectedRequest.items.map((item, idx) => {
+        const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
+        const duration = isRent ? (item.duration || 1) : 1;
+        const lineTotal = item.qty * item.unitPrice * duration;
+
+        return (
+            <tr key={idx}>
+                {/* 1. รายการ + รายละเอียด (แก้ไขจุดนี้) */}
+                <td className="p-3 align-top">
+                    <div className="font-bold text-gray-900">{item.name}</div>
+                    
+                    <div className="text-xs text-gray-500 mt-1 flex flex-col gap-1">
+                        {/* แสดง SubJob / EP Code (ถ้ามี) */}
+                        {(item.subJob || item.epCode) && (
+                            <div>
+                                {item.subJob && <span className="mr-2 bg-indigo-50 text-indigo-700 px-1 rounded">Sub: {item.subJob}</span>}
+                                {item.epCode && <span className="mr-2 bg-purple-50 text-purple-700 px-1 rounded">EP: {item.epCode}</span>}
+                            </div>
+                        )}
+
+                        {/* ⭐ เพิ่ม: แสดง Asset ID และ S/N (สำหรับงานยืม) */}
+                        {(item.assetId || item.serial) && (
+                            <div className="flex flex-wrap gap-2 mt-0.5">
+                                {item.assetId && (
+                                    <span className="font-mono text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 flex items-center gap-1">
+                                        <span className="opacity-50">ID:</span> {item.assetId}
+                                    </span>
+                                )}
+                                {item.serial && (
+                                    <span className="font-mono text-[10px] bg-green-50 text-green-700 px-1.5 py-0.5 rounded border border-green-100 flex items-center gap-1">
+                                        <span className="opacity-50">S/N:</span> {item.serial}
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ปุ่มดูรูปภาพ */}
+                    {item.images && item.images.length > 0 && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setViewingAttachments({ attachments: item.images });
+                            }}
+                            className="mt-2 text-xs bg-gray-50 text-blue-600 px-2 py-1 rounded border border-gray-200 flex items-center gap-1 w-fit hover:bg-blue-50 hover:border-blue-200 transition-colors"
+                        >
+                            <ImageIcon className="w-3 h-3"/> รูปตัวอย่าง ({item.images.length})
+                        </button>
+                    )}
+                </td>
+
+                {/* 2. ราคา/หน่วย */}
+                <td className="p-3 text-right text-gray-700 align-top">
+                    {item.unitPrice > 0 ? (
+                        <div className="flex flex-col items-end">
+                            <span className="font-mono font-bold text-gray-900">{item.unitPrice.toLocaleString()}</span>
+                            <span className="text-[10px] text-gray-500">
+                                {isRent 
+                                    ? `บาท / ${item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}`
+                                    : `บาท`
+                                }
+                            </span>
+                        </div>
+                    ) : '-'}
+                </td>
+
+                {/* 3. จำนวน */}
+                <td className="p-3 text-center align-top">
+                    <div className="font-medium">{item.qty} {item.unit}</div>
+                    {isRent && (
+                        <div className="text-xs text-indigo-600 font-bold mt-1 bg-indigo-50 px-1 rounded inline-block whitespace-nowrap">
+                            x {item.duration || 1} {item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}
+                        </div>
+                    )}
+                </td>
+
+                {/* 4. รวมเงิน */}
+                <td className="p-3 text-right font-bold text-gray-900 align-top bg-gray-50/50">
+                    {lineTotal.toLocaleString()}
+                </td>
+
+                {/* 5. หมายเหตุ */}
+                <td className="p-3 text-xs text-gray-500 align-top break-words">
+                    {item.note || '-'}
+                </td>
+            </tr>
+        );
+    })}
+</tbody>
+</table>
+</div>
                             </div>
                         </div>
                         <div className="space-y-6">
@@ -5760,6 +6158,11 @@ setRequests(prev => prev.map(r => {
                                 <h4 className="font-bold text-gray-800 border-b pb-2 mb-4 flex items-center gap-2"><Info className="w-4 h-4 text-blue-600"/> ข้อมูลสินค้า / ทรัพย์สิน</h4>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-y-6 gap-x-8 text-sm">
                                     <div><span className="text-gray-500 block text-xs mb-1">รหัส (ID)</span><span className="font-mono font-bold text-gray-700">{viewingItem.id}</span></div>
+<div className="col-span-2 md:col-span-1">
+    <span className="text-gray-500 block text-xs mb-1">โครงการ (Project)</span>
+    <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">{viewingItem.project || 'ไม่ระบุ'}</span>
+</div>
+
                                     <div><span className="text-gray-500 block text-xs mb-1">ชื่อรายการ</span><span className="font-bold text-gray-900">{viewingItem.name}</span></div>
                                     
                                     {viewingItem.serial !== undefined ? (
@@ -5791,28 +6194,42 @@ setRequests(prev => prev.map(r => {
                         </div>
                     )}
 
-                    {/* --- TOOLBAR --- */}
-                    <div className="px-6 py-4 sticky top-0 z-10 bg-slate-50/95 backdrop-blur-sm border-b border-gray-200 mt-2">
-                        <div className="flex flex-wrap gap-3 items-center justify-between">
-                            <h4 className="font-bold text-gray-700 flex items-center gap-2"><History className="w-4 h-4"/> ประวัติการดำเนินการ ({filteredLogs.length})</h4>
-                            <div className="flex items-center gap-3 flex-1 justify-end min-w-[250px]">
-                                <div className="relative w-64">
-                                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
-                                    <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white focus:ring-2 focus:ring-blue-500" placeholder="ค้นหาประวัติ..." value={historySearch} onChange={e => setHistorySearch(e.target.value)}/>
-                                </div>
-                                <select className="p-2 border border-gray-300 rounded-lg text-sm bg-white outline-none cursor-pointer focus:ring-2 focus:ring-blue-500" value={historyActionFilter} onChange={e => setHistoryActionFilter(e.target.value)}>
-                                    <option value="All">ทุกประเภท</option>
-                                    <option value="Stock In">รับของเข้า</option>
-                                    <option value="Withdraw">เบิกออก</option>
-                                    <option value="Borrow">ยืม</option>
-                                    <option value="Return">คืน</option>
-                                    <option value="Add Asset">เพิ่มทรัพย์สิน</option>
-                                    <option value="Delete Asset">รายการที่ลบ</option>
-                                    <option value="Import Assets">Import (CSV)</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
+{/* --- TOOLBAR --- */}
+<div className="px-6 py-4 sticky top-0 z-10 bg-slate-50/95 backdrop-blur-sm border-b border-gray-200 mt-2">
+    <div className="flex flex-wrap gap-3 items-center justify-between">
+        <h4 className="font-bold text-gray-700 flex items-center gap-2"><History className="w-4 h-4"/> ประวัติการดำเนินการ ({filteredLogs.length})</h4>
+        
+        <div className="flex items-center gap-2 flex-1 justify-end min-w-[250px]">
+            {/* ⭐ เพิ่มตัวกรองโครงการ (เฉพาะตอนดู All Logs) */}
+            {!viewingItem && (
+                <select 
+                    className="p-2 border border-gray-300 rounded-lg text-sm bg-white outline-none cursor-pointer focus:ring-2 focus:ring-blue-500 max-w-[150px]"
+                    value={globalProjectFilter} // ใช้ตัวกรองเดียวกับหน้าหลัก หรือจะสร้าง state ใหม่เฉพาะ modal ก็ได้ (ในที่นี้ใช้ global เพื่อความต่อเนื่อง)
+                    onChange={e => setGlobalProjectFilter(e.target.value)}
+                >
+                    <option value="All">ทุกโครงการ</option>
+                    {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                </select>
+            )}
+
+            <div className="relative w-48">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
+                <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white focus:ring-2 focus:ring-blue-500" placeholder="ค้นหา..." value={historySearch} onChange={e => setHistorySearch(e.target.value)}/>
+            </div>
+            
+            <select className="p-2 border border-gray-300 rounded-lg text-sm bg-white outline-none cursor-pointer focus:ring-2 focus:ring-blue-500" value={historyActionFilter} onChange={e => setHistoryActionFilter(e.target.value)}>
+                <option value="All">ทุกประเภท</option>
+                <option value="Stock In">รับของเข้า</option>
+                <option value="Withdraw">เบิกออก</option>
+                <option value="Borrow">ยืม</option>
+                <option value="Return">คืน</option>
+                <option value="Add Asset">เพิ่มทรัพย์สิน</option>
+                <option value="Delete Asset">รายการที่ลบ</option>
+                <option value="Import Assets">Import (CSV)</option>
+            </select>
+        </div>
+    </div>
+</div>
 
                     {/* --- TABLE --- */}
                     <div className="px-6 pb-6">
@@ -5832,7 +6249,7 @@ setRequests(prev => prev.map(r => {
 
                                         <th className="px-4 py-3 text-center">Change</th>
                                         <th className="px-4 py-3">Ref Doc</th>
-                                        <th className="px-4 py-3">User</th>
+                                        <th className="px-4 py-3 min-w-[120px]">User</th>
                                         <th className="px-4 py-3">Note</th>
                                     </tr>
                                 </thead>
@@ -5923,8 +6340,10 @@ setRequests(prev => prev.map(r => {
                                                     )}
                                                 </div>
                                             ) : (
-                                                <span className="text-gray-500 max-w-xs truncate block" title={log.note}>{log.note}</span>
-                                            )}
+    <div className="text-gray-500 whitespace-pre-wrap break-words min-w-[200px]">
+        {log.note}
+    </div>
+)}
                                         </td>
                                     </tr>
                                 ))}</tbody>
@@ -5951,19 +6370,94 @@ setRequests(prev => prev.map(r => {
          </div>
       )}
 
-      {showDisburseModal && (
-        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
-                <h3 className="font-bold text-lg text-teal-700 mb-4 flex items-center gap-2"><Package className="w-5 h-5"/> ยืนยันการจ่ายของ/เบิก</h3>
-                <p className="text-sm text-gray-600 mb-3">ตรวจสอบความถูกต้องและสภาพของก่อนส่งมอบ</p>
-                <textarea className="w-full p-3 border border-gray-300 rounded-lg text-sm mb-4 outline-none focus:ring-2 focus:ring-teal-500" rows="2" placeholder="หมายเหตุการจ่าย (Optional)..." value={disburseData.note} onChange={e => setDisburseData({...disburseData, note: e.target.value})}></textarea>
-                <div className="flex gap-3">
-                    <button onClick={() => setShowDisburseModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600">ยกเลิก</button>
-                    <button onClick={handleConfirmDisburse} className="flex-1 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700">ยืนยันจ่ายของ</button>
+{showDisburseModal && (
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto flex flex-col">
+            <h3 className="font-bold text-lg text-teal-700 mb-4 flex items-center gap-2">
+                <Package className="w-5 h-5"/> ยืนยันการจ่ายของ/เบิก
+            </h3>
+
+            {/* ⭐ ส่วนแสดงรายการสินค้าที่จะจ่าย (เพิ่มใหม่) */}
+            {(() => {
+                 const req = requests.find(r => r.id === disburseData.requestId);
+                 if (!req) return null;
+                 return (
+                     <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 text-sm animate-in zoom-in-95">
+                         <div className="flex justify-between items-center border-b border-slate-200 pb-2 mb-2">
+                             <span className="font-bold text-gray-700">รายการที่ต้องจ่าย ({req.items.length})</span>
+                             <span className="text-xs text-gray-500 bg-white px-2 py-0.5 rounded border">{req.id}</span>
+                         </div>
+                         <div className="space-y-2 max-h-[150px] overflow-y-auto pr-1">
+                             {req.items.map((item, idx) => (
+                                 <div key={idx} className="flex justify-between items-start text-xs border-b border-dashed border-slate-200 pb-1 last:border-0">
+                                     <div className="flex-1 mr-2">
+                                         <div className="font-bold text-gray-800">{item.name}</div>
+                                         {/* แสดง Asset ID / Serial กรณีเป็นงานยืม */}
+                                         {(item.assetId || item.serial) && (
+                                             <div className="text-[10px] text-gray-500 font-mono mt-0.5 flex flex-wrap gap-2">
+                                                 {item.assetId && <span className="bg-blue-50 text-blue-600 px-1 rounded">ID: {item.assetId}</span>}
+                                                 {item.serial && <span className="bg-green-50 text-green-600 px-1 rounded">S/N: {item.serial}</span>}
+                                             </div>
+                                         )}
+                                     </div>
+                                     <div className="font-bold text-teal-700 whitespace-nowrap bg-teal-50 px-2 py-0.5 rounded">
+                                         {item.qty} {item.unit}
+                                     </div>
+                                 </div>
+                             ))}
+                         </div>
+                     </div>
+                 );
+            })()}
+            {/* ------------------------------------- */}
+
+            <p className="text-sm text-gray-600 mb-3 font-bold">ตรวจสอบความถูกต้องและสภาพของก่อนส่งมอบ</p>
+            
+            <div className="space-y-4 flex-1">
+                {/* Note Input */}
+                <textarea 
+                    className="w-full p-3 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-teal-500" 
+                    rows="2" 
+                    placeholder="หมายเหตุการจ่าย (Optional)..." 
+                    value={disburseData.note} 
+                    onChange={e => setDisburseData({...disburseData, note: e.target.value})}
+                ></textarea>
+
+                {/* Image Upload Section */}
+                <div>
+                    <label className="text-xs font-bold text-gray-500 mb-2 block">หลักฐาน/รูปภาพประกอบ ({disburseData.images?.length || 0})</label>
+                    
+                    <div className="grid grid-cols-4 gap-2 mb-2">
+                        {/* Preview Images */}
+                        {disburseData.images && disburseData.images.map((img, idx) => (
+                            <div key={idx} className="relative group w-full h-16 bg-gray-100 rounded-lg border overflow-hidden">
+                                <img src={img.base64} alt="preview" className="w-full h-full object-cover"/>
+                                <button 
+                                    onClick={() => handleRemoveDisburseImage(idx)} 
+                                    className="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow-md opacity-0 group-hover:opacity-100 transition-all hover:bg-red-600 hover:scale-110"
+                                >
+                                    <X size={12} strokeWidth={3}/>
+                                </button>
+                            </div>
+                        ))}
+                        
+                        {/* Upload Button */}
+                        <label className="cursor-pointer flex flex-col items-center justify-center w-full h-16 border-2 border-dashed border-teal-300 bg-teal-50 rounded-lg hover:bg-teal-100 transition-colors text-teal-600">
+                            <Camera className="w-5 h-5"/>
+                            <input type="file" multiple className="hidden" onChange={handleDisburseImageSelect}/>
+                        </label>
+                    </div>
                 </div>
             </div>
+
+            <div className="flex gap-3 mt-4">
+                <button onClick={() => setShowDisburseModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 font-bold">ยกเลิก</button>
+                <button onClick={handleConfirmDisburse} className="flex-1 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700 shadow-md">ยืนยันจ่ายของ</button>
+            </div>
         </div>
-      )}
+    </div>
+)}
+
 
 {showEditInvModal && editingStockItem && (
           <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
@@ -6150,6 +6644,41 @@ setRequests(prev => prev.map(r => {
              </div>
           </div>
       )}
+
+
+      {/* --- CONTRACT MODAL (NEW) --- */}
+{showContractModal && (
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h3 className="font-bold text-lg text-teal-800 mb-4 flex items-center gap-2">
+                <FileSignature className="w-5 h-5"/> บันทึกการทำสัญญา (Contract)
+            </h3>
+            
+            <div className="space-y-4">
+                <div className="bg-teal-50 border border-teal-100 p-3 rounded-lg text-sm text-teal-800">
+                    <p>กรุณาแนบไฟล์สัญญาเช่าเพื่อบันทึกสถานะ</p>
+                </div>
+
+                <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">แนบไฟล์สัญญา (PDF/รูปภาพ) <span className="text-gray-400 font-normal">(ถ้ามี)</span></label>
+                    <input 
+                        type="file" 
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100 cursor-pointer" 
+                        onChange={e => setContractData({...contractData, file: e.target.files[0]})}
+                    />
+                </div>
+            </div>
+
+            <button onClick={handleSubmitContract} className="w-full py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700 mt-6 shadow-md transition-colors">
+                ยืนยัน / บันทึก
+            </button>
+            <button onClick={() => setShowContractModal(false)} className="w-full py-2 text-gray-500 text-sm mt-2 hover:underline">
+                ยกเลิก
+            </button>
+        </div>
+    </div>
+)}
 
 {showReturnAssetModal && returnAssetData && (
           <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
