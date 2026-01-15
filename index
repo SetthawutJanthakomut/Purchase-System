@@ -142,7 +142,7 @@ const {
       Briefcase: BriefcaseIcon, 
       Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
       Upload,
-      Settings // ⭐ เพิ่มตรงนี้ครับ
+      Settings,Lock // ⭐ เพิ่มตรงนี้ครับ
     } = lucideReact;
 
     // Manual Aliasing for missing/renamed icons
@@ -366,6 +366,10 @@ const {
       const [assetProjectFilter, setAssetProjectFilter] = useState('All');
       const [projectDetailTab, setProjectDetailTab] = useState('SubJob'); // 'SubJob' หรือ 'EPCode'
       const [globalProjectFilter, setGlobalProjectFilter] = useState('All');
+      // --- STATE: User Detail Modal ---
+const [viewingUser, setViewingUser] = useState(null); // เก็บ User ที่กำลังดู
+const [userDetailTab, setUserDetailTab] = useState('info'); // info, purchase, withdraw, borrow
+const [detailSearch, setDetailSearch] = useState(''); // ช่องค้นหาในหน้า Detail
 
 const hasPermission = (permId, project = globalProjectFilter) => {
           // 1. ถ้าเป็น Super Admin ให้ผ่านตลอด
@@ -588,18 +592,20 @@ const handleSaveProject = () => {
 
           setIsLoading(true);
           try {
-              for (const id of targetIds) {
-                  const item = inventory.find(i => i.id === id);
-                  if (item) {
-                      await new Promise((resolve) => {
-                           google.script.run.withSuccessHandler(resolve).deleteDataFromSheet('Inventory', id);
-                      });
-
-                      // Backup Data
-                      const backupData = JSON.stringify(item);
-                      addInvLog('Delete Inventory', item.name, 'Delete', backupData, [], null, id);
-                  }
-              }
+for (const id of targetIds) {
+    const item = inventory.find(i => i.id === id);
+    if (item) {
+        await new Promise((resolve) => {
+             google.script.run.withSuccessHandler(resolve).deleteDataFromSheet('Inventory', id);
+        });
+        
+        const backupData = JSON.stringify(item);
+        
+        // ⭐ ระบุชื่อโครงการในช่อง Change
+        const projectLabel = item.project || 'ส่วนกลาง';
+        await addInvLog('Delete Inventory', item.name, `Delete (${projectLabel})`, backupData, [], null, id);
+    }
+}
 
               setInventory(prev => prev.filter(i => !targetIds.includes(i.id)));
               setSelectedInventory([]); // เคลียร์การเลือก
@@ -620,132 +626,138 @@ const handleSaveProject = () => {
       const [importInvFileName, setImportInvFileName] = useState('');
 
       
+
 // --- LOGIC: IMPORT INVENTORY CSV (Auto ID & Merge Name) ---
-      const handleInvFileImport = (e) => {
-          const file = e.target.files[0];
-          if (!file) return;
-          
-          setImportInvFileName(file.name);
-          const reader = new FileReader();
-          
-          reader.onload = (event) => {
-              const text = event.target.result;
-              const rows = text.split('\n').map(row => row.split(','));
-              
-              // Helper: Check Stock Type (default: System)
-              const getStockType = (val) => {
-                  if (!val) return 'System';
-                  const v = val.trim().toLowerCase();
-                  if (v.includes('นอก') || v.includes('non')) return 'NonSystem';
-                  return 'System';
-              };
+const handleInvFileImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setImportInvFileName(file.name);
+    const reader = new FileReader();
+    
+    reader.onload = (event) => {
+        const text = event.target.result;
+        const rows = text.split('\n').map(row => row.split(','));
+        
+        const getStockType = (val) => {
+            if (!val) return 'System';
+            const v = val.trim().toLowerCase();
+            if (v.includes('นอก') || v.includes('non')) return 'NonSystem';
+            return 'System';
+        };
 
-              // CSV Columns (7 columns): Name, Type, Qty, Unit, Min_Stock, Price, Note
-              // Start reading from row 2 (index 1)
-              const data = rows.slice(1).filter(row => row.length > 1 && row[0]?.trim() !== '').map((row, index) => {
-                  return {
-                      tempId: index,
-                      // id: ไม่รับจาก CSV แล้ว ให้ระบบจัดการเอง
-                      name: row[0]?.trim() || '',         // Col 0: Name (Key)
-                      stockType: getStockType(row[1]),    // Col 1: Type
-                      qty: parseInt(row[2]?.trim()) || 0, // Col 2: Qty
-                      unit: row[3]?.trim() || 'ชิ้น',      // Col 3: Unit
-                      minStock: parseInt(row[4]?.trim()) || 0, // Col 4: Min Stock
-                      price: parseFloat(row[5]?.trim()) || 0,  // Col 5: Price
-                      note: row[6]?.trim() || ''          // Col 6: Note
-                  };
-              });
-              setImportInvData(data);
-          };
-          
-          reader.readAsText(file);
-      };
+        // CSV Columns (8 columns): Name, Type, Qty, Unit, Min_Stock, Price, Note, Project
+        const data = rows.slice(1).filter(row => row.length > 1 && row[0]?.trim() !== '').map((row, index) => {
+            return {
+                tempId: index,
+                name: row[0]?.trim() || '',         // Col 0
+                stockType: getStockType(row[1]),    // Col 1
+                qty: parseInt(row[2]?.trim()) || 0, // Col 2
+                unit: row[3]?.trim() || 'ชิ้น',      // Col 3
+                minStock: parseInt(row[4]?.trim()) || 0, // Col 4
+                price: parseFloat(row[5]?.trim()) || 0,  // Col 5
+                note: row[6]?.trim() || '',          // Col 6
+                project: row[7]?.trim() || ''        // ⭐ Col 7: Project (เพิ่มใหม่)
+            };
+        });
+        setImportInvData(data);
+    };
+    
+    reader.readAsText(file);
+};
 
-// --- LOGIC: CONFIRM IMPORT (UPDATED: Merge checks Name AND Type) ---
-      const confirmImportInventory = async () => {
-          if (importInvData.length === 0) return;
+// --- LOGIC: CONFIRM IMPORT (UPDATED: Project Support & Fix Error) ---
+const confirmImportInventory = async () => {
+    if (importInvData.length === 0) return;
 
-          // 1. Validation
-          for (let i = 0; i < importInvData.length; i++) {
-              const item = importInvData[i];
-              const line = i + 1;
-              if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อสินค้า`, 'error'); return; }
-          }
+    // 1. Validation
+    for (let i = 0; i < importInvData.length; i++) {
+        const item = importInvData[i];
+        const line = i + 1;
+        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อสินค้า`, 'error'); return; }
+        
+        // ⭐ ตรวจสอบโครงการ
+        if (!item.project) { showToast(`รายการที่ ${line}: ขาดชื่อโครงการ`, 'error'); return; }
+        const projectExists = projects.some(p => p.name === item.project);
+        if (!projectExists) { showToast(`รายการที่ ${line}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error'); return; }
+    }
 
-          setIsLoading(true);
-          const date = new Date().toLocaleString('th-TH');
-          
-          let currentInvList = [...inventory]; 
-          let runNoCount = inventory.length;
+    setIsLoading(true);
+    const date = new Date().toLocaleString('th-TH');
+    
+    // ⭐ ตัวแปรสำคัญที่หายไป (Fix ReferenceError)
+    let currentInvList = [...inventory]; 
+    let runNoCount = inventory.length;
 
-          // 2. Process Data
-          for (const item of importInvData) {
-              // ⭐ แก้ไขจุดนี้: เช็คทั้ง "ชื่อ" และ "ประเภท"
-              const existingIndex = currentInvList.findIndex(inv => 
-                  inv.name === item.name && inv.stockType === item.stockType
-              );
-              
-              if (existingIndex !== -1) {
-                  // ✅ กรณีซ้ำ (ชื่อตรง และ ประเภทตรง): รวมยอด (Merge)
-                  const existingItem = currentInvList[existingIndex];
-                  const newQty = existingItem.qty + item.qty;
-                  
-                  const updatedItem = {
-                      ...existingItem,
-                      qty: newQty,
-                      price: item.price > 0 ? item.price : existingItem.price,
-                      // lastUpdated: date, // (Optional update date)
-                      note: item.note ? (existingItem.note ? `${existingItem.note} | ${item.note}` : item.note) : existingItem.note
-                  };
-                  
-                  currentInvList[existingIndex] = updatedItem;
-                  const { images, ...itemForServer } = updatedItem;
-                  saveInventoryToSheet(itemForServer);
+    // 2. Process Data
+    for (const item of importInvData) {
+        // ⭐ เช็คซ้ำโดยดู "โครงการ" ด้วย (ชื่อ+ประเภท+โครงการ ตรงกัน = รวมยอด)
+        const existingIndex = currentInvList.findIndex(inv => 
+            inv.name === item.name && 
+            inv.stockType === item.stockType && 
+            inv.project === item.project
+        );
 
-                  addInvLog('Import Merge', updatedItem.name, `+${item.qty}`, `นำเข้าเพิ่มยอด (${item.stockType}) รวมเป็น ${newQty}`, [], null, updatedItem.id);
-                  
-              } else {
-                  // ✅ กรณีใหม่ (หรือชื่อซ้ำแต่คนละประเภท): สร้างใหม่ (New)
-                  runNoCount++;
-                  let runNo = String(runNoCount).padStart(3, '0');
-                  let finalId = `INV-${runNo}`;
-                  
-                  while (currentInvList.some(inv => inv.id === finalId)) {
-                      runNoCount++;
-                      runNo = String(runNoCount).padStart(3, '0');
-                      finalId = `INV-${runNo}`;
-                  }
+        if (existingIndex !== -1) {
+            // ✅ Merge Logic
+            const existingItem = currentInvList[existingIndex];
+            const newQty = existingItem.qty + item.qty;
+            
+            const updatedItem = {
+                ...existingItem,
+                qty: newQty,
+                price: item.price > 0 ? item.price : existingItem.price,
+                note: item.note ? (existingItem.note ? `${existingItem.note} | ${item.note}` : item.note) : existingItem.note
+            };
+            currentInvList[existingIndex] = updatedItem;
+            const { images, ...itemForServer } = updatedItem;
+            saveInventoryToSheet(itemForServer);
+            
+            addInvLog('Import Merge', updatedItem.name, `+${item.qty}`, `นำเข้าเพิ่มยอด (${item.stockType}) โครงการ ${item.project}`, [], null, updatedItem.id);
 
-                  const newItem = {
-                      id: finalId,
-                      name: item.name,
-                      stockType: item.stockType,
-                      qty: item.qty,
-                      unit: item.unit,
-                      minStock: item.minStock,
-                      price: item.price,
-                      lastUpdated: date,
-                      image: null,
-                      images: [],
-                      note: item.note
-                  };
+        } else {
+            // ✅ New Item Logic
+            runNoCount++;
+            let runNo = String(runNoCount).padStart(3, '0');
+            let finalId = `INV-${runNo}`;
+            
+            // หา ID ว่าง
+            while (currentInvList.some(inv => inv.id === finalId)) {
+                runNoCount++;
+                runNo = String(runNoCount).padStart(3, '0');
+                finalId = `INV-${runNo}`;
+            }
 
-                  currentInvList.push(newItem);
-                  const { images, ...itemForServer } = newItem;
-                  saveInventoryToSheet(itemForServer);
-                  
-                  const typeLabel = newItem.stockType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
-                  addInvLog('Import New', newItem.name, `Start: ${newItem.qty}`, `สินค้าใหม่ CSV ${typeLabel}`, [], null, finalId);
-              }
-          }
+            const newItem = {
+                id: finalId,
+                name: item.name,
+                stockType: item.stockType,
+                qty: item.qty,
+                unit: item.unit,
+                minStock: item.minStock,
+                price: item.price,
+                lastUpdated: date,
+                image: null,
+                images: [],
+                note: item.note,
+                project: item.project // ⭐ บันทึกโครงการ
+            };
+            currentInvList.push(newItem);
+            const { images, ...itemForServer } = newItem;
+            saveInventoryToSheet(itemForServer);
+            
+            const typeLabel = newItem.stockType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
+            addInvLog('Import New', newItem.name, `Start: ${newItem.qty}`, `สินค้าใหม่ CSV ${typeLabel} โครงการ ${item.project}`, [], null, finalId);
+        }
+    }
 
-          setInventory(currentInvList);
-          setIsLoading(false);
-          setShowImportInvModal(false);
-          setImportInvData([]);
-          setImportInvFileName('');
-          showToast(`ประมวลผลนำเข้าเสร็จสิ้น`);
-      };
+    setInventory(currentInvList);
+    setIsLoading(false);
+    setShowImportInvModal(false);
+    setImportInvData([]);
+    setImportInvFileName('');
+    showToast(`ประมวลผลนำเข้าเสร็จสิ้น`);
+};
       
 
       // --- LOGIC: DELETE & RESTORE ---
@@ -760,20 +772,20 @@ const handleSaveProject = () => {
           setIsLoading(true);
           try {
               // วนลูลลบทีละรายการ
-              for (const id of targetIds) {
-                  const asset = assets.find(a => a.id === id);
-                  if (asset) {
-                      // 1. ลบจาก Sheet
-                      await new Promise((resolve) => {
-                           google.script.run.withSuccessHandler(resolve).deleteDataFromSheet('Assets', id);
-                      });
-                      
-                      // 2. บันทึกประวัติพร้อมข้อมูล Backup (JSON)
-                      // เก็บข้อมูลทั้งหมดลงใน Note เพื่อใช้ Restore
-                      const backupData = JSON.stringify(asset);
-                      addInvLog('Delete Asset', asset.name, 'Delete', backupData, [], null, id);
-                  }
-              }
+for (const id of targetIds) {
+    const asset = assets.find(a => a.id === id);
+    if (asset) {
+        await new Promise((resolve) => {
+             google.script.run.withSuccessHandler(resolve).deleteDataFromSheet('Assets', id);
+        });
+        
+        const backupData = JSON.stringify(asset);
+        
+        // ⭐ ระบุชื่อโครงการในช่อง Change
+        const projectLabel = asset.project || 'ส่วนกลาง';
+        await addInvLog('Delete Asset', asset.name, `Delete (${projectLabel})`, backupData, [], null, id);
+    }
+}
 
               // 3. อัปเดต State (ลบออกจากหน้าจอ)
               setAssets(prev => prev.filter(a => !targetIds.includes(a.id)));
@@ -790,87 +802,110 @@ const handleSaveProject = () => {
           }
       };
 
-      // 2. ฟังก์ชันกู้คืน (Restore) - เฉพาะ Admin
-      const handleRestoreAsset = async (log) => {
-          if (currentUserRole !== ROLES.ADMIN) {
-              showToast('สิทธิ์ไม่เพียงพอ (ต้องเป็น Admin)', 'error');
-              return;
-          }
+// 2. ฟังก์ชันกู้คืน (Restore) - เฉพาะผู้มีสิทธิ์
+const handleRestoreAsset = async (log) => {
+    try {
+        // 1. แปลงข้อมูลจาก Note (JSON) ออกมาก่อน เพื่อดูว่าเป็นของโครงการไหน
+        const assetData = JSON.parse(log.note);
+        if (!assetData || !assetData.id) throw new Error("ข้อมูล Backup ไม่ถูกต้อง");
 
-          try {
-              // แปลงข้อมูลจาก Note (JSON String) กลับเป็น Object
-              const assetData = JSON.parse(log.note);
-              if (!assetData || !assetData.id) throw new Error("ข้อมูล Backup ไม่ถูกต้อง");
+        // ⭐ 2. ตรวจสอบสิทธิ์: ต้องมีสิทธิ์กู้คืน (27) ในโครงการนั้นๆ
+        const targetProject = assetData.project || 'ส่วนกลาง'; // ถ้าไม่มี Project ให้ถือเป็นส่วนกลาง
+        if (!hasPermission(27, targetProject)) {
+            showToast(`คุณไม่มีสิทธิ์กู้คืนข้อมูลของโครงการ "${targetProject}"`, 'error');
+            return;
+        }
 
-              setIsLoading(true);
-              
-              // เช็คว่า ID นี้มีอยู่แล้วหรือไม่ (กันซ้ำ)
-              if (assets.some(a => a.id === assetData.id)) {
-                   showToast(`รายการ ${assetData.id} มีอยู่ในระบบแล้ว (ไม่ต้องกู้คืน)`, 'error');
-                   setIsLoading(false);
-                   return;
-              }
+        setIsLoading(true);
+        // 3. เช็คว่า ID นี้มีอยู่แล้วหรือไม่ (กันซ้ำ)
+        if (assets.some(a => a.id === assetData.id)) {
+                showToast(`รายการ ${assetData.id} มีอยู่ในระบบแล้ว (ไม่ต้องกู้คืน)`, 'error');
+                setIsLoading(false);
+                return;
+        }
 
-              // บันทึกลง Sheet
-              const { images, ...assetForServer } = assetData; 
-              await new Promise((resolve) => {
-                   google.script.run.withSuccessHandler(resolve).syncAsset(assetForServer);
-              });
+        // 4. บันทึกลง Sheet
+        const { images, ...assetForServer } = assetData;
+        await new Promise((resolve) => {
+                google.script.run.withSuccessHandler(resolve).syncAsset(assetForServer);
+        });
 
-              // อัปเดต State
-              setAssets(prev => [...prev, assetData]);
-
-              // บันทึก Log การกู้คืน
-              addInvLog('Restore Asset', assetData.name, 'Restore', `กู้คืนรายการจากประวัติวันที่ ${log.date}`, [], null, assetData.id);
-
-              showToast(`กู้คืนทรัพย์สิน ${assetData.id} เรียบร้อย`);
-          } catch (err) {
-              console.error(err);
-              showToast('กู้คืนล้มเหลว: ข้อมูลสำรองเสียหายหรืออ่านไม่ได้', 'error');
-          } finally {
-              setIsLoading(false);
-          }
-      };
+        // 5. อัปเดต State และบันทึก Log
+        setAssets(prev => [...prev, assetData]);
+        
+        // บันทึก Log การกู้คืน (ระบุโครงการด้วย)
+        await addInvLog('Restore Asset', assetData.name, 'Restore', `กู้คืนเข้าโครงการ ${targetProject} (จากประวัติวันที่ ${log.date})`, [], null, assetData.id);
+        
+        showToast(`กู้คืนทรัพย์สิน ${assetData.id} เรียบร้อย`);
+    } catch (err) {
+        console.error(err);
+        showToast('กู้คืนล้มเหลว: ข้อมูลสำรองเสียหายหรืออ่านไม่ได้', 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
       // --- LOGIC: INVENTORY MANAGEMENT (DELETE, RESTORE, UPDATE) ---
 
 
+// 3. กู้คืนสินค้า (Restore Inventory) - รองรับสิทธิ์
+const handleRestoreInventory = async (log) => {
+    try {
+        // 1. แปลงข้อมูล
+        const itemData = JSON.parse(log.note);
+        if (!itemData || !itemData.id) throw new Error("ข้อมูล Backup ไม่ถูกต้อง");
 
-      // 2. กู้คืนสินค้า (Restore Inventory)
-      const handleRestoreInventory = async (log) => {
-          if (currentUserRole !== ROLES.ADMIN) {
-              showToast('สิทธิ์ไม่เพียงพอ (ต้องเป็น Admin)', 'error');
-              return;
-          }
-          try {
-              const itemData = JSON.parse(log.note);
-              if (!itemData || !itemData.id) throw new Error("ข้อมูล Backup ไม่ถูกต้อง");
+        // ⭐ 2. ตรวจสอบสิทธิ์: ต้องมีสิทธิ์กู้คืน (27) ในโครงการนั้นๆ
+        const targetProject = itemData.project || 'ส่วนกลาง';
+        if (!hasPermission(27, targetProject)) {
+            showToast(`คุณไม่มีสิทธิ์กู้คืนข้อมูลของโครงการ "${targetProject}"`, 'error');
+            return;
+        }
 
-              setIsLoading(true);
+        setIsLoading(true);
+        // 3. เช็ค ID ซ้ำ
+        if (inventory.some(i => i.id === itemData.id)) {
+                showToast(`รหัส ${itemData.id} มีอยู่แล้ว`, 'error');
+                setIsLoading(false);
+                return;
+        }
 
-              if (inventory.some(i => i.id === itemData.id)) {
-                   showToast(`รหัส ${itemData.id} มีอยู่แล้ว`, 'error');
-                   setIsLoading(false);
-                   return;
-              }
+        // 4. บันทึกลง Sheet
+        const { images, ...itemForServer } = itemData;
+        await new Promise((resolve) => {
+                google.script.run.withSuccessHandler(resolve).syncInventory(itemForServer);
+        });
 
-              const { images, ...itemForServer } = itemData;
-              await new Promise((resolve) => {
-                   google.script.run.withSuccessHandler(resolve).syncInventory(itemForServer);
-              });
+        // 5. อัปเดต State และบันทึก Log
+        setInventory(prev => [...prev, itemData]);
+        
+        await addInvLog('Restore Inventory', itemData.name, 'Restore', `กู้คืนเข้าโครงการ ${targetProject} (จากประวัติ ${log.date})`, [], null, itemData.id);
 
-              setInventory(prev => [...prev, itemData]);
-              addInvLog('Restore Inventory', itemData.name, 'Restore', `กู้คืนจากประวัติ ${log.date}`, [], null, itemData.id);
+        showToast(`กู้คืนสินค้า ${itemData.id} เรียบร้อย`);
+    } catch (err) {
+        console.error(err);
+        showToast('กู้คืนล้มเหลว', 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
-              showToast(`กู้คืนสินค้า ${itemData.id} เรียบร้อย`);
-          } catch (err) {
-              console.error(err);
-              showToast('กู้คืนล้มเหลว', 'error');
-          } finally {
-              setIsLoading(false);
-          }
-      };
+// --- HELPER: ลบรูปภาพในหน้าแก้ไขสินค้า (Inventory Edit) ---
 
+// 1. ลบรูปใหม่ที่เพิ่งเลือก (New Preview)
+const handleRemoveEditStockNewImage = (index) => {
+    setEditingStockItem(prev => ({
+        ...prev,
+        newImages: prev.newImages.filter((_, i) => i !== index)
+    }));
+};
+
+// 2. ลบรูปเดิมที่มีอยู่แล้ว (Current Image)
+const handleRemoveCurrentInvImage = () => {
+    if(confirm('ต้องการลบรูปภาพปัจจุบันออกใช่หรือไม่?')) {
+        setEditingStockItem(prev => ({ ...prev, image: null }));
+    }
+};
       // 3. แก้ไขสินค้า (Update Inventory - Full Edit)
       const handleUpdateInventory = async () => {
           if (!editingStockItem) return;
@@ -972,9 +1007,12 @@ const handleSaveProject = () => {
       const saveAssetToSheet = (asset) => {
          google.script.run.syncAsset(asset);
       };
-      const saveLogToSheet = (log) => {
-         google.script.run.syncLog(log);
-      };
+const saveLogToSheet = (log) => {
+   // ⭐ เปลี่ยนเป็น Promise เพื่อให้รอการบันทึกเสร็จ
+   return new Promise((resolve, reject) => {
+       google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).syncLog(log);
+   });
+};
 
 // --- LOGIC: CREATE ORDER (UPDATED: Upload Item Images) ---
       const handleCreateOrder = async (e, isDraft = false) => {
@@ -1111,6 +1149,7 @@ const handleSaveProject = () => {
                 quotation: quotationData,
                 docNumber: existingReq?.docNumber || null,
                 isFullApprovalFlow: isFullFlow,
+                isPreviouslyApproved: existingReq?.isPreviouslyApproved || false,
                 history: [
                     ...(existingReq?.history || []),
                     createLog(
@@ -1153,6 +1192,12 @@ const handleSaveProject = () => {
               showToast('รีเฟรชข้อมูลล่าสุดเรียบร้อย');
           }).loadInitialData();
       };
+
+// --- LOGIC: New User Count (นับผู้ใช้ใหม่) ---
+const newUsersCount = useMemo(() => {
+    if (!allUsers) return 0;
+    return allUsers.filter(u => u.status === 'New').length;
+}, [allUsers]);
 
 
 // --- LOGIC: Sidebar Badge Count (นับงานค้างของฉัน/งานที่ต้องทำ) ---
@@ -1239,14 +1284,15 @@ const handleSaveProject = () => {
       
       // Verification Modal State
       const [showVerificationModal, setShowVerificationModal] = useState(false);
-      const [verificationData, setVerificationData] = useState({
-          requestId: null,
-          checks: { quotation: true, email: true, details: true },
-          filesExist: { quotation: false, email: false },
-          needApproval: false,
-          needContract: true,
-          note: ''
-      });
+const [verificationData, setVerificationData] = useState({
+    requestId: null,
+    checks: { quotation: true, email: true, details: true },
+    filesExist: { quotation: false, email: false },
+    needApproval: false,
+    needContract: true,
+    note: '',
+    isChangeMode: false // ⭐ เพิ่มตัวนี้
+});
       const [viewingItem, setViewingItem] = useState(null);
       const [previewImage, setPreviewImage] = useState(null); 
 
@@ -1319,163 +1365,125 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
 
 
 // --- LOGIC: IMPORT ASSETS (CSV) - SMART PARSER ---
-      const handleFileImport = (e) => {
-          const file = e.target.files[0];
-          if (!file) return;
-          
-          setImportFileName(file.name);
-          const reader = new FileReader();
-          
-          reader.onload = (event) => {
-              const text = event.target.result;
-              const rows = text.split('\n').map(row => row.split(','));
-              
-              // Helper: แปลงหน่วย (Unit)
-              const mapUnit = (u, type) => {
-                  if (!u) return type === 'Rent' ? 'Month' : ''; // Default
-                  const val = u.trim();
-                  
-                  // ถ้าเป็น Rent ให้พยายาม Map เป็น Time Unit
-                  if (type === 'Rent') {
-                      const lower = val.toLowerCase();
-                      if (lower.includes('วัน') || lower.includes('day')) return 'Day';
-                      if (lower.includes('ปี') || lower.includes('year')) return 'Year';
-                      if (lower.includes('เดือน') || lower.includes('month')) return 'Month';
-                  }
-                  // ⭐ ถ้าเป็น Company (ซื้อขาด) ให้คืนค่าตามที่กรอกมาเลย (เช่น "บาท")
-                  return val;
-              };
+const handleFileImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setImportFileName(file.name);
+    const reader = new FileReader();
+    
+    reader.onload = (event) => {
+        const text = event.target.result;
+        const rows = text.split('\n').map(row => row.split(','));
+        
+        const mapUnit = (u, type) => { /* ...โค้ดเดิม... */ if (!u) return type === 'Rent' ? 'Month' : ''; const val = u.trim(); if (type === 'Rent') { const lower = val.toLowerCase(); if (lower.includes('วัน') || lower.includes('day')) return 'Day'; if (lower.includes('ปี') || lower.includes('year')) return 'Year'; if (lower.includes('เดือน') || lower.includes('month')) return 'Month'; } return val; };
+        const formatDate = (d) => { /* ...โค้ดเดิม... */ if (!d) return null; const val = d.trim(); if (val === '') return null; if (val.match(/^\d{4}-\d{2}-\d{2}$/)) return val; if (val.includes('/')) { const parts = val.split('/'); if (parts.length === 3) { let [day, month, year] = parts; let y = parseInt(year); if (y > 2400) y -= 543; return `${y}-${month.padStart(2,'0')}-${day.padStart(2,'0')}`; } } return val; };
 
-              // Helper: แปลงวันที่
-              const formatDate = (d) => {
-                  if (!d) return null;
-                  const val = d.trim();
-                  if (val === '') return null;
-                  if (val.match(/^\d{4}-\d{2}-\d{2}$/)) return val;
-                  if (val.includes('/')) {
-                      const parts = val.split('/');
-                      if (parts.length === 3) {
-                          let [day, month, year] = parts;
-                          let y = parseInt(year);
-                          if (y > 2400) y -= 543; 
-                          return `${y}-${month.padStart(2,'0')}-${day.padStart(2,'0')}`;
-                      }
-                  }
-                  return val;
-              };
+        // CSV Columns (12 columns): ID, Name, Serial, Type, Price, Unit, Start, End, Status, Holder, Note, Project
+        const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== '').map((row, index) => {
+            const type = row[3]?.trim()?.toLowerCase() === 'rent' ? 'Rent' : 'Company';
+            return {
+                tempId: index,
+                id: row[0]?.trim() || '',           
+                name: row[1]?.trim() || '',         
+                serial: row[2]?.trim() || '',       
+                ownerType: type,
+                price: parseFloat(row[4]?.trim()) || 0, 
+                rentalUnit: mapUnit(row[5], type),   
+                rentalStart: formatDate(row[6]),  
+                rentalEnd: formatDate(row[7]),    
+                status: row[8]?.trim() || 'Available', 
+                holder: row[9]?.trim() || '-',      
+                note: row[10]?.trim() || '',
+                project: row[11]?.trim() || '' // ⭐ Col 11: Project (เพิ่มใหม่)
+            };
+        });
+        setImportData(data);
+    };
+    reader.readAsText(file);
+};
 
-              const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== '').map((row, index) => {
-                  const type = row[3]?.trim()?.toLowerCase() === 'rent' ? 'Rent' : 'Company';
-                  return {
-                      tempId: index,
-                      id: row[0]?.trim() || '',           
-                      name: row[1]?.trim() || '',         
-                      serial: row[2]?.trim() || '',       
-                      ownerType: type,
-                      price: parseFloat(row[4]?.trim()) || 0, 
-                      rentalUnit: mapUnit(row[5], type),   
-                      rentalStart: formatDate(row[6]),  
-                      rentalEnd: formatDate(row[7]),    
-                      status: row[8]?.trim() || 'Available', 
-                      holder: row[9]?.trim() || '-',      
-                      note: row[10]?.trim() || ''         
-                  };
-              });
-              setImportData(data);
-          };
-          
-          reader.readAsText(file);
-      };
+// --- LOGIC: CONFIRM IMPORT ASSETS ---
+const confirmImportAssets = async () => {
+    if (importData.length === 0) return;
+    // 1. Validation Loop
+    for (let i = 0; i < importData.length; i++) {
+        const item = importData[i];
+        const line = i + 1;
 
-      // --- LOGIC: CONFIRM IMPORT (DUPLICATE CHECK & LOGGING) ---
-      const confirmImportAssets = async () => {
-          if (importData.length === 0) return;
+        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อรายการ`, 'error'); return; }
+        if (!item.serial) { showToast(`รายการที่ ${line}: ขาด Serial No.`, 'error'); return; }
+        if (!item.price && item.price !== 0) { showToast(`รายการที่ ${line}: ขาดราคา`, 'error'); return; }
+        if (!item.status) { showToast(`รายการที่ ${line}: ขาดสถานะ`, 'error'); return; }
+        
+        if (item.id && assets.some(a => a.id === item.id)) {
+            showToast(`รายการที่ ${line}: รหัสทรัพย์สิน "${item.id}" มีอยู่ในระบบแล้ว`, 'error'); return;
+        }
 
-          // 1. Validation Loop
-          for (let i = 0; i < importData.length; i++) {
-              const item = importData[i];
-              const line = i + 1;
+        // ⭐ เพิ่ม: ตรวจสอบโครงการ
+        if (!item.project) { showToast(`รายการที่ ${line}: ขาดชื่อโครงการ`, 'error'); return; }
+        if (!projects.some(p => p.name === item.project)) { showToast(`รายการที่ ${line}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error'); return; }
 
-              if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อรายการ`, 'error'); return; }
-              if (!item.serial) { showToast(`รายการที่ ${line}: ขาด Serial No.`, 'error'); return; }
-              if (!item.price && item.price !== 0) { showToast(`รายการที่ ${line}: ขาดราคา`, 'error'); return; }
-              if (!item.status) { showToast(`รายการที่ ${line}: ขาดสถานะ`, 'error'); return; }
-              
-              // ⭐ Check Duplicate ID (ป้องกัน Asset ซ้ำ)
-              if (item.id && assets.some(a => a.id === item.id)) {
-                  showToast(`รายการที่ ${line}: รหัสทรัพย์สิน "${item.id}" มีอยู่ในระบบแล้ว`, 'error'); return;
-              }
+        if (item.ownerType === 'Rent' && !item.rentalUnit) { showToast(`รายการที่ ${line}: ของเช่าต้องระบุหน่วย`, 'error'); return; }
+        if (item.status === 'Borrowed' && (!item.holder || item.holder === '-')) { showToast(`รายการที่ ${line}: สถานะ Borrowed ต้องระบุผู้ถือครอง`, 'error'); return; }
+    }
 
-              if (item.ownerType === 'Rent' && !item.rentalUnit) {
-                  showToast(`รายการที่ ${line}: ของเช่าต้องระบุหน่วย`, 'error'); return; 
-              }
-              if (item.status === 'Borrowed' && (!item.holder || item.holder === '-')) {
-                  showToast(`รายการที่ ${line}: สถานะ Borrowed ต้องระบุผู้ถือครอง`, 'error'); return; 
-              }
-          }
+    setIsLoading(true);
+    const date = new Date().toLocaleString('th-TH');
+    
+    const newAssets = [];
+    let currentRunNo = assets.length;
+    
+    // 2. Process & Save
+    for (const item of importData) {
+        let finalId = item.id;
+        // Auto Gen ID
+        if (!finalId) {
+            currentRunNo++;
+            const prefix = item.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
+            const runNo = String(currentRunNo).padStart(3, '0');
+            finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
+            while (assets.some(a => a.id === finalId) || newAssets.some(a => a.id === finalId)) {
+                currentRunNo++;
+                const nextRunNo = String(currentRunNo).padStart(3, '0');
+                finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${nextRunNo}`;
+            }
+        }
 
-          setIsLoading(true);
-          const date = new Date().toLocaleString('th-TH');
-          
-          const newAssets = [];
-          let currentRunNo = assets.length;
+        const newAsset = {
+            id: finalId,
+            name: item.name,
+            serial: item.serial,
+            ownerType: item.ownerType,
+            status: item.status,
+            price: item.ownerType === 'Company' ? item.price : 0,
+            rentalPrice: item.ownerType === 'Rent' ? item.price : 0,
+            rentalUnit: item.rentalUnit, 
+            rentalStart: item.rentalStart || null,
+            rentalEnd: item.rentalEnd || null,
+            condition: 'Good',
+            holder: item.holder,
+            currentRequestId: null,
+            lastUpdated: date,
+            image: null,
+            note: item.note,
+            project: item.project // ⭐ บันทึกโครงการ
+        };
+        newAssets.push(newAsset);
+        saveAssetToSheet(newAsset); 
+        
+        const logNote = item.note ? `(Note: ${item.note})` : '';
+        addInvLog('Import Assets', newAsset.name, 'New', `นำเข้าข้อมูล CSV เข้าโครงการ ${item.project} ${logNote}`, [], null, newAsset.id);
+    }
 
-          // 2. Process & Save
-          for (const item of importData) {
-              let finalId = item.id;
-              
-              // Auto Gen ID
-              if (!finalId) {
-                  currentRunNo++;
-                  const prefix = item.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
-                  const runNo = String(currentRunNo).padStart(3, '0');
-                  finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
-                  
-                  while (assets.some(a => a.id === finalId) || newAssets.some(a => a.id === finalId)) {
-                      currentRunNo++;
-                      const nextRunNo = String(currentRunNo).padStart(3, '0');
-                      finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${nextRunNo}`;
-                  }
-              }
+    setAssets(prev => [...prev, ...newAssets]);
 
-              const newAsset = {
-                  id: finalId,
-                  name: item.name,
-                  serial: item.serial,
-                  ownerType: item.ownerType,
-                  status: item.status,
-                  price: item.ownerType === 'Company' ? item.price : 0,
-                  rentalPrice: item.ownerType === 'Rent' ? item.price : 0,
-                  rentalUnit: item.rentalUnit, 
-                  rentalStart: item.rentalStart || null,
-                  rentalEnd: item.rentalEnd || null,
-                  condition: 'Good',
-                  holder: item.holder,
-                  currentRequestId: null,
-                  lastUpdated: date,
-                  image: null,
-                  note: item.note
-              };
-              
-              newAssets.push(newAsset);
-              saveAssetToSheet(newAsset); 
-              
-              // ⭐ 3. Log (บันทึกรายตัว + Asset ID)
-              // นำ Note จาก CSV มาใส่ใน Log Note
-              const logNote = item.note ? `(Note: ${item.note})` : '';
-              
-              // addInvLog(action, item, change, note, images, relatedRequestId, assetId)
-              addInvLog('Import Assets', newAsset.name, 'New', `นำเข้าข้อมูล CSV ${logNote}`, [], null, newAsset.id);
-          }
-
-          setAssets(prev => [...prev, ...newAssets]);
-
-          setIsLoading(false);
-          setShowImportAssetModal(false);
-          setImportData([]);
-          setImportFileName('');
-          showToast(`นำเข้าสำเร็จ ${newAssets.length} รายการ`);
-      };
+    setIsLoading(false);
+    setShowImportAssetModal(false);
+    setImportData([]);
+    setImportFileName('');
+    showToast(`นำเข้าสำเร็จ ${newAssets.length} รายการ`);
+};
 
 // คำนวณจำนวนงานที่ค้าง (สำหรับ Sidebar)
       const pendingOrdersCount = useMemo(() => {
@@ -1484,22 +1492,20 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
       }, [filteredRequests]);
 
 
-// --- LOGIC: Filtered Logs (Updated with Project Filter) ---
+// --- LOGIC: Filtered Logs (Updated: Date Sorting) ---
 const filteredLogs = useMemo(() => {
     let data = invLogs;
 
     // 1. กรองตาม Project (ถ้ามีการเลือก และไม่ได้ดู item เฉพาะเจาะจง)
     if (!viewingItem && globalProjectFilter !== 'All') {
-        // กรองจาก Note หรือต้องมีการเก็บ Project ลง Log (ซึ่งเราเพิ่งเพิ่มไปใน Step ก่อนหน้า)
-        // เพื่อความชัวร์ ให้กรองแบบ Loose (Text Search) ไปก่อนใน Note
         data = data.filter(l => 
-            (l.note && l.note.includes(globalProjectFilter)) || // เช็คใน Note
-            (l.project && l.project === globalProjectFilter) // เช็คใน Field project (ถ้ามี)
+            (l.note && l.note.includes(globalProjectFilter)) || 
+            (l.project && l.project === globalProjectFilter)
         );
     }
 
+    // 2. กรองตาม Item (Viewing Detail)
     if (viewingItem) {
-         // ... (Logic เดิมสำหรับ Single Item) ...
          if (viewingItem.isSummary && viewingItem.combinedIds) {
              data = data.filter(l => viewingItem.combinedIds.includes(l.assetId));
          } else {
@@ -1516,7 +1522,7 @@ const filteredLogs = useMemo(() => {
          }
     }
 
-    // ... (Search Logic เดิม) ...
+    // 3. Search Logic
     if (historySearch) {
         const lower = historySearch.toLowerCase();
         data = data.filter(l => 
@@ -1527,16 +1533,48 @@ const filteredLogs = useMemo(() => {
             (l.relatedRequestId && l.relatedRequestId.toLowerCase().includes(lower))
         );
     }
-    // ... (Filter Action เดิม) ...
+
+    // 4. Filter Action
     if (historyActionFilter !== 'All') {
         data = data.filter(l => l.action === historyActionFilter);
     }
     
-    // ... (Sort Logic เดิม) ...
-    const parseLogDate = (dStr) => { /* ... */ };
-    return [...data].sort((a, b) => { /* ... */ });
+    // ⭐ 5. Sort Logic (เพิ่มฟังก์ชันแปลงวันที่ไทย)
+    const parseLogDate = (dStr) => {
+        if (!dStr) return 0;
+        try {
+            // รูปแบบ: "14/1/2569 15:58:55"
+            const [datePart, timePart] = dStr.split(' ');
+            if (!datePart) return 0;
+            
+            const [day, month, year] = datePart.split('/').map(Number);
+            const [hour, min, sec] = timePart ? timePart.split(':').map(Number) : [0, 0, 0];
+            
+            // แปลงปี พ.ศ. (ถ้า > 2400) เป็น ค.ศ.
+            const adYear = year > 2400 ? year - 543 : year;
+            
+            return new Date(adYear, month - 1, day, hour, min, sec).getTime();
+        } catch (e) {
+            return 0;
+        }
+    };
 
-}, [invLogs, viewingItem, historySearch, historyActionFilter, historySort, globalProjectFilter]); // ⭐ อย่าลืมเพิ่ม globalProjectFilter ใน dependency
+    return [...data].sort((a, b) => {
+        if (historySort.key === 'date') {
+            const timeA = parseLogDate(a.date);
+            const timeB = parseLogDate(b.date);
+            // Default คือ desc (มากไปน้อย = ล่าสุดขึ้นก่อน)
+            return historySort.direction === 'asc' ? timeA - timeB : timeB - timeA;
+        } else {
+            const valA = (a[historySort.key] || '').toString().toLowerCase();
+            const valB = (b[historySort.key] || '').toString().toLowerCase();
+            if (valA < valB) return historySort.direction === 'asc' ? -1 : 1;
+            if (valA > valB) return historySort.direction === 'asc' ? 1 : -1;
+            return 0;
+        }
+    });
+
+}, [invLogs, viewingItem, historySearch, historyActionFilter, historySort, globalProjectFilter]);
 
 
 
@@ -1558,23 +1596,28 @@ const filteredLogs = useMemo(() => {
 
  // --- LOGIC: HISTORY & LOGS (UPDATED WITH REFERENCE) ---
 
-// 1. เพิ่ม Parameter relatedRequestId และ assetId
-      const addInvLog = (action, item, change, note = '', images = [], relatedRequestId = null, assetId = null) => {
-        const log = {
-          date: new Date().toLocaleString('th-TH'),
-          action,
-          item,
-          change,
-          // ⭐ แก้ตรงนี้
-          by: user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole, 
-          note,
-          images,
-          relatedRequestId,
-          assetId
-        };
-        setInvLogs(prev => [log, ...prev]);
-        saveLogToSheet(log); 
-      };
+// ⭐ เพิ่ม async
+const addInvLog = async (action, item, change, note = '', images = [], relatedRequestId = null, assetId = null) => {
+  const log = {
+    date: new Date().toLocaleString('th-TH'),
+    action,
+    item,
+    change,
+    by: user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole, 
+    note,
+    images,
+    relatedRequestId,
+    assetId
+  };
+  setInvLogs(prev => [log, ...prev]);
+  
+  // ⭐ สั่งบันทึกและ return promise กลับไป (เพื่อให้ฟังก์ชันอื่นรอได้)
+  try {
+      await saveLogToSheet(log);
+  } catch (err) {
+      console.error("Save Log Error:", err);
+  }
+};
 
 
       // 2. ฟังก์ชันเปิดดูรายละเอียดเอกสารจากหน้าประวัติ
@@ -1594,7 +1637,7 @@ const filteredLogs = useMemo(() => {
             direction: currentSort.key === key && currentSort.direction === 'asc' ? 'desc' : 'asc'
         });
       };
-
+      const handleHistorySort = (key) => handleSort(key, historySort, setHistorySort);
       const getSortedData = (data, sortConfig) => {
           const sorted = [...data];
           sorted.sort((a, b) => {
@@ -1783,39 +1826,64 @@ const filteredLogs = useMemo(() => {
               // Sort Summary
               return grouped.sort((a, b) => a.name.localeCompare(b.name));
 
-          } else {
-              // Normal Logic (Company / Rent)
-              data = data.filter(a => a.ownerType === assetTabMode);
-              
-              // Process Alerts
-              const today = new Date();
-              const processedData = data.map(asset => {
-                  let alertType = null; 
-                  let priority = 0;
-                  
-                  if (asset.ownerType === 'Rent' && asset.rentalEnd) {
-                      const endDate = new Date(asset.rentalEnd);
-                      if (endDate < today) { alertType = 'expired'; priority = 2; }
-                  }
-                  if (asset.status === 'Borrowed' && asset.lastUpdated) {
-                      const borrowDate = parseThaiDate(asset.lastUpdated);
-                      if (borrowDate) {
-                          const diffTime = Math.abs(today - borrowDate);
-                          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-                          if (diffDays > 7) { alertType = 'overdue'; priority = 1; }
-                      }
-                  }
-                  return { ...asset, alertType, priority };
-              });
+ } else {
+    // Normal Logic (Company / Rent)
+    data = data.filter(a => a.ownerType === assetTabMode);
+    
+    // Process Alerts & Priority
+    const today = new Date();
+    today.setHours(0,0,0,0); // เคลียร์เวลาให้เป็นเที่ยงคืน
 
-              // Sort
-              return processedData.sort((a, b) => {
-                  if (b.priority !== a.priority) return b.priority - a.priority;
-                  if (a[assetSort.key] < b[assetSort.key]) return assetSort.direction === 'asc' ? -1 : 1;
-                  if (a[assetSort.key] > b[assetSort.key]) return assetSort.direction === 'asc' ? 1 : -1;
-                  return 0;
-              });
-          }
+    const processedData = data.map(asset => {
+        let alertType = null; 
+        let priority = 0;
+        let daysLeft = null;
+        
+        // 1. เช็ควันหมดสัญญา (เฉพาะของเช่า)
+        if (asset.ownerType === 'Rent' && asset.rentalEnd) {
+            const endDate = new Date(asset.rentalEnd);
+            const diffTime = endDate - today;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            daysLeft = diffDays;
+
+            if (diffDays < 0) { 
+                alertType = 'expired'; 
+                priority = 3; // สำคัญสุด (หมดแล้ว)
+            } else if (diffDays <= 30) { 
+                alertType = 'expiring'; 
+                priority = 2; // รองลงมา (ใกล้หมด)
+            }
+        }
+
+        // 2. เช็คยืมเกินกำหนด (Borrowed Overdue)
+        if (asset.status === 'Borrowed' && asset.lastUpdated) {
+             const borrowDate = parseThaiDate(asset.lastUpdated);
+             if (borrowDate) {
+                 const diffTime = Math.abs(today - borrowDate);
+                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+                 // ให้ Priority ต่ำกว่าเรื่องสัญญาเช่าหน่อย (หรือจะปรับเป็น 3 เท่ากันก็ได้)
+                 if (diffDays > 7) { 
+                     if (!alertType) alertType = 'overdue'; 
+                     priority = Math.max(priority, 1); 
+                 }
+             }
+        }
+    
+        return { ...asset, alertType, priority, daysLeft };
+    });
+
+    // Sort: เรียงตาม Priority (มากไปน้อย) -> แล้วค่อยเรียงตาม Key ที่กดหัวตาราง
+    return processedData.sort((a, b) => {
+        if (b.priority !== a.priority) return b.priority - a.priority;
+        // ถ้า Priority เท่ากัน ให้เรียงวันหมดอายุ (น้อยไปมาก = ใกล้หมดก่อน)
+        if (a.daysLeft !== null && b.daysLeft !== null && a.daysLeft !== b.daysLeft) return a.daysLeft - b.daysLeft;
+        
+        // Sorting ปกติ
+        if (a[assetSort.key] < b[assetSort.key]) return assetSort.direction === 'asc' ? -1 : 1;
+        if (a[assetSort.key] > b[assetSort.key]) return assetSort.direction === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
       }, [assets, assetSearch, assetSort, assetTabMode, globalProjectFilter, assetProjectFilter]);
 
       // --- Functions & Handlers (Logic from original file) ---
@@ -2276,7 +2344,8 @@ const getSelectionItems = () => {
               
               // เพิ่มข้อมูล Stock Type ลงใน Log ด้วย
               const typeLabel = newItem.stockType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
-              addInvLog('Add Item', newItem.name, `+${newItem.qty}`, `เพิ่มสินค้าใหม่ ${typeLabel} ${logNote}`, logAttachments);
+            
+              addInvLog('Add Item', newItem.name, `+${newItem.qty}`, `รับเข้าโครงการ ${newItem.project || 'ไม่ระบุ'} ${typeLabel} ${logNote}`, logAttachments);
 
               setIsLoading(false);
               setShowAddInvModal(false);
@@ -2355,7 +2424,7 @@ const getSelectionItems = () => {
               const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
               
               // สร้างข้อความ Log
-              let logAction = `เพิ่มทรัพย์สินใหม่ ${finalId} (${newAssetItem.status})`;
+              let logAction = `รับเข้าโครงการ ${newAssetItem.project || 'ไม่ระบุ'} - เพิ่มทรัพย์สินใหม่ ${finalId} (${newAssetItem.status})`;
               if (newAssetItem.status === 'Borrowed') logAction += ` ผู้ยืม: ${finalHolder}`;
 
               addInvLog('Add Asset', newAssetItem.name, 'New', logAction, logAttachments);
@@ -2563,7 +2632,7 @@ const getSelectionItems = () => {
 
               // 5. Log
               const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-              addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments);
+              addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
               
               setIsLoading(false);
               setShowEditAssetModal(false);
@@ -2687,101 +2756,111 @@ const getSelectionItems = () => {
           }
       };
 
-  // 3. ฟังก์ชันเปิด Modal และตั้งค่าเริ่มต้น
 // --- LOGIC: VERIFICATION (FIXED & UPDATED) ---
-  const openVerificationModal = (reqId) => {
-      const req = requests.find(r => r.id === reqId);
-      if(!req) return;
+const openVerificationModal = (reqId, isChangeMode = false) => { // ⭐ รับ param เพิ่ม
+    const req = requests.find(r => r.id === reqId);
+    if(!req) return;
 
-      // ตรวจสอบว่ามีไฟล์แนบหรือไม่ (แปลงเป็น Boolean)
-      const hasQuotation = !!req.quotation;
-      const hasEmail = !!req.attachment;
+    // ตรวจสอบว่ามีไฟล์แนบหรือไม่ (แปลงเป็น Boolean)
+    const hasQuotation = !!req.quotation;
+    const hasEmail = !!req.attachment;
+    
+    setVerificationData({
+        requestId: reqId,
+        isChangeMode: isChangeMode, // ⭐ บันทึกสถานะว่าเป็นการเปลี่ยน Local -> HO
+        filesExist: { 
+            quotation: hasQuotation, 
+            email: hasEmail 
+        },
+        checks: { 
+            // ถ้าเป็นโหมดเปลี่ยน ให้ Default เป็น False (เพื่อให้ติ๊กเลือกเองว่าเอาอะไรบ้าง)
+            // แต่ถ้ามีไฟล์อยู่แล้ว ให้ True
+            quotation: hasQuotation ? true : (isChangeMode ? false : false), 
+            email: hasEmail ? true : (isChangeMode ? false : false), 
+            details: true 
+        },
 
-      setVerificationData({
-          requestId: reqId,
-          filesExist: { 
-              quotation: hasQuotation, 
-              email: hasEmail 
-          },
-          checks: { 
-              // ถ้ามีไฟล์: ติ๊กถูกไว้ก่อน, ถ้าไม่มี: ไม่ติ๊ก (บังคับ)
-              quotation: hasQuotation ? true : false, 
-              email: hasEmail ? true : false, 
-              details: true 
-          },
-          needApproval: !hasEmail, // ถ้าไม่มีเมล = ต้องขออนุมัติ
-          needContract: req.purchaseType === 'Rent', 
-          note: ''
-      });
-      
-      // เปิดหน้าต่าง
-      setShowVerificationModal(true);
-  };
+needApproval: req.isPreviouslyApproved ? false : !hasEmail, 
+    
+    needContract: req.purchaseType === 'Rent', 
+    note: ''
+    });
+    
+    // เปิดหน้าต่าง
+    setShowVerificationModal(true);
+};
 
-  // 4. ฟังก์ชันยืนยันการตรวจสอบ (Confirm Action)
-// --- UPDATED CONFIRM VERIFICATION (AUTO-GENERATE REASON) ---
-  const handleConfirmVerification = () => {
-      const { requestId, needApproval, needContract, note, checks, filesExist } = verificationData;
-      const req = requests.find(r => r.id === requestId);
-      if (!req) return;
-      
-      // กรณีไม่ผ่าน -> ส่งคืนแก้ไข (Revise Needed)
-      if (!isVerificationPass()) {
-           // 🤖 สร้างข้อความแจ้งเตือนอัตโนมัติตาม Checkbox ที่ไม่ผ่าน
-           let failureReasons = [];
-           
-           // เช็คทีละข้อ
-           if (!checks.quotation) {
-               failureReasons.push(filesExist.quotation ? "ใบเสนอราคาไม่ถูกต้อง" : "ขาดใบเสนอราคา");
-           }
-           if (!checks.email) {
-               failureReasons.push(filesExist.email ? "เมลอนุมัติไม่ถูกต้อง" : "ขาดเมลอนุมัติ");
-           }
-           if (!checks.details) {
-               failureReasons.push("รายละเอียดสินค้า/ราคาไม่ถูกต้อง");
-           }
-           
-           // รวมกับ Note ที่ User พิมพ์เอง
-           const combinedNote = `สิ่งที่ต้องแก้ไข: ${failureReasons.join(', ')} ${note ? `(เพิ่มเติม: ${note})` : ''}`;
-           const returnNote = combinedNote; // ใช้ข้อความที่รวมแล้ว
-           
-           setRequests(prev => prev.map(r => r.id === requestId ? { 
-               ...r, 
-               status: 'Revise Needed', 
-               history: [...r.history, createLog('Return for Revision', currentUserRole, returnNote)] 
-           } : r));
-           showToast('ส่งคืนเอกสารให้ผู้ขอแก้ไขเรียบร้อย', 'error');
+ // --- UPDATED CONFIRM VERIFICATION (Fix: Log User Name) ---
+const handleConfirmVerification = () => {
+    const { requestId, needApproval, needContract, note, checks, filesExist, isChangeMode } = verificationData;
+    const req = requests.find(r => r.id === requestId);
+    if (!req) return;
 
-      } 
-      // กรณีผ่าน ... (Logic เดิม)
-      else if (needApproval) {
-           setRequests(prev => prev.map(r => r.id === requestId ? { 
-               ...r, 
-               status: 'Pending Head', 
-               isFullApprovalFlow: true, 
-               needContract: needContract, 
-               history: [...r.history, createLog('Forward for Approval', currentUserRole, `ส่งต่ออนุมัติ: ${note}`)] 
-           } : r));
-           showToast('ส่งต่อให้หัวหน้าแผนกอนุมัติเรียบร้อย');
+    // ⭐ สร้างตัวแปรระบุชื่อคนทำรายการ (User ปัจจุบัน)
+    const actionBy = user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole;
 
-      } 
-      else {
-           setRequests(prev => {
-               const count = getNextDocIndex(prev, req.type, req.purchaseType);
-               const newDocId = req.docNumber || generateDocId(req.type, count, req.purchaseType);
-               return prev.map(r => r.id === requestId ? { 
-                   ...r, 
-                   status: 'Approved', 
-                   needContract: needContract, 
-                   docNumber: newDocId, 
-                   history: [...r.history, createLog('Pass Verification', currentUserRole, `ตรวจสอบผ่าน: ${note}`)] 
-               } : r);
-           });
-           showToast('ตรวจสอบผ่านแล้ว รอออกใบขอซื้อ (PR)');
-      }
-      setShowVerificationModal(false);
-  };
-      
+    // 1. กรณีไม่ผ่าน -> ส่งคืนแก้ไข (Revise Needed)
+    if (!isVerificationPass()) {
+         let failureReasons = [];
+         if (!checks.quotation) failureReasons.push(filesExist.quotation ? "ใบเสนอราคาไม่ถูกต้อง" : "ขาดใบเสนอราคา");
+         if (!checks.email) failureReasons.push(filesExist.email ? "เมลอนุมัติไม่ถูกต้อง" : "ขาดเมลอนุมัติ");
+         if (!checks.details) failureReasons.push("รายละเอียดสินค้า/ราคาไม่ถูกต้อง");
+         
+         const combinedNote = `สิ่งที่ต้องแก้ไข: ${failureReasons.join(', ')} ${note ? `(เพิ่มเติม: ${note})` : ''}`;
+         
+         setRequests(prev => prev.map(r => r.id === requestId ? { 
+             ...r, 
+             type: isChangeMode ? 'HO' : r.type,
+             status: 'Revise Needed', 
+             isPreviouslyApproved: isChangeMode ? true : (r.isPreviouslyApproved || false),
+             // ⭐ ใช้ actionBy แทน currentUserRole
+             history: [...r.history, createLog(isChangeMode ? 'Change to HO (Revise)' : 'Return for Revision', actionBy, combinedNote)] 
+         } : r));
+         showToast('ส่งคืนเอกสารให้ผู้ขอแก้ไขเรียบร้อย', 'error');
+    } 
+    // 2. กรณีผ่าน (Pass)
+    else {
+         if (isChangeMode) {
+             setRequests(prev => prev.map(r => r.id === requestId ? { 
+                 ...r, 
+                 type: 'HO', 
+                 status: 'Approved', 
+                 purchaseType: 'Buy', 
+                 needContract: needContract,
+                 // ⭐ ใช้ actionBy แทน currentUserRole
+                 history: [...r.history, createLog('Change to HO (Verified)', actionBy, `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว: ${note}`)] 
+             } : r));
+             showToast('เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว (รอออก PR)');
+         }
+         else if (needApproval) {
+             setRequests(prev => prev.map(r => r.id === requestId ? { 
+                 ...r, 
+                 status: 'Pending Head', 
+                 isFullApprovalFlow: true, 
+                 needContract: needContract, 
+                 // ⭐ ใช้ actionBy แทน currentUserRole
+                 history: [...r.history, createLog('Forward for Approval', actionBy, `ส่งต่ออนุมัติ: ${note}`)] 
+             } : r));
+             showToast('ส่งต่อให้หัวหน้าแผนกอนุมัติเรียบร้อย');
+         } 
+         else {
+             setRequests(prev => {
+                 const count = getNextDocIndex(prev, req.type, req.purchaseType);
+                 const newDocId = req.docNumber || generateDocId(req.type, count, req.purchaseType);
+                 return prev.map(r => r.id === requestId ? { 
+                     ...r, 
+                     status: 'Approved', 
+                     needContract: needContract, 
+                     docNumber: newDocId, 
+                     // ⭐ ใช้ actionBy แทน currentUserRole
+                     history: [...r.history, createLog('Pass Verification', actionBy, `ตรวจสอบผ่าน: ${note}`)] 
+                 } : r);
+             });
+             showToast('ตรวจสอบผ่านแล้ว รอออกใบขอซื้อ (PR)');
+         }
+    }
+    setShowVerificationModal(false);
+};
       const handleChecklistChange = (field) => {
           setVerificationData(prev => ({...prev, checks: {...prev.checks, [field]: !prev.checks[field]}}));
       };
@@ -3526,9 +3605,21 @@ const handleSubmitContract = async () => {
               <button onClick={() => setActiveTab('projects')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'projects' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Settings className="w-5 h-5" /> ตั้งค่าโครงการ (Projects)</button>
               )}
                
-                <button onClick={() => setActiveTab('users')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'users' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>
-                    <User className="w-5 h-5" /> จัดการผู้ใช้งาน (Users)
-                </button>
+                
+<button 
+    onClick={() => setActiveTab('users')} 
+    className={`flex items-center justify-between w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'users' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}
+>
+    <div className="flex items-center gap-3">
+        <User className="w-5 h-5" /> ผู้ใช้งาน (Users)
+    </div>
+    {/* Badge เตือน User ใหม่ (เฉพาะ Admin/Sub-Admin ถึงจะเห็นยอดเตือน) */}
+    {(user?.isSuperAdmin || hasPermission(2) || hasPermission(3)) && newUsersCount > 0 && (
+        <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm min-w-[20px] text-center animate-pulse">
+            {newUsersCount}
+        </span>
+    )}
+</button>
               
             </nav>
            {/* ⭐ 3. ส่วนแสดงข้อมูล User และปุ่ม Logout (แทนที่ Role Simulation) */}
@@ -3766,6 +3857,16 @@ filteredRequests.map(req => {
               </>
             )}
 
+            {hasPermission(10) && req.type === 'Local' && req.status === 'Approved' && (
+    <button 
+        type="button" 
+        onClick={() => openVerificationModal(req.id, true)} // ส่ง true = Change Mode
+        className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1"
+    >
+        <RefreshCw className="w-4 h-4"/> เปลี่ยนเป็น HO
+    </button>
+)}
+
             {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
               <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
             )}
@@ -3862,23 +3963,20 @@ filteredRequests.map(req => {
                            </div>
                            <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
                            
-               {(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (
-    <>
-        {hasPermission(16) && (
-            <button 
-                onClick={() => { 
-                    setShowAddInvModal(true); 
-                    setNewStockItem({ 
-                        name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
-                        project: globalProjectFilter !== 'All' ? globalProjectFilter : '' 
-                    });
-                }} 
-                className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
-            >
-                <Plus className="w-4 h-4"/> เพิ่ม
-            </button>
-        )} 
-    </>
+{/* ⭐ ปุ่มเพิ่มสินค้า (Inventory) - สิทธิ์ 16 */}
+{hasPermission(16) && (
+    <button 
+        onClick={() => { 
+            setShowAddInvModal(true); 
+            setNewStockItem({ 
+                name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
+                project: globalProjectFilter !== 'All' ? globalProjectFilter : '' 
+            });
+        }} 
+        className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
+    >
+        <Plus className="w-4 h-4"/> เพิ่ม
+    </button>
 )}
 
                           {hasPermission(22) && (
@@ -4013,29 +4111,32 @@ filteredRequests.map(req => {
 
                     <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
                     
-{/* แก้ไขช่วงบรรทัด 955-958 ในไฟล์ index */}
-{(currentUserRole === ROLES.STORE || currentUserRole === ROLES.ADMIN) && (
-    <>
-        {hasPermission(19) && (
-            <button onClick={() => { 
-                setShowAssetModal(true); 
-                setNewAssetItem({ 
-                    id: '', isAutoId: false, name: '', serial: '', status: 'Available', condition: 'Good', ownerType: '', price: 0, rentalPrice: 0, rentalUnit: 'Month', images: [],
-                    project: globalProjectFilter !== 'All' ? globalProjectFilter : '' // ⭐ Auto-fill Project
-                });
-            }} className="bg-indigo-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-indigo-700">
-                <Plus className="w-4 h-4"/> เพิ่ม
-            </button>
-        )}
-        
-        {hasPermission(23) && (
-            <button onClick={() => setShowImportAssetModal(true)} className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700">
-                <Download className="w-4 h-4 rotate-180"/> Import
-            </button>
-        )}
-    </>
+
+               {/* ⭐ ปุ่มเพิ่มทรัพย์สิน (Asset) - สิทธิ์ 19 */}
+{hasPermission(19) && (
+    <button 
+        onClick={() => { 
+            setShowAssetModal(true); 
+            setNewAssetItem({ 
+                id: '', isAutoId: false, name: '', serial: '', status: 'Available', condition: 'Good', ownerType: '', price: 0, rentalPrice: 0, rentalUnit: 'Month', images: [],
+                project: globalProjectFilter !== 'All' ? globalProjectFilter : '' 
+            });
+        }} 
+        className="bg-indigo-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-indigo-700"
+    >
+        <Plus className="w-4 h-4"/> เพิ่ม
+    </button>
 )}
-                    
+
+{/* ⭐ ปุ่ม Import ทรัพย์สิน (Asset) - สิทธิ์ 23 */}
+{hasPermission(23) && (
+    <button 
+        onClick={() => setShowImportAssetModal(true)} 
+        className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
+    >
+        <Download className="w-4 h-4 rotate-180"/> Import
+    </button>
+)}   
                  </div>
               </div>
               
@@ -4044,7 +4145,8 @@ filteredRequests.map(req => {
                      <thead className="bg-gray-100 text-gray-600">
                         <tr>
                             {/* Checkbox Header (ซ่อนถ้า Summary) */}
-                            {assetTabMode !== 'Summary' && (
+                            {assetTabMode !== 'Summary' && hasPermission(21) && (
+                                
                                 <th className="px-4 py-3 w-10 text-center">
                                     <input type="checkbox" className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer" 
                                         checked={filteredAssets.length > 0 && selectedAssets.length === filteredAssets.length}
@@ -4112,17 +4214,23 @@ filteredRequests.map(req => {
                                ) : (
                                    /* Body ปกติ */
                                    <>
+                                       {assetTabMode !== 'Summary' && hasPermission(21) && (
                                        <td className="px-4 py-4 text-center" onClick={(e) => e.stopPropagation()}>
                                            <input type="checkbox" className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer" 
                                                checked={selectedAssets.includes(ast.id)}
                                                onChange={() => toggleSelectAsset(ast.id)}
                                            />
                                        </td>
-                                       <td className="px-6 py-4 font-medium text-gray-500">
-                                           {ast.id}
-                                           {ast.alertType === 'expired' && <span className="block text-[9px] text-red-600 font-bold">หมดสัญญา</span>}
-                                           {ast.alertType === 'overdue' && <span className="block text-[9px] text-orange-600 font-bold">ยืมเกินกำหนด</span>}
-                                       </td>
+                                       )}
+<td className="px-6 py-4 font-medium text-gray-500">
+    {ast.id}
+    {/* แจ้งเตือนหมดสัญญา */}
+    {ast.alertType === 'expired' && <span className="block text-[9px] text-red-600 font-bold bg-red-50 px-1 rounded w-fit mt-1">หมดสัญญาแล้ว</span>}
+    {ast.alertType === 'expiring' && <span className="block text-[9px] text-orange-600 font-bold bg-orange-50 px-1 rounded w-fit mt-1">เหลือ {ast.daysLeft} วัน</span>}
+    
+    {/* แจ้งเตือนยืมเกิน */}
+    {ast.alertType === 'overdue' && <span className="block text-[9px] text-purple-600 font-bold bg-purple-50 px-1 rounded w-fit mt-1">ยืมเกินกำหนด</span>}
+</td>
                                        <td className="px-6 py-4 font-medium text-gray-900">{ast.name}</td>
 {globalProjectFilter === 'All' && assetTabMode !== 'Summary' && (
     <td className="px-6 py-4 text-center">
@@ -4251,7 +4359,15 @@ filteredRequests.map(req => {
                           </thead>
                           <tbody className="divide-y">
                               {allUsers.map((u, idx) => (
-                                  <tr key={idx} className="hover:bg-gray-50">
+                                  <tr 
+    key={u.id} 
+    className="border-b hover:bg-blue-50 cursor-pointer transition-colors"
+    onClick={() => {
+        setViewingUser(u);
+        setUserDetailTab('info');
+        setDetailSearch('');
+    }}
+>
                                       <td className="px-6 py-4 font-bold text-gray-800">{u.username}</td>
                                       <td className="px-6 py-4">{u.firstName} {u.lastName}</td>
                                       <td className="px-6 py-4 font-mono text-gray-500">{u.empId}</td>
@@ -4387,22 +4503,26 @@ filteredRequests.map(req => {
                   </div>
 
                   <div className="p-5 border-t bg-white flex gap-3">
-                      <button 
-                          onClick={() => handleDeleteProject(viewingProject.id)} 
-                          className="flex-1 py-2.5 border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2 transition-colors"
-                      >
-                          <Trash2 className="w-4 h-4"/> ลบโครงการ
-                      </button>
-                      <button 
-                          onClick={() => { 
-                              setEditingProject({...viewingProject, originalId: viewingProject.id, isNew: false}); 
-                              setProjectFormTab('General'); 
-                              setShowProjectModal(true); 
-                          }} 
-                          className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-md flex items-center justify-center gap-2 transition-colors"
-                      >
-                          <Edit className="w-4 h-4"/> แก้ไขข้อมูล
-                      </button>
+                      {hasPermission(26) && (
+        <button 
+            onClick={() => handleDeleteProject(viewingProject.id)} 
+            className="flex-1 py-2.5 border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2 transition-colors"
+        >
+            <Trash2 className="w-4 h-4"/> ลบโครงการ
+        </button>
+    )}
+                      {hasPermission(26) && (
+        <button 
+            onClick={() => { 
+                setEditingProject({...viewingProject, originalId: viewingProject.id, isNew: false});
+                setProjectFormTab('General'); 
+                setShowProjectModal(true); 
+            }} 
+            className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-md flex items-center justify-center gap-2 transition-colors"
+        >
+            <Edit className="w-4 h-4"/> แก้ไขข้อมูล
+        </button>
+    )}
                   </div>
               </div>
           </div>
@@ -4631,20 +4751,30 @@ filteredRequests.map(req => {
                 <div className="col-span-2">
                     <label className="block text-sm font-bold text-gray-700 mb-1.5">ชื่อโครงการ (Project Name)</label>
                                   <select 
-                                      required 
-                                      className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-                                      value={newOrderMeta.job} 
-                                      onChange={e => {
-                                          setNewOrderMeta({...newOrderMeta, job: e.target.value});
-                                          // Reset SubJob/EP Code ใน tempItem เมื่อเปลี่ยนโครงการ เพื่อป้องกันข้อมูลผิดพลาด
-                                          setTempItem(prev => ({...prev, subJob: '', epCode: ''}));
-                                      }}
-                                  >
-                                      <option value="">-- กรุณาเลือกโครงการ --</option>
-                                      {projects.map(p => (
-                                          <option key={p.id} value={p.name}>{p.name}</option>
-                                      ))}
-                                  </select>
+    required 
+    className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+    value={newOrderMeta.job} 
+    onChange={e => {
+        setNewOrderMeta({...newOrderMeta, job: e.target.value});
+        setTempItem(prev => ({...prev, subJob: '', epCode: ''}));
+    }}
+>
+    <option value="">-- กรุณาเลือกโครงการ --</option>
+    
+    {/* ⭐ กรองโครงการตามสิทธิ์ของประเภทคำขอที่เลือกอยู่ */}
+{projects.filter(p => {
+    // 1. กำหนดสิทธิ์ที่ต้องใช้ ตามประเภทคำขอ
+    let requiredPerm = 4; // Default: ซื้อ Local (4)
+    if (newOrderMeta.type === 'HO') requiredPerm = 5; // ซื้อ HO (5)
+    else if (newOrderMeta.type === 'Withdraw') requiredPerm = 6; // เบิกวัสดุ (6)
+    else if (newOrderMeta.type === 'Borrow') requiredPerm = 7; // ยืมทรัพย์สิน (7)
+
+    // 2. เช็คว่ามีสิทธิ์นั้นในโครงการนี้หรือไม่
+    return hasPermission(requiredPerm, p.name);
+}).map(p => (
+    <option key={p.id} value={p.name}>{p.name}</option>
+))}
+</select>
                 
                 </div>
                 
@@ -5831,13 +5961,16 @@ filteredRequests.map(req => {
                     <div>
                         <label className="block text-sm font-bold text-gray-700 mb-1.5">โครงการ (Project)</label>
                         <select 
-                            className="w-full p-2.5 border rounded-xl text-sm bg-white" 
-                            value={newStockItem.project || ''} 
-                            onChange={e => setNewStockItem({...newStockItem, project: e.target.value})}
-                        >
-                            <option value="">-- ไม่ระบุ --</option>
-                            {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-                        </select>
+    className="w-full p-2.5 border rounded-xl text-sm bg-white" 
+    value={newStockItem.project || ''} 
+    onChange={e => setNewStockItem({...newStockItem, project: e.target.value})}
+>
+    <option value="">-- ไม่ระบุ --</option>
+    {/* ⭐ กรองเฉพาะโครงการที่มีสิทธิ์ "เพิ่มสินค้า (16)" */}
+    {projects.filter(p => hasPermission(16, p.name)).map(p => (
+        <option key={p.id} value={p.name}>{p.name}</option>
+    ))}
+</select>
                     </div>
                     
                     {/* ⭐ เพิ่มส่วนเลือกประเภท (Type Selection) */}
@@ -5933,11 +6066,26 @@ filteredRequests.map(req => {
                         ยกเลิก
                     </button>
                     <button 
-                        onClick={handleAddNewProduct} 
-                        className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 shadow-md flex items-center justify-center gap-2 transition-transform active:scale-95"
-                    >
-                        <Save className="w-5 h-5"/> บันทึกสินค้า
-                    </button>
+    onClick={() => {
+        // 1. ตรวจสอบข้อมูลพื้นฐาน (ปรับให้ตรงกับฟิลด์ที่มี)
+        if (!newStockItem.name || !newStockItem.unit) {
+            showToast('กรุณากรอกข้อมูลให้ครบถ้วน (ชื่อ, หน่วยนับ)', 'error');
+            return;
+        }
+
+        // ⭐ 2. เพิ่มการตรวจสอบ "โครงการ"
+        if (!newStockItem.project) {
+            showToast('กรุณาเลือกโครงการ (Project)', 'error');
+            return;
+        }
+
+        // 3. ผ่านแล้วค่อยบันทึก
+        handleAddNewProduct();
+    }} 
+    className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 shadow-md flex items-center justify-center gap-2 transition-transform active:scale-95"
+>
+    <Save className="w-5 h-5"/> บันทึกสินค้า
+</button>
                 </div>
             </div>
         </div>
@@ -5963,13 +6111,16 @@ filteredRequests.map(req => {
                     <div>
                         <label className="block text-sm font-bold text-gray-700 mb-1.5">โครงการ (Project)</label>
                         <select 
-                            className="w-full p-2.5 border rounded-xl text-sm bg-white" 
-                            value={newAssetItem.project || ''} 
-                            onChange={e => setNewAssetItem({...newAssetItem, project: e.target.value})}
-                        >
-                            <option value="">-- ไม่ระบุ --</option>
-                            {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-                        </select>
+    className="w-full p-2.5 border rounded-xl text-sm bg-white" 
+    value={newAssetItem.project || ''} 
+    onChange={e => setNewAssetItem({...newAssetItem, project: e.target.value})}
+>
+    <option value="">-- ไม่ระบุ --</option>
+    {/* ⭐ กรองเฉพาะโครงการที่มีสิทธิ์ "เพิ่มทรัพย์สิน (19)" */}
+    {projects.filter(p => hasPermission(19, p.name)).map(p => (
+        <option key={p.id} value={p.name}>{p.name}</option>
+    ))}
+</select>
                     </div>
 
                     {/* Owner Type */}
@@ -6072,7 +6223,27 @@ filteredRequests.map(req => {
 
                 <div className="p-5 border-t border-gray-100 bg-white flex gap-3">
                     <button onClick={() => setShowAssetModal(false)} className="flex-1 py-3 border border-gray-300 rounded-xl text-gray-600 font-bold hover:bg-gray-50 transition-colors">ยกเลิก</button>
-                    <button onClick={handleAddAsset} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-md flex items-center justify-center gap-2 transition-transform active:scale-95"><Save className="w-5 h-5"/> บันทึกข้อมูล</button>
+                    <button 
+    onClick={() => {
+        // 1. ตรวจสอบข้อมูลพื้นฐาน
+        if (!newAssetItem.name) {
+            showToast('กรุณาระบุชื่อทรัพย์สิน', 'error');
+            return;
+        }
+
+        // ⭐ 2. เพิ่มการตรวจสอบ "โครงการ"
+        if (!newAssetItem.project) {
+            showToast('กรุณาเลือกโครงการ (Project)', 'error');
+            return;
+        }
+
+        // 3. ผ่านแล้วค่อยบันทึก
+        handleAddAsset();
+    }} 
+    className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-md flex items-center justify-center gap-2 transition-transform active:scale-95"
+>
+    <Save className="w-5 h-5"/> บันทึกข้อมูล
+</button>
                 </div>
             </div>
         </div>
@@ -6235,24 +6406,49 @@ filteredRequests.map(req => {
                     <div className="px-6 pb-6">
                         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-gray-100 text-gray-600 border-b">
-                                    <tr>
-                                        <th className="px-4 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('date')}>Date <ArrowUpDown className="w-3 h-3 inline opacity-50"/></th>
-                                        <th className="px-4 py-3 text-center">รูปภาพ</th>
-                                        <th className="px-4 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('action')}>Action <ArrowUpDown className="w-3 h-3 inline opacity-50"/></th>
-                                        
-                                        {!viewingItem && (
-                                            <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('item')}>
-                                                Item Info <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
-                                            </th>
-                                        )}
+<thead className="bg-gray-100 text-gray-600 border-b">
+    <tr>
+        {/* Date */}
+        <th className="px-4 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('date')}>
+            Date <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+        </th>
+        
+        {/* Image (ไม่เรียง) */}
+        <th className="px-4 py-3 text-center">รูปภาพ</th>
+        
+        {/* Action */}
+        <th className="px-4 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('action')}>
+            Action <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+        </th>
+        
+        {/* Item Info (เฉพาะหน้า All Logs) */}
+        {!viewingItem && (
+            <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('item')}>
+                Item Info <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+            </th>
+        )}
 
-                                        <th className="px-4 py-3 text-center">Change</th>
-                                        <th className="px-4 py-3">Ref Doc</th>
-                                        <th className="px-4 py-3 min-w-[120px]">User</th>
-                                        <th className="px-4 py-3">Note</th>
-                                    </tr>
-                                </thead>
+        {/* Change */}
+        <th className="px-4 py-3 text-center cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('change')}>
+            Change <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+        </th>
+        
+        {/* Ref Doc */}
+        <th className="px-4 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('relatedRequestId')}>
+            Ref Doc <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+        </th>
+        
+        {/* ⭐ User (ทำให้เรียงได้ตามที่ขอ) */}
+        <th className="px-4 py-3 min-w-[120px] cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('by')}>
+            User <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+        </th>
+        
+        {/* Note */}
+        <th className="px-4 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('note')}>
+            Note <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
+        </th>
+    </tr>
+</thead>
                                 <tbody className="divide-y divide-gray-100">
                                     {filteredLogs.map((log, i) => (
                                     <tr key={i} className={`hover:bg-blue-50 transition-colors ${log.action === 'Delete Asset' ? 'bg-red-50/50' : ''}`}>
@@ -6327,12 +6523,12 @@ filteredRequests.map(req => {
                                             {log.action === 'Delete Asset' || log.action === 'Delete Inventory' ? (
                                                 <div className="flex flex-col gap-1">
                                                     <span className="text-gray-500 italic">Backup Data Saved</span>
-                                                    {currentUserRole === ROLES.ADMIN && (
-                                                        <button 
-                                                            onClick={() => {
-                                                                if(log.action === 'Delete Asset') handleRestoreAsset(log);
-                                                                else handleRestoreInventory(log);
-                                                            }} 
+{hasPermission(27) && ( // ✅ ใช้สิทธิ์ 27
+    <button 
+        onClick={() => {
+            if(log.action === 'Delete Asset') handleRestoreAsset(log);
+            else handleRestoreInventory(log);
+        }}
                                                             className="text-white bg-green-500 hover:bg-green-600 px-2 py-1 rounded w-fit flex items-center gap-1 font-bold shadow-sm text-[10px]"
                                                         >
                                                             <RotateCcw className="w-3 h-3"/> กู้คืน
@@ -6492,26 +6688,41 @@ filteredRequests.map(req => {
                         <div><label className="text-xs font-bold text-gray-500 mb-1 block">ราคาต่อหน่วย</label><input type="number" className="w-full p-2 border rounded" value={editingStockItem.price} onChange={e => setEditingStockItem({...editingStockItem, price: parseFloat(e.target.value)||0})}/></div>
                       </div>
 
-                      {/* Image Upload for Edit */}
-                      <div>
-                           <label className="text-xs font-bold text-gray-500 mb-1 block">อัปเดตรูปภาพ</label>
-                           <label className="cursor-pointer flex items-center justify-center gap-2 w-full p-2 border border-dashed rounded bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors">
-                               <Camera className="w-4 h-4"/> เลือกไฟล์ใหม่
-                               <input type="file" multiple className="hidden" onChange={(e) => {
-                                   if(e.target.files) {
-                                       const files = Array.from(e.target.files);
-                                       const promises = files.map(file => new Promise(resolve => { const r = new FileReader(); r.onload = (x) => resolve({ base64: x.target.result, file, name: file.name }); r.readAsDataURL(file); }));
-                                       Promise.all(promises).then(imgs => setEditingStockItem({...editingStockItem, newImages: imgs}));
-                                   }
-                               }}/>
-                           </label>
-                           {/* Preview New Images */}
-                           {editingStockItem.newImages && editingStockItem.newImages.length > 0 && (
-                               <div className="flex gap-2 mt-2 overflow-x-auto">
-                                   {editingStockItem.newImages.map((img, i) => <img key={i} src={img.base64} className="h-16 rounded border"/>)}
-                               </div>
-                           )}
-                      </div>
+{/* Image Upload for Edit (UPDATED: Remove Current Image) */}
+<div className="space-y-3">
+    
+    {/* ส่วนอัปโหลดรูปใหม่ (เหลือแค่นี้) */}
+    <div>
+         <label className="text-xs font-bold text-gray-500 mb-1 block">อัปเดตรูปภาพ (แทนที่รูปเดิม)</label>
+         <label className="cursor-pointer flex items-center justify-center gap-2 w-full p-2.5 border border-dashed rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-bold text-sm">
+             <Camera className="w-4 h-4"/> เลือกไฟล์ใหม่
+             <input type="file" multiple className="hidden" onChange={(e) => {
+                 if(e.target.files) {
+                     const files = Array.from(e.target.files);
+                     const promises = files.map(file => new Promise(resolve => { const r = new FileReader(); r.onload = (x) => resolve({ base64: x.target.result, file, name: file.name }); r.readAsDataURL(file); }));
+                     Promise.all(promises).then(imgs => setEditingStockItem(prev => ({...prev, newImages: [...(prev.newImages || []), ...imgs]})));
+                 }
+             }}/>
+         </label>
+         
+         {/* Preview New Images */}
+         {editingStockItem.newImages && editingStockItem.newImages.length > 0 && (
+             <div className="grid grid-cols-4 gap-2 mt-2">
+                 {editingStockItem.newImages.map((img, idx) => (
+                     <div key={idx} className="relative group w-full h-20 bg-gray-100 rounded-lg border border-gray-200 overflow-hidden">
+                         <img src={img.base64} className="w-full h-full object-cover"/>
+                         <button 
+                            onClick={() => handleRemoveEditStockNewImage(idx)} 
+                            className="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow-md opacity-0 group-hover:opacity-100 transition-all hover:scale-110"
+                         >
+                            <X size={12}/>
+                         </button>
+                     </div>
+                 ))}
+             </div>
+         )}
+    </div>
+</div>
 
                       <div><label className="text-xs font-bold text-gray-500 mb-1 block">หมายเหตุ</label><textarea className="w-full p-2 border rounded" rows="2" value={editingStockItem.note || ''} onChange={e => setEditingStockItem({...editingStockItem, note: e.target.value})}></textarea></div>
                   </div>
@@ -6542,14 +6753,65 @@ filteredRequests.map(req => {
                        </div>
                        
                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                            {editingAssetItem.ownerType === 'Rent' ? (
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div><label className="block text-xs font-bold text-gray-500 mb-1">ราคาเช่า</label><input type="number" className="w-full p-2 border rounded-lg text-sm" value={editingAssetItem.rentalPrice} onChange={e => setEditingAssetItem({...editingAssetItem, rentalPrice: parseFloat(e.target.value)||0})}/></div>
-                                    <div><label className="block text-xs font-bold text-gray-500 mb-1">หน่วย</label><select className="w-full p-2 border rounded-lg text-sm" value={editingAssetItem.rentalUnit} onChange={e => setEditingAssetItem({...editingAssetItem, rentalUnit: e.target.value})}><option value="Day">บาท / วัน</option><option value="Month">บาท / เดือน</option><option value="Year">บาท / ปี</option></select></div>
-                                </div>
-                            ) : (
-                                <div><label className="block text-xs font-bold text-gray-500 mb-1">ราคาซื้อ</label><input type="number" className="w-full p-2 border rounded-lg text-sm" value={editingAssetItem.price} onChange={e => setEditingAssetItem({...editingAssetItem, price: parseFloat(e.target.value)||0})}/></div>
-                            )}
+{editingAssetItem.ownerType === 'Rent' ? (
+    <>
+        <div className="grid grid-cols-2 gap-3">
+            <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">ราคาเช่า</label>
+                <input 
+                    type="number" 
+                    className="w-full p-2 border rounded-lg text-sm" 
+                    value={editingAssetItem.rentalPrice} 
+                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalPrice: parseFloat(e.target.value)||0})}
+                />
+            </div>
+            <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">หน่วย</label>
+                <select 
+                    className="w-full p-2 border rounded-lg text-sm" 
+                    value={editingAssetItem.rentalUnit} 
+                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalUnit: e.target.value})}
+                >
+                    <option value="Day">บาท / วัน</option>
+                    <option value="Month">บาท / เดือน</option>
+                    <option value="Year">บาท / ปี</option>
+                </select>
+            </div>
+        </div>
+
+        {/* ⭐ เพิ่มส่วนแก้ไขวันที่ (Start/End Date) */}
+        <div className="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-dashed border-gray-200">
+            <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">วันเริ่มสัญญา</label>
+                <input 
+                    type="date" 
+                    className="w-full p-2 border rounded-lg text-sm" 
+                    value={editingAssetItem.rentalStart || ''} 
+                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalStart: e.target.value})}
+                />
+            </div>
+            <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">วันสิ้นสุด</label>
+                <input 
+                    type="date" 
+                    className="w-full p-2 border rounded-lg text-sm" 
+                    value={editingAssetItem.rentalEnd || ''} 
+                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalEnd: e.target.value})}
+                />
+            </div>
+        </div>
+    </>
+) : (
+    <div>
+        <label className="block text-xs font-bold text-gray-500 mb-1">ราคาซื้อ</label>
+        <input 
+            type="number" 
+            className="w-full p-2 border rounded-lg text-sm" 
+            value={editingAssetItem.price} 
+            onChange={e => setEditingAssetItem({...editingAssetItem, price: parseFloat(e.target.value)||0})}
+        />
+    </div>
+)}
                        </div>
 
                        <div className="grid grid-cols-2 gap-4">
@@ -6906,10 +7168,10 @@ filteredRequests.map(req => {
                       
                       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
                           <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV</h4>
-                          <p className="mb-2">เรียงคอลัมน์ดังนี้ (11 ช่อง):</p>
-                          <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
-                              Asset_ID, Name, Serial, Type, Price, Unit, Start_Date, End_Date, Status, Holder, Note
-                          </div>
+                          <p className="mb-2">เรียงคอลัมน์ดังนี้ (12 ช่อง):</p>
+<div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
+    Asset_ID, Name, Serial, Type, Price, Unit, Start_Date, End_Date, Status, Holder, Note, Project
+</div>
                           <div className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-1 text-xs text-blue-700 list-disc pl-4">
                               <li><b>Asset_ID:</b> ว่างไว้ = Auto Gen (ห้ามซ้ำ)</li>
                               <li><b>Name:</b> ห้ามว่าง</li>
@@ -6921,6 +7183,7 @@ filteredRequests.map(req => {
                               <li><b>Status:</b> <code>Available</code>, <code>Borrowed</code>, <code>Lost</code>, <code>Damaged</code> (ห้ามว่าง)</li>
                               <li><b>Holder:</b> ผู้ถือครอง (จำเป็นถ้า Status = Borrowed)</li>
                               <li><b>Note:</b> หมายเหตุ (จะบันทึกลงประวัติ)</li>
+                              <li><b>Project:</b> ชื่อโครงการ (ต้องตรงกับในระบบ)</li>
                           </div>
                       </div>
 
@@ -6947,6 +7210,7 @@ filteredRequests.map(req => {
                                           <tr>
                                               <th className="px-3 py-2 w-8 text-center">#</th>
                                               <th className="px-3 py-2">ID</th>
+                                              <th className="px-3 py-2">Project</th>
                                               <th className="px-3 py-2">Name</th>
                                               <th className="px-3 py-2">Serial</th>
                                               <th className="px-3 py-2">Type</th>
@@ -6970,6 +7234,9 @@ filteredRequests.map(req => {
                                                           : row.id
                                                       ) : <span className="text-gray-400 italic">Auto</span>}
                                                   </td>
+                                                  <td className={`px-3 py-2 ${!projects.some(p => p.name === row.project) ? 'text-red-600 font-bold' : 'text-indigo-600'}`}>
+            {row.project || '!Missing'}
+        </td>
                                                   <td className={`px-3 py-2 ${!row.name ? 'bg-red-100 text-red-600 font-bold' : ''}`}>{row.name || '!Missing'}</td>
                                                   <td className={`px-3 py-2 ${!row.serial ? 'bg-red-100 text-red-600 font-bold' : ''}`}>{row.serial || '!Missing'}</td>
                                                   <td className="px-3 py-2">{row.ownerType}</td>
@@ -7103,10 +7370,10 @@ filteredRequests.map(req => {
                       
                       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
                           <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV (ไม่ต้องใส่ ID)</h4>
-                          <p className="mb-2">เรียงคอลัมน์ดังนี้ (7 ช่อง):</p>
-                          <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
-                              Name, Type, Qty, Unit, Min_Stock, Price, Note
-                          </div>
+                          <p className="mb-2">เรียงคอลัมน์ดังนี้ (8 ช่อง):</p>
+<div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
+    Name, Type, Qty, Unit, Min_Stock, Price, Note, Project
+</div>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs text-blue-700 list-disc pl-4">
                               <li><b>Name:</b> ชื่อสินค้า (ถ้าซ้ำ = รวมยอด)</li>
                               <li><b>Type:</b> System / NonSystem</li>
@@ -7115,6 +7382,7 @@ filteredRequests.map(req => {
                               <li><b>Min_Stock:</b> (Default: 0)</li>
                               <li><b>Price:</b> ราคาต่อหน่วย</li>
                               <li><b>Note:</b> หมายเหตุ</li>
+                              <li><b>Project:</b> ชื่อโครงการ (ต้องตรงกับในระบบ)</li>
                           </div>
                       </div>
 
@@ -7141,6 +7409,7 @@ filteredRequests.map(req => {
                                           <tr>
                                               <th className="px-3 py-2 w-8 text-center">#</th>
                                               <th className="px-3 py-2">Name</th>
+                                              <th className="px-3 py-2">Project</th>
                                               <th className="px-3 py-2">Type</th>
                                               <th className="px-3 py-2 text-center">Qty</th>
                                               <th className="px-3 py-2">Unit</th>
@@ -7157,6 +7426,9 @@ filteredRequests.map(req => {
                                                   <tr key={idx} className={`hover:bg-blue-50 transition-colors ${isDuplicate ? 'bg-yellow-50' : ''}`}>
                                                       <td className="px-3 py-2 text-gray-400 text-center">{idx + 1}</td>
                                                       <td className="px-3 py-2 font-bold text-gray-800">{row.name || '!Missing'}</td>
+                                                      <td className={`px-3 py-2 ${!projects.some(p => p.name === row.project) ? 'text-red-600 font-bold' : 'text-blue-600'}`}>
+                {row.project || '!Missing'}
+            </td>
                                                       <td className="px-3 py-2">
                                                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${row.stockType === 'NonSystem' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}`}>
                                                               {row.stockType}
@@ -7240,10 +7512,12 @@ filteredRequests.map(req => {
                               {hasPermission(2, permissionTab) && (
                                   <div className="space-x-2">
                                       <button onClick={() => {
-                                          const allIds = Object.keys(PERMISSIONS).map(Number);
-                                          const newPerms = { ...selectedUserForEdit.permissions, [permissionTab]: allIds };
-                                          setSelectedUserForEdit({ ...selectedUserForEdit, permissions: newPerms });
-                                      }} className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded hover:bg-blue-100">เลือกทั้งหมด</button>
+    // ⭐ แก้ไข: เลือกทั้งหมด แต่ยกเว้น 1 (Read Only) และ 2 (Admin)
+    const allIds = Object.keys(PERMISSIONS).map(Number).filter(id => id !== 1 && id !== 2);
+    
+    const newPerms = { ...selectedUserForEdit.permissions, [permissionTab]: allIds };
+    setSelectedUserForEdit({ ...selectedUserForEdit, permissions: newPerms });
+}} className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded hover:bg-blue-100">เลือกทั้งหมด</button>
                                       <button onClick={() => {
                                           const newPerms = { ...selectedUserForEdit.permissions, [permissionTab]: [] };
                                           setSelectedUserForEdit({ ...selectedUserForEdit, permissions: newPerms });
@@ -7253,49 +7527,72 @@ filteredRequests.map(req => {
                           </div>
                           
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                              {Object.entries(PERMISSIONS).map(([id, label]) => {
-                                  const permId = parseInt(id);
-                                  const currentProjectPerms = selectedUserForEdit.permissions?.[permissionTab] || [];
-                                  const isChecked = currentProjectPerms.includes(permId);
+{Object.entries(PERMISSIONS).map(([id, label]) => {
+    const permId = parseInt(id);
+    const currentProjectPerms = selectedUserForEdit.permissions?.[permissionTab] || [];
+    const isChecked = currentProjectPerms.includes(permId);
 
-                                  // ⭐ Logic ตรวจสอบสิทธิ์การแก้ไข (Edit Permission Logic)
-                                  let canEdit = false;
-                                  // 1. Super Admin แก้ได้หมด
-                                  if (user.isSuperAdmin) canEdit = true;
-                                  // 2. Admin ในโครงการนี้ (สิทธิ์เบอร์ 2) แก้ได้หมด
-                                  else if (hasPermission(2, permissionTab)) canEdit = true;
-                                  // 3. Sub-Admin (สิทธิ์เบอร์ 3) แก้ได้เฉพาะ 4, 5, 6, 7
-                                  else if (hasPermission(3, permissionTab)) {
-                                      if ([4, 5, 6, 7].includes(permId)) canEdit = true;
-                                  }
-                                  // คนอื่น (User ทั่วไป) = ดูได้อย่างเดียว (canEdit = false)
+    // 1. ตรวจสอบสิทธิ์การแก้ไข (Edit Logic)
+    let canEdit = false;
+    if (user.isSuperAdmin) canEdit = true;
+    else if (hasPermission(2, permissionTab)) canEdit = true;
+    else if (hasPermission(3, permissionTab)) {
+        if ([4, 5, 6, 7].includes(permId)) canEdit = true;
+    }
 
-                                  return (
-                                      <label key={id} className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${canEdit ? 'cursor-pointer hover:border-gray-300' : 'cursor-not-allowed opacity-60 bg-gray-50'} ${isChecked ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100'}`}>
-                                          <div className="pt-0.5">
-                                              <input 
-                                                  type="checkbox" 
-                                                  className="w-4 h-4 accent-blue-600"
-                                                  checked={isChecked}
-                                                  disabled={!canEdit} // 🔒 ปิดการแก้ไขถ้าไม่มีสิทธิ์
-                                                  onChange={(e) => {
-                                                      let newList = [...currentProjectPerms];
-                                                      if (e.target.checked) newList.push(permId);
-                                                      else newList = newList.filter(x => x !== permId);
-                                                      
-                                                      setSelectedUserForEdit({
-                                                          ...selectedUserForEdit,
-                                                          permissions: { ...selectedUserForEdit.permissions, [permissionTab]: newList }
-                                                      });
-                                                  }}
-                                              />
-                                          </div>
-                                          <div>
-                                              <span className={`text-sm ${isChecked ? 'font-bold text-gray-800' : 'text-gray-600'}`}>{label}</span>
-                                          </div>
-                                      </label>
-                                  );
-                              })}
+    // 2. Logic ล็อกปุ่ม (Lock Logic)
+    const hasReadOnly = currentProjectPerms.includes(1);
+    const hasAdmin = currentProjectPerms.includes(2);
+    
+    let isLocked = false;
+    // ถ้ามีสิทธิ์ "ดูอย่างเดียว" หรือ "Admin" อยู่ -> ล็อกข้ออื่นทั้งหมด
+    if ((hasReadOnly && permId !== 1) || (hasAdmin && permId !== 2)) {
+        isLocked = true;
+    }
+
+    const isInteractive = canEdit && !isLocked;
+
+    return (
+        <label key={id} className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${isInteractive ? 'cursor-pointer hover:border-gray-300' : 'cursor-not-allowed opacity-40 bg-gray-100'} ${isChecked ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100'}`}>
+            <div className="pt-0.5">
+                <input 
+                    type="checkbox" 
+                    className="w-4 h-4 accent-blue-600"
+                    checked={isChecked}
+                    disabled={!isInteractive} 
+                    onChange={(e) => {
+                        let newList;
+                        
+                        if (e.target.checked) {
+                            // ⭐ กรณีติ๊กเลือก
+                            if (permId === 1) {
+                                // ถ้าเลือก "ดูอย่างเดียว" -> ล้างตัวอื่นออกหมด เหลือแค่ [1]
+                                newList = [1];
+                            } else if (permId === 2) {
+                                // ถ้าเลือก "Admin" -> ล้างตัวอื่นออกหมด เหลือแค่ [2]
+                                newList = [2];
+                            } else {
+                                // ถ้าเลือกตัวอื่น -> เพิ่มเข้าไปปกติ (เอา 1, 2 ออกกันเหนียว)
+                                newList = [...currentProjectPerms.filter(x => x !== 1 && x !== 2), permId];
+                            }
+                        } else {
+                            // ⭐ กรณีเอาติ๊กออก
+                            newList = currentProjectPerms.filter(x => x !== permId);
+                        }
+
+                        setSelectedUserForEdit({
+                            ...selectedUserForEdit,
+                            permissions: { ...selectedUserForEdit.permissions, [permissionTab]: newList }
+                        });
+                    }}
+                />
+            </div>
+            <div>
+                <span className={`text-sm ${isChecked ? 'font-bold text-gray-800' : 'text-gray-600'}`}>{label}</span>
+            </div>
+        </label>
+    );
+})}
                           </div>
                       </div>
                   </div>
@@ -7304,24 +7601,391 @@ filteredRequests.map(req => {
                   <div className="p-5 border-t bg-white flex justify-end gap-3">
                       <button onClick={() => setShowPermissionModal(false)} className="px-6 py-2 border rounded-lg text-gray-600 hover:bg-gray-50">ปิด</button>
                       
-                      {/* ปุ่มบันทึก แสดงเฉพาะคนที่มีสิทธิ์แก้ไขอย่างน้อย 1 อย่าง */}
-                      {(hasPermission(2, permissionTab) || hasPermission(3, permissionTab)) && (
-                          <button 
-                              onClick={() => {
-                                  google.script.run.saveUserData(selectedUserForEdit);
-                                  setAllUsers(prev => prev.map(u => u.id === selectedUserForEdit.id ? selectedUserForEdit : u));
-                                  showToast('บันทึกสิทธิ์เรียบร้อย');
-                                  setShowPermissionModal(false);
-                              }} 
-                              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold"
-                          >
-                              บันทึกการเปลี่ยนแปลง
-                          </button>
-                      )}
+          {/* ปุ่มบันทึก แสดงเฉพาะคนที่มีสิทธิ์แก้ไข (Admin หรือ Sub-Admin) */}
+{(hasPermission(2, permissionTab) || hasPermission(3, permissionTab)) && (
+<button 
+    onClick={async () => {
+        // 1. บันทึกข้อมูล
+        google.script.run.saveUserData(selectedUserForEdit);
+        
+        // 2. ⭐ แก้ไข Log: ระบุชื่อโครงการ (permissionTab) ให้ชัดเจน
+        const logDetail = `Project: ${permissionTab} | Rights: [${selectedUserForEdit.permissions?.[permissionTab]?.join(', ')}]`;
+        
+        await addInvLog(
+            'Edit Permissions', 
+            `${selectedUserForEdit.empId} ${selectedUserForEdit.firstName}`, 
+            logDetail, // ส่งรายละเอียดโครงการที่แก้ลงไปตรงนี้
+            JSON.stringify(selectedUserForEdit.permissions?.[permissionTab] || []),
+            [], 
+            selectedUserForEdit.id
+        );
+
+        // 3. อัปเดตหน้าจอ
+        setAllUsers(prev => prev.map(u => u.id === selectedUserForEdit.id ? selectedUserForEdit : u));
+        showToast('บันทึกสิทธิ์เรียบร้อย');
+        setShowPermissionModal(false);
+    }} 
+    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold"
+>
+    บันทึกการเปลี่ยนแปลง
+</button>
+)}
                   </div>
               </div>
           </div>
       )}
+
+
+{/* --- USER DETAIL MODAL (UPDATED V5: Fixed Header Table & Robust Data Mapping) --- */}
+{viewingUser && (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden relative">
+            
+            {/* 1. Header & Close Button */}
+            <div className="p-4 border-b flex justify-between items-center bg-gray-50 shrink-0">
+                <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-700 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-lg">
+                        {viewingUser.firstName?.charAt(0)}
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-xl text-gray-800">{viewingUser.firstName} {viewingUser.lastName}</h3>
+                        <p className="text-sm text-gray-500 font-medium">{viewingUser.empId} | {viewingUser.email}</p>
+                    </div>
+                </div>
+                <button onClick={() => setViewingUser(null)} className="text-gray-400 hover:text-red-500 hover:bg-red-50 p-2 rounded-full transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+
+            {/* 2. Tabs Navigation */}
+            <div className="flex border-b bg-white px-6 pt-2 shrink-0 overflow-x-auto">
+                {[
+                    { id: 'info', icon: User, label: 'ข้อมูลผู้ใช้ & สิทธิ์' },
+                    { id: 'history', icon: Clock, label: 'ประวัติการทำงาน' },
+                    { id: 'purchase', icon: ShoppingCart, label: 'ประวัติการสั่งซื้อ' },
+                    { id: 'withdraw', icon: Package, label: 'ประวัติการเบิก' },
+                    { id: 'borrow', icon: Briefcase, label: 'ทรัพย์สินที่ยืมอยู่' }
+                ].map(tab => (
+                    <button
+                        key={tab.id}
+                        onClick={() => { setUserDetailTab(tab.id); setDetailSearch(''); }}
+                        className={`px-5 py-3 text-sm font-bold border-b-[3px] transition-colors flex items-center gap-2 whitespace-nowrap ${userDetailTab === tab.id ? 'border-blue-600 text-blue-700 bg-blue-50/50' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                    >
+                        <tab.icon size={16}/> {tab.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* ⭐ 3. Search Bar Area (ย้ายมาไว้ตรงนี้ เพื่อให้ Fix อยู่กับที่ ไม่เลื่อนตามตาราง) */}
+            {(userDetailTab === 'history' || userDetailTab === 'purchase' || userDetailTab === 'withdraw' || userDetailTab === 'borrow') && (
+                <div className="px-6 py-3 bg-white border-b flex justify-between items-center shrink-0">
+                    <div className="flex items-center gap-2 text-gray-700 font-bold text-sm">
+                        <Filter size={16} className="text-blue-600"/> 
+                        ตัวกรองข้อมูล
+                    </div>
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"/>
+                        <input 
+                            type="text" 
+                            placeholder="ค้นหา..." 
+                            className="pl-9 pr-3 py-1.5 border rounded-lg text-sm w-64 focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50 focus:bg-white transition-colors"
+                            value={detailSearch} onChange={e => setDetailSearch(e.target.value)}
+                        />
+                    </div>
+                </div>
+            )}
+
+            {/* 4. Scrollable Content Area */}
+            <div className="p-0 overflow-y-auto flex-1 bg-gray-50/50 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+                
+                {/* Tab 1: Info (เหมือนเดิม) */}
+                {userDetailTab === 'info' && (
+                    <div className="p-6">
+                        {/* ... (Code ส่วนแสดงข้อมูลผู้ใช้เดิม) ... */}
+                        <div className="bg-white p-6 rounded-xl shadow-sm border space-y-6">
+                             {/* Basic Info */}
+                             <h4 className="font-bold text-gray-800 border-b pb-2 mb-4 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
+                             <div className="grid grid-cols-2 gap-6">
+                                <div><label className="text-xs font-bold text-gray-500">รหัสพนักงาน</label><div className="p-2 border rounded bg-gray-50">{viewingUser.empId}</div></div>
+                                <div><label className="text-xs font-bold text-gray-500">ชื่อ-นามสกุล</label><div className="p-2 border rounded bg-gray-50">{viewingUser.firstName} {viewingUser.lastName}</div></div>
+                                <div><label className="text-xs font-bold text-gray-500">อีเมล</label><div className="p-2 border rounded bg-gray-50">{viewingUser.email}</div></div>
+                                <div><label className="text-xs font-bold text-gray-500">สถานะ</label><div className={`p-2 border rounded font-bold ${viewingUser.status==='Activated'?'text-green-600 bg-green-50':'text-red-600 bg-red-50'}`}>{viewingUser.status}</div></div>
+                             </div>
+                             {/* Actions */}
+                             {(user?.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
+                                <div className="pt-4 border-t flex gap-3">
+                                    {(user?.isSuperAdmin || hasPermission(2)) && (
+                                        <button 
+                                            onClick={async () => {
+                                                const isActive = viewingUser.status === 'Activated' || viewingUser.status === 'Active'; 
+                                                const newStatus = isActive ? 'Deactivated' : 'Activated';
+                                                if(confirm(`ยืนยันการเปลี่ยนสถานะเป็น ${newStatus}?`)) {
+                                                    const updated = {...viewingUser, status: newStatus};
+                                                    google.script.run.saveUserData(updated);
+                                                    await addInvLog('Edit User Status', `${viewingUser.empId} ${viewingUser.firstName}`, `Changed Status to ${newStatus}`, JSON.stringify({ from: viewingUser.status, to: newStatus }), [], viewingUser.id);
+                                                    setAllUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
+                                                    setViewingUser(updated);
+                                                }
+                                            }}
+                                            className={`px-4 py-2 rounded text-white text-sm font-bold ${viewingUser.status === 'Activated' || viewingUser.status === 'Active' ? 'bg-red-500' : 'bg-green-500'}`}
+                                        >
+                                            {viewingUser.status === 'Activated' || viewingUser.status === 'Active' ? 'Deactivate User' : 'Activate User'}
+                                        </button>
+                                    )}
+                                    <button onClick={() => { setSelectedUserForEdit(viewingUser); setShowPermissionModal(true); }} className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-bold">จัดการสิทธิ์การใช้งาน</button>
+                                </div>
+                            )}
+                             {/* Permissions */}
+                            <div className="mt-6 pt-6 border-t">
+                                <h4 className="font-bold text-gray-800 mb-4 flex gap-2"><ShieldCheck size={18}/> สิทธิ์การใช้งานรายโครงการ</h4>
+                                <div className="grid grid-cols-2 gap-4">
+                                     {viewingUser.permissions && Object.entries(viewingUser.permissions)
+                                        .filter(([p]) => p && p !== 'undefined' && p !== 'null' && p.trim() !== '')
+                                        .map(([project, perms]) => (
+                                            <div key={project} className="border p-3 rounded bg-gray-50 hover:bg-blue-50 transition-colors">
+                                                <div className="font-bold text-blue-700 mb-2 flex items-center gap-2"><Building size={14}/> {project}</div>
+                                                <div className="flex flex-wrap gap-1">{perms.map(id => <span key={id} className="text-[10px] bg-white border px-1 rounded">{PERMISSIONS[id]}</span>)}</div>
+                                            </div>
+                                     ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* ⭐ Tab 2: History (Updated Data Mapping & Sticky Header) */}
+                {userDetailTab === 'history' && (() => {
+                    const systemLogs = invLogs.filter(log => 
+                        (log.by && (log.by.includes(viewingUser.empId) || log.by.includes(viewingUser.firstName))) ||
+                        (log.item && (log.item.includes(viewingUser.empId) || log.item.includes(viewingUser.firstName)))
+                    ).map(log => ({ ...log, sourceType: 'System' }));
+
+                    const requestTimelineLogs = requests
+                        .filter(r => r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName))
+                        .flatMap(req => {
+                            return (req.history || []).map(h => ({
+                                date: h.timestamp || h.date, // ⭐ รองรับทั้ง timestamp และ date
+                                action: h.action,
+                                // ⭐ Logic หาชื่อคนทำ: ถ้าไม่มีใน history ให้ใช้ requester (กรณีสร้าง) หรือ System
+                                by: h.by || (h.action === 'Create Request' ? req.requesterName || req.requester : 'System'), 
+                                item: req.docNumber,
+                                note: h.note,
+                                change: `Status: ${req.status}`,
+                                relatedRequestId: req.id,
+                                sourceType: 'Request'
+                            }));
+                        });
+
+                    const allUserLogs = [...systemLogs, ...requestTimelineLogs]
+                        .filter(log => 
+                            log.action?.toLowerCase().includes(detailSearch.toLowerCase()) ||
+                            log.item?.toLowerCase().includes(detailSearch.toLowerCase()) ||
+                            log.note?.toLowerCase().includes(detailSearch.toLowerCase()) ||
+                            log.by?.toLowerCase().includes(detailSearch.toLowerCase())
+                        )
+                        .sort((a, b) => {
+                            const parseDate = (dStr) => {
+                                if(!dStr) return 0;
+                                try {
+                                    if(dStr.includes('/')) { // Format DD/MM/YYYY HH:mm:ss
+                                        const [d, t] = dStr.split(' ');
+                                        const [day, month, year] = d.split('/').map(Number);
+                                        return new Date(year > 2400 ? year - 543 : year, month - 1, day, ...(t ? t.split(':').map(Number) : [0,0,0])).getTime();
+                                    }
+                                    return new Date(dStr).getTime(); // Format ISO
+                                } catch(e) { return 0; }
+                            };
+                            return parseDate(b.date) - parseDate(a.date);
+                        });
+
+                    return (
+                        <div className="w-full"> {/* ไม่ต้องมี Padding เพื่อให้ Header ชิดขอบ */}
+                            <table className="w-full text-sm text-left border-collapse">
+                                {/* ⭐ Sticky Header: ใช้ sticky top-0 ได้เลยเพราะ Parent scroll */}
+                                <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs sticky top-0 z-20 shadow-sm">
+                                    <tr>
+                                        <th className="p-4 w-36 whitespace-nowrap bg-gray-100">Date Time</th>
+                                        <th className="p-4 w-36 whitespace-nowrap bg-gray-100">Action</th>
+                                        <th className="p-4 min-w-[200px] bg-gray-100">Item / Ref</th>
+                                        <th className="p-4 min-w-[300px] bg-gray-100">Details / Note (By)</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y bg-white">
+                                    {allUserLogs.length > 0 ? allUserLogs.map((log, idx) => (
+                                        <tr key={idx} className={`hover:bg-blue-50/30 transition-colors ${log.sourceType === 'Request' ? 'bg-blue-50/10' : ''}`}>
+                                            <td className="p-4 font-mono text-xs text-gray-500 align-top whitespace-nowrap">{log.date || '-'}</td>
+                                            <td className="p-4 align-top">
+                                                <span className={`inline-block px-2 py-1 rounded text-[10px] font-bold border ${
+                                                    log.action?.includes('Delete') ? 'bg-red-50 text-red-600 border-red-100' :
+                                                    log.action?.includes('Edit') || log.action?.includes('Change') ? 'bg-orange-50 text-orange-600 border-orange-100' :
+                                                    ['Create Request', 'Submit', 'Receive Items', 'Add'].some(k => log.action?.includes(k)) ? 'bg-green-50 text-green-600 border-green-100' :
+                                                    log.action?.includes('Approve') ? 'bg-purple-50 text-purple-600 border-purple-100' :
+                                                    'bg-gray-50 text-gray-600 border-gray-200'
+                                                }`}>
+                                                    {log.action}
+                                                </span>
+                                                <div className="text-[9px] text-gray-300 mt-1 uppercase tracking-wider">{log.sourceType}</div>
+                                            </td>
+                                            <td className="p-4 font-medium text-gray-700 align-top">
+                                                <div className="break-words font-mono text-xs">{log.item}</div>
+                                                {log.relatedRequestId && (
+                                                    <button onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const targetReq = requests.find(r => r.id === log.relatedRequestId);
+                                                            if(targetReq) { setSelectedOrder(targetReq); setShowDetailModal(true); }
+                                                        }}
+                                                        className="text-[10px] text-blue-600 font-mono mt-1 hover:underline flex items-center gap-1 bg-white px-1.5 py-0.5 rounded border border-blue-200 shadow-sm w-fit"
+                                                    >
+                                                        {log.relatedRequestId} <ExternalLink size={10}/>
+                                                    </button>
+                                                )}
+                                            </td>
+                                            <td className="p-4 text-gray-500 text-xs align-top">
+                                                <div className="flex items-center gap-2 mb-2 pb-2 border-b border-dashed border-gray-200 w-full">
+                                                    <div className="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center text-[9px] font-bold text-gray-600 shrink-0">
+                                                        {log.by ? log.by.split(' ').slice(-1)[0].charAt(0) : '?'}
+                                                    </div>
+                                                    <span className="font-bold text-gray-700 truncate">{log.by || 'Unknown User'}</span>
+                                                </div>
+                                                <div className="whitespace-pre-wrap leading-relaxed text-gray-600">{log.note || '-'}</div>
+                                                {log.change && <div className="text-[10px] text-gray-400 mt-2 italic bg-gray-50 p-1 rounded border border-gray-100 inline-block">{log.change}</div>}
+                                            </td>
+                                        </tr>
+                                    )) : <tr><td colSpan="4" className="p-10 text-center text-gray-400">ไม่พบประวัติการทำงาน</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    );
+                })()}
+
+                {/* Tab 3: Purchase (Update layout to match) */}
+                {userDetailTab === 'purchase' && (() => {
+                     // ... (Logic การคำนวณเดิม) ...
+                     const purchaseHistory = requests.filter(r => 
+                        (r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName)) && 
+                        r.status === 'Received' && 
+                        (r.docNumber?.toLowerCase().includes(detailSearch.toLowerCase()) || r.items.some(i => i.name.toLowerCase().includes(detailSearch.toLowerCase())))
+                    ).sort((a, b) => {
+                         const getDate = (req) => { const rxLog = req.history?.find(h => h.action === 'Receive Items'); return rxLog ? new Date(rxLog.timestamp).getTime() : new Date(req.date).getTime(); };
+                         return getDate(b) - getDate(a);
+                    });
+                    
+                    return (
+                        <div className="w-full">
+                             <table className="w-full text-sm text-left border-collapse">
+                                <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs sticky top-0 z-20 shadow-sm">
+                                    <tr>
+                                        <th className="p-4 w-32 bg-gray-100">วันที่รับของ</th>
+                                        <th className="p-4 w-40 bg-gray-100">เลขที่เอกสาร</th>
+                                        <th className="p-4 min-w-[200px] bg-gray-100">รายการสินค้า</th>
+                                        <th className="p-4 text-right bg-gray-100">ราคา/หน่วย</th>
+                                        <th className="p-4 text-right bg-gray-100">จำนวน</th>
+                                        <th className="p-4 text-right w-32 bg-gray-100">รวม (บาท)</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y bg-white">
+                                    {purchaseHistory.length > 0 ? purchaseHistory.map(req => (
+                                        req.items.map((item, idx) => {
+                                            const itemTotal = parseFloat(item.qty || 0) * parseFloat(item.price || 0);
+                                            const rxDate = req.history?.find(h => h.action === 'Receive Items')?.timestamp?.split(' ')[0] || req.date;
+                                            return (
+                                                <tr key={`${req.id}-${idx}`} className="hover:bg-green-50/30 transition-colors">
+                                                    {idx === 0 ? (
+                                                        <>
+                                                            <td rowSpan={req.items.length} className="p-4 text-gray-500 whitespace-nowrap align-top border-r">{rxDate}</td>
+                                                            <td rowSpan={req.items.length} className="p-4 align-top border-r">
+                                                                <button onClick={() => { setSelectedOrder(req); setShowDetailModal(true); }} className="font-medium text-blue-600 hover:underline bg-blue-50 px-2 py-0.5 rounded border border-blue-100 text-xs">{req.docNumber}</button>
+                                                            </td>
+                                                        </>
+                                                    ) : null}
+                                                    <td className="p-4 text-gray-700">{item.name}</td>
+                                                    <td className="p-4 text-right text-gray-600 font-mono">{parseFloat(item.price || 0).toLocaleString()}</td>
+                                                    <td className="p-4 text-right text-gray-600">{parseFloat(item.qty || 0).toLocaleString()} {item.unit}</td>
+                                                    <td className="p-4 text-right font-bold text-gray-800 bg-gray-50/50">{itemTotal.toLocaleString()}</td>
+                                                </tr>
+                                            );
+                                        })
+                                    )) : <tr><td colSpan="6" className="p-10 text-center text-gray-400">ไม่พบรายการที่ปิดงานแล้ว</td></tr>}
+                                </tbody>
+                             </table>
+                        </div>
+                    )
+                })()}
+
+                {/* ---------------- Tab 4: ประวัติการเบิก (เหมือนเดิม) ---------------- */}
+                {userDetailTab === 'withdraw' && (() => {
+                     const rawData = requests.filter(r => 
+                        r.type === 'Withdraw' && (r.status === 'Approved' || r.status === 'Completed') &&
+                        (r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName))
+                    );
+                    const aggregatedItems = {};
+                    rawData.forEach(req => {
+                        req.items.forEach(item => {
+                            const key = item.name;
+                            if(!aggregatedItems[key]) aggregatedItems[key] = { name: key, qty: 0, unit: item.unit };
+                            aggregatedItems[key].qty += parseFloat(item.qty);
+                        });
+                    });
+                    const itemList = Object.values(aggregatedItems).filter(i => i.name.toLowerCase().includes(detailSearch.toLowerCase()));
+
+                    return (
+                        <div className="space-y-4">
+                            <input type="text" placeholder="ค้นหา..." className="p-2 border rounded text-sm w-full mb-2" value={detailSearch} onChange={e => setDetailSearch(e.target.value)}/>
+                            <div className="bg-white rounded-lg border overflow-hidden shadow-sm">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs">
+                                        <tr><th className="p-3">รายการ</th><th className="p-3 text-center">รวมที่เบิก</th><th className="p-3 text-center">หน่วย</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y">
+                                        {itemList.length > 0 ? itemList.map((item, idx) => (
+                                            <tr key={idx} className="hover:bg-gray-50">
+                                                <td className="p-3 font-medium">{item.name}</td>
+                                                <td className="p-3 text-center font-bold text-blue-600">{item.qty}</td>
+                                                <td className="p-3 text-center text-gray-500">{item.unit}</td>
+                                            </tr>
+                                        )) : <tr><td colSpan="3" className="p-8 text-center text-gray-400">ไม่พบประวัติการเบิก</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                {/* ---------------- Tab 5: ทรัพย์สินที่ยืม (เหมือนเดิม) ---------------- */}
+                {userDetailTab === 'borrow' && (() => {
+                    const activeBorrows = assets.filter(a => 
+                        a.status === 'Borrowed' && a.borrowedBy && a.borrowedBy.includes(viewingUser.firstName) &&
+                        (a.name.toLowerCase().includes(detailSearch.toLowerCase()) || a.id.toLowerCase().includes(detailSearch.toLowerCase()))
+                    );
+                    return (
+                        <div className="space-y-4">
+                             <div className="flex justify-between items-center">
+                                <input type="text" placeholder="ค้นหา..." className="p-2 border rounded text-sm w-64" value={detailSearch} onChange={e => setDetailSearch(e.target.value)}/>
+                                <span className="text-xs font-bold text-orange-600 bg-orange-100 px-2 py-1 rounded">กำลังยืม: {activeBorrows.length}</span>
+                            </div>
+                            <div className="bg-white rounded-lg border overflow-hidden shadow-sm">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs">
+                                        <tr><th className="p-3">รหัส</th><th className="p-3">ชื่อ</th><th className="p-3">วันที่ยืม</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y">
+                                        {activeBorrows.length > 0 ? activeBorrows.map(asset => (
+                                            <tr key={asset.id} className="hover:bg-gray-50">
+                                                <td className="p-3 font-mono text-gray-500">{asset.id}</td>
+                                                <td className="p-3 font-medium">{asset.name}</td>
+                                                <td className="p-3 text-gray-500">{asset.lastUpdated?.split(' ')[0]}</td>
+                                            </tr>
+                                        )) : <tr><td colSpan="3" className="p-8 text-center text-gray-400">ไม่พบทรัพย์สินที่ยืม</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    );
+                })()}
+            </div>
+        </div>
+    </div>
+)}
 
         </div>
       );
