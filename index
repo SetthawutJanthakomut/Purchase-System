@@ -7605,17 +7605,28 @@ filteredRequests.map(req => {
 {(hasPermission(2, permissionTab) || hasPermission(3, permissionTab)) && (
 <button 
     onClick={async () => {
-        // 1. บันทึกข้อมูล
+        // 1. บันทึกข้อมูลลง Sheet
         google.script.run.saveUserData(selectedUserForEdit);
         
-        // 2. ⭐ แก้ไข Log: ระบุชื่อโครงการ (permissionTab) ให้ชัดเจน
-        const logDetail = `Project: ${permissionTab} | Rights: [${selectedUserForEdit.permissions?.[permissionTab]?.join(', ')}]`;
+        // 2. ⭐ สร้าง Log แบบรวมทุกโครงการ (Loop ทุก Project ที่มีสิทธิ์)
+        let logLines = [];
+        if (selectedUserForEdit.permissions) {
+            Object.entries(selectedUserForEdit.permissions).forEach(([projName, rights]) => {
+                // เก็บเฉพาะโครงการที่มีสิทธิ์และชื่อไม่เป็นค่าว่าง
+                if (projName && projName !== 'undefined' && rights && rights.length > 0) {
+                    logLines.push(`Project: ${projName} -> Rights: [${rights.join(', ')}]`);
+                }
+            });
+        }
         
+        // รวมเป็นข้อความเดียว คั่นด้วยขึ้นบรรทัดใหม่ (\n)
+        const logDetail = logLines.length > 0 ? logLines.join('\n') : 'Removed all permissions';
+
         await addInvLog(
             'Edit Permissions', 
             `${selectedUserForEdit.empId} ${selectedUserForEdit.firstName}`, 
-            logDetail, // ส่งรายละเอียดโครงการที่แก้ลงไปตรงนี้
-            JSON.stringify(selectedUserForEdit.permissions?.[permissionTab] || []),
+            logDetail, // บันทึกแบบหลายบรรทัด
+            JSON.stringify(selectedUserForEdit.permissions || {}),
             [], 
             selectedUserForEdit.id
         );
@@ -7636,7 +7647,6 @@ filteredRequests.map(req => {
       )}
 
 
-{/* --- USER DETAIL MODAL (UPDATED V5: Fixed Header Table & Robust Data Mapping) --- */}
 {viewingUser && (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden relative">
@@ -7676,7 +7686,7 @@ filteredRequests.map(req => {
                 ))}
             </div>
 
-            {/* ⭐ 3. Search Bar Area (ย้ายมาไว้ตรงนี้ เพื่อให้ Fix อยู่กับที่ ไม่เลื่อนตามตาราง) */}
+            {/* 3. Search Bar Area */}
             {(userDetailTab === 'history' || userDetailTab === 'purchase' || userDetailTab === 'withdraw' || userDetailTab === 'borrow') && (
                 <div className="px-6 py-3 bg-white border-b flex justify-between items-center shrink-0">
                     <div className="flex items-center gap-2 text-gray-700 font-bold text-sm">
@@ -7695,13 +7705,13 @@ filteredRequests.map(req => {
                 </div>
             )}
 
-            {/* 4. Scrollable Content Area */}
+            {/* 4. Content Area */}
             <div className="p-0 overflow-y-auto flex-1 bg-gray-50/50 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
                 
-                {/* Tab 1: Info (เหมือนเดิม) */}
+                {/* Tab 1: Info (Code เดิม) */}
                 {userDetailTab === 'info' && (
-                    <div className="p-6">
-                        {/* ... (Code ส่วนแสดงข้อมูลผู้ใช้เดิม) ... */}
+                     <div className="p-6">
+                        {/* ... (Code ส่วนแสดงข้อมูลผู้ใช้เดิม ใส่ตรงนี้ได้เลยครับ) ... */}
                         <div className="bg-white p-6 rounded-xl shadow-sm border space-y-6">
                              {/* Basic Info */}
                              <h4 className="font-bold text-gray-800 border-b pb-2 mb-4 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
@@ -7711,7 +7721,7 @@ filteredRequests.map(req => {
                                 <div><label className="text-xs font-bold text-gray-500">อีเมล</label><div className="p-2 border rounded bg-gray-50">{viewingUser.email}</div></div>
                                 <div><label className="text-xs font-bold text-gray-500">สถานะ</label><div className={`p-2 border rounded font-bold ${viewingUser.status==='Activated'?'text-green-600 bg-green-50':'text-red-600 bg-red-50'}`}>{viewingUser.status}</div></div>
                              </div>
-                             {/* Actions */}
+                             {/* Actions (Admin) */}
                              {(user?.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
                                 <div className="pt-4 border-t flex gap-3">
                                     {(user?.isSuperAdmin || hasPermission(2)) && (
@@ -7750,64 +7760,65 @@ filteredRequests.map(req => {
                                 </div>
                             </div>
                         </div>
-                    </div>
+                     </div>
                 )}
 
-                {/* ⭐ Tab 2: History (Updated Data Mapping & Sticky Header) */}
+                {/* ⭐ Tab 2: History (เฉพาะที่ User ทำเอง & ตัดการแสดง By ออก) */}
                 {userDetailTab === 'history' && (() => {
+                    // 1. System Logs: กรองเฉพาะ log.by เป็น User นี้เท่านั้น
                     const systemLogs = invLogs.filter(log => 
-                        (log.by && (log.by.includes(viewingUser.empId) || log.by.includes(viewingUser.firstName))) ||
-                        (log.item && (log.item.includes(viewingUser.empId) || log.item.includes(viewingUser.firstName)))
+                        log.by && (log.by.includes(viewingUser.empId) || log.by.includes(viewingUser.firstName))
                     ).map(log => ({ ...log, sourceType: 'System' }));
 
+                    // 2. Request Timeline: กรองเฉพาะขั้นตอนที่ User เป็นคนกด (h.by ตรงกับ User)
                     const requestTimelineLogs = requests
                         .filter(r => r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName))
                         .flatMap(req => {
-                            return (req.history || []).map(h => ({
-                                date: h.timestamp || h.date, // ⭐ รองรับทั้ง timestamp และ date
-                                action: h.action,
-                                // ⭐ Logic หาชื่อคนทำ: ถ้าไม่มีใน history ให้ใช้ requester (กรณีสร้าง) หรือ System
-                                by: h.by || (h.action === 'Create Request' ? req.requesterName || req.requester : 'System'), 
-                                item: req.docNumber,
-                                note: h.note,
-                                change: `Status: ${req.status}`,
-                                relatedRequestId: req.id,
-                                sourceType: 'Request'
-                            }));
+                            return (req.history || [])
+                                .filter(h => h.by && (h.by.includes(viewingUser.empId) || h.by.includes(viewingUser.firstName))) // ⭐ กรอง History ย่อย เอาเฉพาะที่ User ทำ
+                                .map(h => ({
+                                    date: h.timestamp || h.date,
+                                    action: h.action,
+                                    by: h.by, 
+                                    item: req.docNumber,
+                                    note: h.note,
+                                    change: `Status: ${req.status}`,
+                                    relatedRequestId: req.id,
+                                    sourceType: 'Request'
+                                }));
                         });
 
                     const allUserLogs = [...systemLogs, ...requestTimelineLogs]
                         .filter(log => 
                             log.action?.toLowerCase().includes(detailSearch.toLowerCase()) ||
                             log.item?.toLowerCase().includes(detailSearch.toLowerCase()) ||
-                            log.note?.toLowerCase().includes(detailSearch.toLowerCase()) ||
-                            log.by?.toLowerCase().includes(detailSearch.toLowerCase())
+                            log.note?.toLowerCase().includes(detailSearch.toLowerCase())
                         )
                         .sort((a, b) => {
                             const parseDate = (dStr) => {
                                 if(!dStr) return 0;
                                 try {
-                                    if(dStr.includes('/')) { // Format DD/MM/YYYY HH:mm:ss
+                                    if(dStr.includes('/')) {
                                         const [d, t] = dStr.split(' ');
                                         const [day, month, year] = d.split('/').map(Number);
                                         return new Date(year > 2400 ? year - 543 : year, month - 1, day, ...(t ? t.split(':').map(Number) : [0,0,0])).getTime();
                                     }
-                                    return new Date(dStr).getTime(); // Format ISO
+                                    return new Date(dStr).getTime();
                                 } catch(e) { return 0; }
                             };
                             return parseDate(b.date) - parseDate(a.date);
                         });
 
                     return (
-                        <div className="w-full"> {/* ไม่ต้องมี Padding เพื่อให้ Header ชิดขอบ */}
+                        <div className="w-full">
                             <table className="w-full text-sm text-left border-collapse">
-                                {/* ⭐ Sticky Header: ใช้ sticky top-0 ได้เลยเพราะ Parent scroll */}
                                 <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs sticky top-0 z-20 shadow-sm">
                                     <tr>
                                         <th className="p-4 w-36 whitespace-nowrap bg-gray-100">Date Time</th>
                                         <th className="p-4 w-36 whitespace-nowrap bg-gray-100">Action</th>
                                         <th className="p-4 min-w-[200px] bg-gray-100">Item / Ref</th>
-                                        <th className="p-4 min-w-[300px] bg-gray-100">Details / Note (By)</th>
+                                        {/* ⭐ เปลี่ยนหัวข้อ ตัด (By) ออก */}
+                                        <th className="p-4 min-w-[300px] bg-gray-100">Details / Note</th> 
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y bg-white">
@@ -7819,7 +7830,6 @@ filteredRequests.map(req => {
                                                     log.action?.includes('Delete') ? 'bg-red-50 text-red-600 border-red-100' :
                                                     log.action?.includes('Edit') || log.action?.includes('Change') ? 'bg-orange-50 text-orange-600 border-orange-100' :
                                                     ['Create Request', 'Submit', 'Receive Items', 'Add'].some(k => log.action?.includes(k)) ? 'bg-green-50 text-green-600 border-green-100' :
-                                                    log.action?.includes('Approve') ? 'bg-purple-50 text-purple-600 border-purple-100' :
                                                     'bg-gray-50 text-gray-600 border-gray-200'
                                                 }`}>
                                                     {log.action}
@@ -7841,13 +7851,22 @@ filteredRequests.map(req => {
                                                 )}
                                             </td>
                                             <td className="p-4 text-gray-500 text-xs align-top">
-                                                <div className="flex items-center gap-2 mb-2 pb-2 border-b border-dashed border-gray-200 w-full">
-                                                    <div className="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center text-[9px] font-bold text-gray-600 shrink-0">
-                                                        {log.by ? log.by.split(' ').slice(-1)[0].charAt(0) : '?'}
-                                                    </div>
-                                                    <span className="font-bold text-gray-700 truncate">{log.by || 'Unknown User'}</span>
+                                                {/* ⭐ ลบส่วนแสดง Avatar และชื่อคนทำ (By) ออกทั้งหมด */}
+                                                
+                                                {/* แสดง Note อย่างเดียว (รองรับหลายบรรทัด Project) */}
+                                                <div className="space-y-1">
+                                                    {log.note ? log.note.split('\n').map((line, i) => (
+                                                        <div key={i} className="leading-relaxed break-words">
+                                                            {line.startsWith('Project:') ? (
+                                                                <span>
+                                                                    <span className="font-bold text-blue-600">{line.split('->')[0]}</span>
+                                                                    <span className="text-gray-600"> -> {line.split('->')[1]}</span>
+                                                                </span>
+                                                            ) : line}
+                                                        </div>
+                                                    )) : '-'}
                                                 </div>
-                                                <div className="whitespace-pre-wrap leading-relaxed text-gray-600">{log.note || '-'}</div>
+
                                                 {log.change && <div className="text-[10px] text-gray-400 mt-2 italic bg-gray-50 p-1 rounded border border-gray-100 inline-block">{log.change}</div>}
                                             </td>
                                         </tr>
