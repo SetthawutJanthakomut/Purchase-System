@@ -1,7 +1,27 @@
 // --- CONFIGURATION ---
 const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
 
-function doGet() {
+function doGet(e) {
+  // ⭐ ตรวจสอบ Action จากอีเมล
+  if (e.parameter && e.parameter.action) {
+    
+    // กรณี 1: กดอนุมัติ (Approve) -> ทำรายการทันที
+    if (e.parameter.action === 'approve') {
+      return processEmailAction(e);
+    }
+    
+    // กรณี 2: กดไม่อนุมัติ (Reject) -> เปิดฟอร์มกรอกเหตุผล
+    if (e.parameter.action === 'reject') {
+      return createRejectForm(e);
+    }
+
+    // กรณี 3: ยืนยันการไม่อนุมัติจากฟอร์ม (Confirm Reject) -> บันทึกข้อมูล
+    if (e.parameter.action === 'confirm_reject') {
+      return processEmailAction(e);
+    }
+  }
+
+  // กรณีปกติ: เปิดหน้า Web App
   return HtmlService.createTemplateFromFile('Index')
     .evaluate()
     .setTitle('PurchaseHub System')
@@ -9,15 +29,317 @@ function doGet() {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-// --- HELPER FUNCTIONS (Smart Sheet Creation) ---
+function createRejectForm(e) {
+  const reqId = e.parameter.id;
+  const role = e.parameter.role;
+  const approver = e.parameter.approver;
+  const scriptUrl = ScriptApp.getService().getUrl();
 
-// ฟังก์ชันช่วยเรียก Sheet ถ้าไม่มีให้สร้างใหม่
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <base target="_top">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; display: flex; justify-content: center; padding-top: 50px; }
+          .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 90%; max-width: 400px; }
+          h2 { color: #d93025; margin-top: 0; }
+          textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px; margin: 15px 0; font-family: inherit; }
+          button { background-color: #d93025; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px; }
+          button:hover { background-color: #b02015; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>❌ ยืนยันการไม่อนุมัติ</h2>
+          <p>เอกสาร: <strong>${reqId}</strong></p>
+          <p>กรุณาระบุเหตุผล (Note):</p>
+          
+          <form id="rejectForm">
+            <textarea id="reason" rows="4" placeholder="ระบุสาเหตุที่ไม่อนุมัติ..." required></textarea>
+            <button type="submit">ยืนยัน (Confirm Reject)</button>
+          </form>
+
+          <script>
+            document.getElementById('rejectForm').onsubmit = function(e) {
+              e.preventDefault();
+              var reason = document.getElementById('reason').value;
+              var btn = document.querySelector('button');
+              btn.disabled = true;
+              btn.innerText = 'กำลังบันทึก...';
+
+              // Redirect กลับไปที่ Script พร้อมเหตุผล
+              var finalUrl = "${scriptUrl}?action=confirm_reject" + 
+                             "&id=${reqId}" + 
+                             "&role=${role}" + 
+                             "&approver=${approver}" + 
+                             "&note=" + encodeURIComponent(reason);
+              
+              window.top.location.href = finalUrl;
+            };
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
+  
+  return HtmlService.createHtmlOutput(html);
+}
+
+function processEmailAction(e) {
+  const action = e.parameter.action; 
+  const reqId = e.parameter.id;
+  const approver = e.parameter.approver;
+  const role = e.parameter.role;
+  const customNote = e.parameter.note || ''; 
+
+  const requests = getSheetData('Requests');
+  const reqIndex = requests.findIndex(r => r.id === reqId);
+
+  if (reqIndex === -1) {
+    return HtmlService.createHtmlOutput("<h2>❌ ไม่พบเอกสาร</h2>");
+  }
+
+  let req = requests[reqIndex];
+  
+  // Validation
+  if (role === 'Head' && req.status !== 'Pending Head') {
+     return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
+  }
+  if (role === 'PM' && req.status !== 'Pending PM') {
+     return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
+  }
+
+  // อัปเดตสถานะ
+  let newStatus = '';
+  let logNote = '';
+  
+  if (action === 'approve') {
+    if (role === 'Head') newStatus = 'Pending PM';
+    else if (role === 'PM') newStatus = 'Approved';
+    logNote = `Approved via Email by ${approver}`;
+  } 
+  else if (action === 'confirm_reject') { 
+    newStatus = 'Rejected';
+    logNote = `Rejected via Email by ${approver}: ${customNote}`; 
+  }
+
+  // Save
+  req.status = newStatus;
+  
+  if (!req.history) req.history = [];
+  req.history.push({
+    date: new Date().toLocaleString('th-TH'),
+    action: newStatus,
+    user: approver + " (Email)",
+    note: logNote
+  });
+
+  saveDataToSheet('Requests', req.id, req);
+
+  const color = newStatus === 'Rejected' ? 'red' : 'green';
+  const message = newStatus === 'Rejected' ? 'บันทึกการไม่อนุมัติเรียบร้อย' : 'อนุมัติเรียบร้อย';
+  
+  return HtmlService.createHtmlOutput(`
+    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+      <h1 style="color: ${color};">${message}</h1>
+      <p>เอกสาร: <strong>${reqId}</strong></p>
+      <p>สถานะ: ${newStatus}</p>
+      ${customNote ? `<p>เหตุผล: ${customNote}</p>` : ''}
+      <button onclick="window.close()" style="padding: 10px 20px; margin-top:20px; cursor: pointer;">ปิดหน้านี้</button>
+    </div>
+  `);
+}
+
+// ฟังก์ชันหาอีเมลคนที่มีสิทธิ์อนุมัติ (เปลี่ยนเป็น console.log)
+function findApproverEmails(projectName, permId) {
+  console.log(`[FindApprover] Start searching for Perm ID: ${permId} in Project: ${projectName}`);
+  
+  const users = getSheetData('Users');
+  console.log(`[FindApprover] Total users found: ${users.length}`);
+
+  const approvers = users.filter(u => {
+    if (u.isSuperAdmin) {
+      console.log(`[FindApprover] Found SuperAdmin: ${u.username}`);
+      return true;
+    }
+
+    if (u.permissions && u.permissions[projectName]) {
+      const userPerms = u.permissions[projectName].map(Number); 
+      const targetPerm = Number(permId);
+      
+      const hasRight = userPerms.includes(2) || userPerms.includes(targetPerm);
+      
+      if (hasRight) {
+        console.log(`[FindApprover] Found User: ${u.username} (Perms: ${userPerms})`);
+      }
+      return hasRight;
+    }
+    
+    return false;
+  });
+
+  const emails = approvers.map(u => u.email).filter(email => email && email.includes('@'));
+  
+  const result = emails.join(',');
+  console.log(`[FindApprover] Final Emails found: ${result}`);
+  
+  return result;
+}
+
+function sendApprovalEmail(req, targetEmail, targetRole) {
+  const scriptUrl = ScriptApp.getService().getUrl();
+  const approverName = targetRole; 
+
+  const approveLink = `${scriptUrl}?action=approve&id=${req.id}&role=${targetRole}&approver=${approverName}`;
+  const rejectLink = `${scriptUrl}?action=reject&id=${req.id}&role=${targetRole}&approver=${approverName}`;
+
+  let grandTotal = 0;
+  const itemsHtml = req.items.map((item, idx) => {
+    const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
+    const duration = isRent ? (item.duration || 1) : 1;
+    const total = item.qty * item.unitPrice * duration;
+    grandTotal += total;
+    
+    return `
+      <tr style="border-bottom: 1px solid #eee;">
+        <td style="padding: 8px;">${idx + 1}</td>
+        <td style="padding: 8px;">
+          <strong>${item.name}</strong><br/>
+          <span style="font-size: 12px; color: #666;">
+            ${item.subJob ? `Sub: ${item.subJob}` : ''} ${item.epCode ? `EP: ${item.epCode}` : ''}
+          </span>
+        </td>
+        <td style="padding: 8px; text-align: right;">${item.unitPrice.toLocaleString()}</td>
+        <td style="padding: 8px; text-align: center;">
+            ${item.qty} ${item.unit}
+            ${isRent ? `<br/><span style="font-size:10px; color:blue;">x ${duration} ${item.rentalUnit}</span>` : ''}
+        </td>
+        <td style="padding: 8px; text-align: right;">${total.toLocaleString()}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const htmlBody = `
+    <div style="font-family: 'Sarabun', sans-serif; max-width: 800px; margin: 0 auto; border: 1px solid #ddd; border-radius: 10px; overflow: hidden;">
+      <div style="background-color: #f8f9fa; padding: 20px; border-bottom: 1px solid #ddd;">
+        <h2 style="margin: 0; color: #1a73e8;">คำขออนุมัติ: ${req.id}</h2>
+        <p style="margin: 5px 0 0; color: #666;">โครงการ: <strong>${req.job}</strong> | ผู้ขอ: ${req.requester}</p>
+      </div>
+      
+      <div style="padding: 20px;">
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+          <tr>
+            <td style="padding: 5px; color: #666;">ประเภท:</td>
+            <td style="font-weight: bold;">${req.type} ${req.purchaseType || ''}</td>
+            <td style="padding: 5px; color: #666;">วันที่ต้องการ:</td>
+            <td style="font-weight: bold;">${req.dateRequired}</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px; color: #666;">ความสำคัญ:</td>
+            <td style="font-weight: bold; color: ${req.priority === 'Critical' ? 'red' : 'blue'};">${req.priority}</td>
+            <td style="padding: 5px; color: #666;">เลขที่เอกสาร:</td>
+            <td>${req.docNumber || '-'}</td>
+          </tr>
+        </table>
+
+        <h3 style="border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 10px;">รายการสินค้า</h3>
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+          <thead style="background-color: #f1f3f4;">
+            <tr>
+              <th style="padding: 10px; text-align: left;">#</th>
+              <th style="padding: 10px; text-align: left;">รายการ</th>
+              <th style="padding: 10px; text-align: right;">ราคา/หน่วย</th>
+              <th style="padding: 10px; text-align: center;">จำนวน</th>
+              <th style="padding: 10px; text-align: right;">รวมเงิน</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHtml}
+          </tbody>
+          <tfoot style="background-color: #f8f9fa;">
+            <tr>
+              <td colspan="4" style="padding: 10px; text-align: right; font-weight: bold;">รวมเป็นเงินทั้งสิ้น</td>
+              <td style="padding: 10px; text-align: right; font-weight: bold; color: #1a73e8; font-size: 16px;">${grandTotal.toLocaleString()} บาท</td>
+            </tr>
+          </tfoot>
+        </table>
+        
+        ${req.note ? `<p style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border-radius: 5px;"><strong>หมายเหตุ:</strong> ${req.note}</p>` : ''}
+
+      </div>
+
+      <div style="background-color: #f1f3f4; padding: 20px; text-align: center; border-top: 1px solid #ddd;">
+        <p style="margin-bottom: 15px; font-weight: bold;">กรุณาเลือกการดำเนินการ:</p>
+        
+        <a href="${approveLink}" style="background-color: #1e8e3e; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 0 10px;">
+          ✅ อนุมัติ (Approve)
+        </a>
+
+        <a href="${rejectLink}" style="background-color: #d93025; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 0 10px;">
+          ❌ ไม่อนุมัติ (Reject)
+        </a>
+        
+        <p style="font-size: 12px; color: #888; margin-top: 20px;">เมื่อกดปุ่ม ระบบจะบันทึกสถานะทันที</p>
+      </div>
+    </div>
+  `;
+
+  GmailApp.sendEmail(targetEmail, `[PurchaseHub] ขออนุมัติรายการ ${req.id} - ${req.job}`, '', {
+    htmlBody: htmlBody
+  });
+}
+
+function syncRequest(request) {
+  console.log(`[SyncRequest] Processing Request ID: ${request.id} | Status: ${request.status} | Job: ${request.job}`);
+  
+  const result = saveDataToSheet('Requests', request.id, request);
+  
+  try {
+      if (request.status === 'Pending Head') {
+          console.log("[SyncRequest] Status matches 'Pending Head'. Finding approvers...");
+          const headEmails = findApproverEmails(request.job, 8); 
+          
+          if (headEmails) {
+             console.log(`[SyncRequest] Sending email to Head: ${headEmails}`);
+             sendApprovalEmail(request, headEmails, 'Head');
+             console.log("[SyncRequest] Email sent successfully!");
+          } else {
+             console.log(`[SyncRequest] ⚠️ WARNING: No Head approver found for project: ${request.job}`);
+          }
+      }
+      
+      else if (request.status === 'Pending PM') {
+          console.log("[SyncRequest] Status matches 'Pending PM'. Finding approvers...");
+          const pmEmails = findApproverEmails(request.job, 9);
+          
+          if (pmEmails) {
+             console.log(`[SyncRequest] Sending email to PM: ${pmEmails}`);
+             sendApprovalEmail(request, pmEmails, 'PM');
+             console.log("[SyncRequest] Email sent successfully!");
+          } else {
+             console.log(`[SyncRequest] ⚠️ WARNING: No PM approver found for project: ${request.job}`);
+          }
+      } 
+      else {
+          console.log("[SyncRequest] No email action required for this status.");
+      }
+
+  } catch (e) {
+      console.log("❌ [SyncRequest] Email sending failed: " + e.toString());
+  }
+
+  return result;
+}
+
+// --- HELPER FUNCTIONS ---
+
 function getOrCreateSheet(sheetName) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
     sheet = ss.insertSheet(sheetName);
-    // ⭐ แก้ไข: เพิ่ม 'Users' เข้าไปในรายการที่จะสร้าง Header
     if (['Projects', 'Inventory', 'Assets', 'Requests', 'Users'].includes(sheetName)) {
       sheet.appendRow(['ID', 'JSON_Data']); 
     }
@@ -27,23 +349,17 @@ function getOrCreateSheet(sheetName) {
 
 function getSheetData(sheetName) {
   const sheet = getOrCreateSheet(sheetName);
-  
-  if (sheet.getLastRow() === 0) return []; // ถ้า Sheet ว่างเปล่า
-  
+  if (sheet.getLastRow() === 0) return []; 
   const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return []; // Empty or header only
-  
+  if (data.length <= 1) return []; 
   const result = [];
-  // Skip header if exists, reading from row 2
   for (let i = 0; i < data.length; i++) {
-    // เช็คว่าไม่ใช่ Header (แถวแรก) และมีข้อมูล JSON (คอลัมน์ 2)
     if (i === 0 && data[i][0] === 'ID') continue; 
-    
     if (data[i][1]) { 
       try {
         result.push(JSON.parse(data[i][1]));
       } catch (e) {
-        Logger.log('Error parsing JSON row ' + i + ' in ' + sheetName);
+        console.log('Error parsing JSON row ' + i + ' in ' + sheetName);
       }
     }
   }
@@ -53,23 +369,17 @@ function getSheetData(sheetName) {
 function saveDataToSheet(sheetName, id, dataObj) {
   const sheet = getOrCreateSheet(sheetName);
   const allData = sheet.getDataRange().getValues();
-  
   let rowIndex = -1;
-  // Search for existing ID in Column A
   for (let i = 0; i < allData.length; i++) {
     if (allData[i][0] == id) {
-      rowIndex = i + 1; // 1-based index
+      rowIndex = i + 1; 
       break;
     }
   }
-  
   const jsonString = JSON.stringify(dataObj);
-  
   if (rowIndex > 0) {
-    // Update existing
     sheet.getRange(rowIndex, 2).setValue(jsonString);
   } else {
-    // Insert new
     sheet.appendRow([id, jsonString]);
   }
   return true;
@@ -78,7 +388,6 @@ function saveDataToSheet(sheetName, id, dataObj) {
 function deleteDataFromSheet(sheetName, id) {
   const sheet = getOrCreateSheet(sheetName);
   const data = sheet.getDataRange().getValues();
-  
   for (let i = 0; i < data.length; i++) {
     if (data[i][0] == id) {
       sheet.deleteRow(i + 1);
@@ -89,19 +398,15 @@ function deleteDataFromSheet(sheetName, id) {
 
 // --- FILE UPLOAD FUNCTIONS ---
 
-// ฟังก์ชันสำหรับอัปโหลดไฟล์ลง Drive
 function uploadFileToDrive(base64Data, fileName) {
   try {
-    const FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // Folder ID
+    const FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; 
     const folder = DriveApp.getFolderById(FOLDER_ID);
-    
     const contentType = base64Data.substring(5, base64Data.indexOf(';'));
     const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
     const blob = Utilities.newBlob(bytes, contentType, fileName);
-    
     const file = folder.createFile(blob);
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    
     return {
       name: fileName,
       url: file.getUrl(),
@@ -112,11 +417,9 @@ function uploadFileToDrive(base64Data, fileName) {
   }
 }
 
-// ฟังก์ชันช่วยหาหรือสร้างโฟลเดอร์ย่อย
 function getOrCreateSubFolder(parentFolderId, subFolderName) {
   const parentFolder = DriveApp.getFolderById(parentFolderId);
   const folders = parentFolder.getFoldersByName(subFolderName);
-  
   if (folders.hasNext()) {
     return folders.next();
   } else {
@@ -124,21 +427,16 @@ function getOrCreateSubFolder(parentFolderId, subFolderName) {
   }
 }
 
-// ฟังก์ชันอัปโหลดรูปทรัพย์สิน (แยกโฟลเดอร์)
 function uploadAssetImage(base64Data, fileName) {
   try {
     const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; 
     const SUB_FOLDER_NAME = "Asset_Images"; 
-    
     const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
-    
     const contentType = base64Data.substring(5, base64Data.indexOf(';'));
     const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
     const blob = Utilities.newBlob(bytes, contentType, fileName);
-    
     const file = targetFolder.createFile(blob);
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    
     return {
       name: fileName,
       url: file.getUrl(),
@@ -178,9 +476,7 @@ function syncLog(log) {
 
 // --- USER MANAGEMENT & MAIN API ---
 
-// 1. Login
 function loginUser(username, password) {
-  // Hardcoded Admin (Backdoor)
   if (username === 'admin' && password === '1231') {
     return {
       success: true,
@@ -203,12 +499,11 @@ function loginUser(username, password) {
     if (user.status !== 'Activated') {
        return { success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน หรือรอการอนุมัติ' };
     }
-
     return { 
       success: true, 
       user: {
         ...user,
-        password: '' // ไม่ส่ง password กลับ
+        password: '' 
       }
     };
   } else {
@@ -216,7 +511,6 @@ function loginUser(username, password) {
   }
 }
 
-// 2. Register
 function registerUser(formData) {
   const users = getSheetData('Users');
   if (users.some(u => u.username === formData.username)) {
@@ -224,7 +518,7 @@ function registerUser(formData) {
   }
   
   const newUser = {
-    id: formData.username, // ใช้ username เป็น ID
+    id: formData.username, 
     ...formData,
     role: 'User', 
     status: 'New', 
@@ -236,12 +530,10 @@ function registerUser(formData) {
   return { success: true, message: 'ลงทะเบียนเรียบร้อย รอแอดมินอนุมัติ' };
 }
 
-// 3. Save User Data (For Admin)
 function saveUserData(user) {
    return saveDataToSheet('Users', user.id, user);
 }
 
-// 4. Main Load Data (Consolidated)
 function loadInitialData() {
   return {
     requests: getSheetData('Requests'),
