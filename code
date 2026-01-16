@@ -94,10 +94,17 @@ function processEmailAction(e) {
   const role = e.parameter.role;
   const customNote = e.parameter.note || ''; 
 
+  console.log(`[ProcessEmail] ===== START =====`);
+  console.log(`[ProcessEmail] Action: ${action}`);
+  console.log(`[ProcessEmail] Request ID: ${reqId}`);
+  console.log(`[ProcessEmail] Role: ${role}`);
+  console.log(`[ProcessEmail] Approver: ${approver}`);
+
   const requests = getSheetData('Requests');
   const reqIndex = requests.findIndex(r => r.id === reqId);
 
   if (reqIndex === -1) {
+    console.error(`[ProcessEmail] ❌ Request not found: ${reqId}`);
     return HtmlService.createHtmlOutput("<h2>❌ ไม่พบเอกสาร</h2>");
   }
 
@@ -105,9 +112,11 @@ function processEmailAction(e) {
   
   // Validation
   if (role === 'Head' && req.status !== 'Pending Head') {
+     console.log(`[ProcessEmail] ⚠️ Status mismatch. Current: ${req.status}, Expected: Pending Head`);
      return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
   }
   if (role === 'PM' && req.status !== 'Pending PM') {
+     console.log(`[ProcessEmail] ⚠️ Status mismatch. Current: ${req.status}, Expected: Pending PM`);
      return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
   }
 
@@ -116,13 +125,20 @@ function processEmailAction(e) {
   let logNote = '';
   
   if (action === 'approve') {
-    if (role === 'Head') newStatus = 'Pending PM';
-    else if (role === 'PM') newStatus = 'Approved';
+    if (role === 'Head') {
+      newStatus = 'Pending PM';
+      console.log(`[ProcessEmail] ✅ Head approved -> Status: Pending PM`);
+    }
+    else if (role === 'PM') {
+      newStatus = 'Approved';
+      console.log(`[ProcessEmail] ✅ PM approved -> Status: Approved`);
+    }
     logNote = `Approved via Email by ${approver}`;
   } 
   else if (action === 'confirm_reject') { 
     newStatus = 'Rejected';
     logNote = `Rejected via Email by ${approver}: ${customNote}`; 
+    console.log(`[ProcessEmail] ❌ Rejected with note: ${customNote}`);
   }
 
   // Save
@@ -136,10 +152,31 @@ function processEmailAction(e) {
     note: logNote
   });
 
+  console.log(`[ProcessEmail] 💾 Saving to Sheet...`);
   saveDataToSheet('Requests', req.id, req);
+
+  // ⭐⭐⭐ เพิ่มส่วนนี้: ส่งเมลต่อถ้าเป็น Pending PM ⭐⭐⭐
+  if (newStatus === 'Pending PM') {
+    console.log(`[ProcessEmail] 📧 Triggering email to PM...`);
+    try {
+      const pmEmails = findApproverEmails(req.job, 9); // Permission ID 9 = PM
+      
+      if (pmEmails) {
+        console.log(`[ProcessEmail] ✅ Found PM emails: ${pmEmails}`);
+        sendApprovalEmail(req, pmEmails, 'PM');
+        console.log(`[ProcessEmail] ✅ Email sent to PM successfully!`);
+      } else {
+        console.error(`[ProcessEmail] ⚠️ No PM approver found for project: ${req.job}`);
+      }
+    } catch (emailError) {
+      console.error(`[ProcessEmail] ❌ Failed to send PM email: ${emailError.toString()}`);
+    }
+  }
 
   const color = newStatus === 'Rejected' ? 'red' : 'green';
   const message = newStatus === 'Rejected' ? 'บันทึกการไม่อนุมัติเรียบร้อย' : 'อนุมัติเรียบร้อย';
+  
+  console.log(`[ProcessEmail] ===== END =====`);
   
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
@@ -147,32 +184,41 @@ function processEmailAction(e) {
       <p>เอกสาร: <strong>${reqId}</strong></p>
       <p>สถานะ: ${newStatus}</p>
       ${customNote ? `<p>เหตุผล: ${customNote}</p>` : ''}
+      ${newStatus === 'Pending PM' ? '<p style="color: blue;">✅ ส่งเมลต่อ PM แล้ว</p>' : ''}
       <button onclick="window.close()" style="padding: 10px 20px; margin-top:20px; cursor: pointer;">ปิดหน้านี้</button>
     </div>
   `);
 }
 
-// ฟังก์ชันหาอีเมลคนที่มีสิทธิ์อนุมัติ (เปลี่ยนเป็น console.log)
 function findApproverEmails(projectName, permId) {
-  console.log(`[FindApprover] Start searching for Perm ID: ${permId} in Project: ${projectName}`);
+  console.log(`[FindApprover] ===== START =====`);
+  console.log(`[FindApprover] Project: ${projectName}, Permission ID: ${permId}`);
   
   const users = getSheetData('Users');
-  console.log(`[FindApprover] Total users found: ${users.length}`);
+  console.log(`[FindApprover] Total users in database: ${users.length}`);
 
   const approvers = users.filter(u => {
+    // ⭐ เช็ค Status ต้องเป็น Activated เท่านั้น
+    if (u.status !== 'Activated') {
+      return false;
+    }
+
+    // Super Admin ได้ทุกโครงการ
     if (u.isSuperAdmin) {
-      console.log(`[FindApprover] Found SuperAdmin: ${u.username}`);
+      console.log(`[FindApprover] ✅ Found SuperAdmin: ${u.username} (${u.email})`);
       return true;
     }
 
+    // เช็คสิทธิ์ในโครงการ
     if (u.permissions && u.permissions[projectName]) {
       const userPerms = u.permissions[projectName].map(Number); 
       const targetPerm = Number(permId);
       
+      // มีสิทธิ์ Admin (2) หรือสิทธิ์เฉพาะที่ต้องการ
       const hasRight = userPerms.includes(2) || userPerms.includes(targetPerm);
       
       if (hasRight) {
-        console.log(`[FindApprover] Found User: ${u.username} (Perms: ${userPerms})`);
+        console.log(`[FindApprover] ✅ Found User: ${u.username} (${u.email}) | Permissions: [${userPerms.join(', ')}]`);
       }
       return hasRight;
     }
@@ -180,15 +226,32 @@ function findApproverEmails(projectName, permId) {
     return false;
   });
 
-  const emails = approvers.map(u => u.email).filter(email => email && email.includes('@'));
+  // ⭐ กรองเฉพาะ Email ที่ถูกต้อง
+  const emails = approvers
+    .map(u => u.email)
+    .filter(email => email && email.includes('@') && email.trim() !== '');
   
   const result = emails.join(',');
-  console.log(`[FindApprover] Final Emails found: ${result}`);
+  console.log(`[FindApprover] ===== RESULT =====`);
+  console.log(`[FindApprover] Emails: ${result || '(NONE)'}`);
+  console.log(`[FindApprover] ===== END =====`);
   
   return result;
 }
 
 function sendApprovalEmail(req, targetEmail, targetRole) {
+  console.log(`[SendEmail] ===== START =====`);
+  console.log(`[SendEmail] To: ${targetEmail}`);
+  console.log(`[SendEmail] Role: ${targetRole}`);
+  console.log(`[SendEmail] Request ID: ${req.id}`);
+
+  // ⭐ เช็คว่ามี Email จริง
+  if (!targetEmail || targetEmail.trim() === '') {
+    console.error(`[SendEmail] ❌ ERROR: Target email is empty!`);
+    return;
+  }
+
+
   const scriptUrl = ScriptApp.getService().getUrl();
   const approverName = targetRole; 
 
@@ -286,50 +349,63 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
     </div>
   `;
 
-  GmailApp.sendEmail(targetEmail, `[PurchaseHub] ขออนุมัติรายการ ${req.id} - ${req.job}`, '', {
-    htmlBody: htmlBody
-  });
+  try {
+    GmailApp.sendEmail(targetEmail, `[PurchaseHub] ขออนุมัติรายการ ${req.id} - ${req.job}`, '', {
+      htmlBody: htmlBody
+    });
+    console.log(`[SendEmail] ✅ Email sent successfully to ${targetEmail}`);
+  } catch (error) {
+    console.error(`[SendEmail] ❌ Failed to send email: ${error.toString()}`);
+  }
+
+  console.log(`[SendEmail] ===== END =====`);
 }
 
+
 function syncRequest(request) {
-  console.log(`[SyncRequest] Processing Request ID: ${request.id} | Status: ${request.status} | Job: ${request.job}`);
+  console.log(`[SyncRequest] ===== START =====`);
+  console.log(`[SyncRequest] Request ID: ${request.id}`);
+  console.log(`[SyncRequest] Status: ${request.status}`);
+  console.log(`[SyncRequest] Job: ${request.job}`);
   
+  // บันทึกข้อมูล
   const result = saveDataToSheet('Requests', request.id, request);
   
   try {
       if (request.status === 'Pending Head') {
-          console.log("[SyncRequest] Status matches 'Pending Head'. Finding approvers...");
+          console.log("[SyncRequest] ✅ Status = Pending Head -> Finding Head approvers...");
           const headEmails = findApproverEmails(request.job, 8); 
           
           if (headEmails) {
-             console.log(`[SyncRequest] Sending email to Head: ${headEmails}`);
+             console.log(`[SyncRequest] 📧 Sending email to: ${headEmails}`);
              sendApprovalEmail(request, headEmails, 'Head');
-             console.log("[SyncRequest] Email sent successfully!");
+             console.log("[SyncRequest] ✅ Email sent successfully!");
           } else {
              console.log(`[SyncRequest] ⚠️ WARNING: No Head approver found for project: ${request.job}`);
           }
       }
       
       else if (request.status === 'Pending PM') {
-          console.log("[SyncRequest] Status matches 'Pending PM'. Finding approvers...");
+          console.log("[SyncRequest] ✅ Status = Pending PM -> Finding PM approvers...");
           const pmEmails = findApproverEmails(request.job, 9);
           
           if (pmEmails) {
-             console.log(`[SyncRequest] Sending email to PM: ${pmEmails}`);
+             console.log(`[SyncRequest] 📧 Sending email to: ${pmEmails}`);
              sendApprovalEmail(request, pmEmails, 'PM');
-             console.log("[SyncRequest] Email sent successfully!");
+             console.log("[SyncRequest] ✅ Email sent successfully!");
           } else {
              console.log(`[SyncRequest] ⚠️ WARNING: No PM approver found for project: ${request.job}`);
           }
       } 
       else {
-          console.log("[SyncRequest] No email action required for this status.");
+          console.log(`[SyncRequest] ℹ️ Status '${request.status}' - No email action required.`);
       }
 
   } catch (e) {
-      console.log("❌ [SyncRequest] Email sending failed: " + e.toString());
+      console.error("❌ [SyncRequest] Email sending FAILED: " + e.toString());
   }
 
+  console.log(`[SyncRequest] ===== END =====`);
   return result;
 }
 
@@ -349,20 +425,45 @@ function getOrCreateSheet(sheetName) {
 
 function getSheetData(sheetName) {
   const sheet = getOrCreateSheet(sheetName);
-  if (sheet.getLastRow() === 0) return []; 
+  
+  // ⭐ ป้องกันอ่าน Sheet ว่าง
+  if (sheet.getLastRow() === 0) {
+    console.log(`[GetSheetData] Sheet '${sheetName}' is empty. Creating header...`);
+    sheet.appendRow(['ID', 'JSON_Data']); // สร้าง Header
+    return [];
+  }
+  
   const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return []; 
+  
+  // ⭐ ตรวจสอบว่ามีแค่ Header หรือไม่
+  if (data.length <= 1) {
+    console.log(`[GetSheetData] Sheet '${sheetName}' has only header row.`);
+    return [];
+  }
+  
   const result = [];
+  
   for (let i = 0; i < data.length; i++) {
-    if (i === 0 && data[i][0] === 'ID') continue; 
-    if (data[i][1]) { 
-      try {
-        result.push(JSON.parse(data[i][1]));
-      } catch (e) {
-        console.log('Error parsing JSON row ' + i + ' in ' + sheetName);
-      }
+    // ⭐ ข้าม Row 0 (Header)
+    if (i === 0 && data[i][0] === 'ID') {
+      continue;
+    }
+    
+    // ⭐ ข้าม Row ว่าง
+    if (!data[i][1] || data[i][1].toString().trim() === '') {
+      continue;
+    }
+    
+    try {
+      const parsed = JSON.parse(data[i][1]);
+      result.push(parsed);
+    } catch (e) {
+      console.error(`[GetSheetData] ❌ Error parsing row ${i} in ${sheetName}: ${e.toString()}`);
+      console.error(`[GetSheetData] Raw data: ${data[i][1]}`);
     }
   }
+  
+  console.log(`[GetSheetData] Loaded ${result.length} records from ${sheetName}`);
   return result;
 }
 
@@ -457,9 +558,6 @@ function deleteProjectFromSheet(id) {
   deleteDataFromSheet('Projects', id);
 }
 
-function syncRequest(request) {
-  return saveDataToSheet('Requests', request.id, request);
-}
 
 function syncInventory(item) {
   return saveDataToSheet('Inventory', item.id, item);
