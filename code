@@ -871,4 +871,141 @@ function loadInitialData() {
   };
 }
 
+// --- แก้ไขฟังก์ชัน sendRegistrationOTP (เพิ่มเช็ค Username + Ref Code) ---
+function sendRegistrationOTP(email, username) {
+  const users = getSheetData('Users');
+  
+  // 1. ตรวจสอบ Username ซ้ำ
+  if (users.some(u => u.username === username)) {
+    return { success: false, message: 'ชื่อผู้ใช้งาน (Username) นี้ถูกใช้งานแล้ว กรุณาเปลี่ยนใหม่' };
+  }
 
+  // 2. ตรวจสอบ Email ซ้ำ
+  if (users.some(u => u.email === email)) {
+    return { success: false, message: 'อีเมลนี้ถูกใช้งานแล้วในระบบ' };
+  }
+
+  // 3. สร้าง OTP และ Ref Code
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  
+  // สร้าง Ref Code 4 ตัวอักษร (เช่น A7B2)
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let refCode = '';
+  for (let i = 0; i < 4; i++) {
+    refCode += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  
+  // 4. เก็บ OTP ลง Cache (อายุ 5 นาที)
+  CacheService.getScriptCache().put('OTP_' + email, otp, 300); 
+
+  // 5. ส่งอีเมล
+  try {
+    GmailApp.sendEmail(email, `[PurchaseHub] รหัสยืนยัน (Ref: ${refCode})`, 
+      `รหัสอ้างอิง (Ref Code): ${refCode}\n\nรหัส OTP ของคุณคือ: ${otp}\n\n(รหัสมีอายุ 5 นาที)`);
+    
+    // ส่ง Ref Code กลับไปแสดงที่หน้าเว็บ
+    return { success: true, message: 'ส่งรหัส OTP แล้ว', refCode: refCode };
+  } catch (e) {
+    return { success: false, message: 'ส่งอีเมลไม่สำเร็จ: ' + e.toString() };
+  }
+}
+
+// --- แก้ไขฟังก์ชัน registerUser เดิม ให้รับ OTP ด้วย ---
+function registerUser(formData, otp) {
+  // 1. ตรวจสอบ OTP ก่อน
+  const cachedOtp = CacheService.getScriptCache().get('OTP_' + formData.email);
+  if (!cachedOtp || cachedOtp !== otp) {
+    return { success: false, message: 'รหัส OTP ไม่ถูกต้อง หรือหมดอายุ (กรุณากดรับรหัสใหม่)' };
+  }
+  
+  // เมื่อผ่านแล้ว ให้ลบ OTP ทิ้งกันใช้ซ้ำ
+  CacheService.getScriptCache().remove('OTP_' + formData.email);
+
+  // 2. ตรวจสอบ Username ซ้ำ (เผื่อมีคนสมัครตัดหน้าช่วงรอ OTP)
+  const users = getSheetData('Users');
+  if (users.some(u => u.username === formData.username)) {
+    return { success: false, message: 'Username นี้ถูกใช้งานแล้ว' };
+  }
+  
+  // 3. บันทึกข้อมูล
+  const newUser = {
+    id: formData.username, 
+    ...formData,
+    role: 'User', 
+    status: 'New', 
+    permissions: {}, 
+    createdAt: new Date().toLocaleString('th-TH')
+  };
+  saveDataToSheet('Users', newUser.id, newUser);
+  return { success: true, message: 'ลงทะเบียนเรียบร้อย รอแอดมินอนุมัติ' };
+}
+
+// --- [Server Side] ฟังก์ชันสำหรับระบบลืมรหัสผ่าน ---
+
+// 1. ส่ง OTP เพื่อขอเปลี่ยนรหัสผ่าน
+function sendForgotPasswordOTP(email) {
+  const users = getSheetData('Users');
+  const user = users.find(u => u.email === email);
+  
+  if (!user) {
+    return { success: false, message: 'ไม่พบอีเมลนี้ในระบบ' };
+  }
+
+  // สร้าง OTP และ Ref Code
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let refCode = '';
+  for (let i = 0; i < 4; i++) { refCode += chars.charAt(Math.floor(Math.random() * chars.length)); }
+  
+  // เก็บลง Cache (ใช้ key ต่างจากตอนสมัครสมาชิกเพื่อความปลอดภัย)
+  CacheService.getScriptCache().put('RESET_OTP_' + email, otp, 300); // 5 นาที
+
+  try {
+    GmailApp.sendEmail(email, `[PurchaseHub] รหัสรีเซ็ตรหัสผ่าน (Ref: ${refCode})`, 
+      `รหัสอ้างอิง (Ref Code): ${refCode}\n\nรหัส OTP สำหรับตั้งรหัสผ่านใหม่คือ: ${otp}\n\n(รหัสมีอายุ 5 นาที)`);
+    return { success: true, message: 'ส่งรหัส OTP ไปยังอีเมลแล้ว', refCode: refCode };
+  } catch (e) {
+    return { success: false, message: 'ส่งอีเมลไม่สำเร็จ: ' + e.toString() };
+  }
+}
+
+// 2. ยืนยัน OTP และเปลี่ยนรหัสผ่านทันที
+function resetPassword(email, otp, newPassword) {
+  // ตรวจสอบ OTP
+  const cachedOtp = CacheService.getScriptCache().get('RESET_OTP_' + email);
+  if (!cachedOtp || cachedOtp !== otp) {
+    return { success: false, message: 'รหัส OTP ไม่ถูกต้อง หรือหมดอายุ' };
+  }
+
+  // ค้นหาและอัปเดตข้อมูล User
+  const users = getSheetData('Users');
+  const user = users.find(u => u.email === email);
+  
+  if (user) {
+    user.password = newPassword; // อัปเดตรหัสผ่านใหม่
+    saveDataToSheet('Users', user.id, user); // บันทึกลง Sheet
+    
+    CacheService.getScriptCache().remove('RESET_OTP_' + email); // ลบ OTP ทิ้ง
+    return { success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ กรุณาเข้าสู่ระบบด้วยรหัสใหม่' };
+  }
+  
+  return { success: false, message: 'เกิดข้อผิดพลาด ไม่พบข้อมูลผู้ใช้' };
+}
+
+// --- เพิ่มฟังก์ชันกู้คืนชื่อผู้ใช้งาน ---
+function sendUsernameToEmail(email) {
+  const users = getSheetData('Users');
+  const user = users.find(u => u.email === email);
+  
+  if (!user) {
+    return { success: false, message: 'ไม่พบอีเมลนี้ในระบบ' };
+  }
+
+  try {
+    GmailApp.sendEmail(email, '[PurchaseHub] กู้คืนชื่อผู้ใช้งาน (Username Recovery)', 
+      `เรียนคุณ ${user.firstName},\n\nชื่อผู้ใช้งาน (Username) ของคุณคือ: ${user.username}\n\nหากคุณไม่ได้ทำรายการนี้ โปรดติดต่อผู้ดูแลระบบ`);
+    return { success: true, message: 'ระบบได้ส่งชื่อผู้ใช้งาน (Username) ไปที่อีเมลของคุณแล้ว' };
+  } catch (e) {
+    return { success: false, message: 'ส่งอีเมลไม่สำเร็จ: ' + e.toString() };
+  }
+}
