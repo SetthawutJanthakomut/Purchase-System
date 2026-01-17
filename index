@@ -51,7 +51,8 @@
       'Upload',
       'Settings',
       'Lock',
-       EyeOff// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
+       EyeOff,
+      'BellOff'// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
     ];
     const lucideReact = {};
     // --- PERMISSION CONSTANTS ---
@@ -145,7 +146,8 @@ const {
       Briefcase: BriefcaseIcon, 
       Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
       Upload,
-      Settings,Lock,EyeOff // ⭐ เพิ่มตรงนี้ครับ
+      Settings,Lock,EyeOff, 
+      BellOff // ⭐ เพิ่มตรงนี้ครับ
     } = lucideReact;
 
     // Manual Aliasing for missing/renamed icons
@@ -373,6 +375,8 @@ const {
 const [viewingUser, setViewingUser] = useState(null); // เก็บ User ที่กำลังดู
 const [userDetailTab, setUserDetailTab] = useState('info'); // info, purchase, withdraw, borrow
 const [detailSearch, setDetailSearch] = useState(''); // ช่องค้นหาในหน้า Detail
+const [userSearch, setUserSearch] = useState(''); // ⭐ เพิ่ม State สำหรับค้นหา User
+
 
 const hasPermission = (permId, project = globalProjectFilter) => {
           // 1. ถ้าเป็น Super Admin ให้ผ่านตลอด
@@ -2039,34 +2043,21 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
       }, [inventory, invSearch, invSort, invTabMode, globalProjectFilter, inventoryProjectFilter]);
 
 
-// --- LOGIC: Filter & Sort Assets (Updated with Summary Grouping) ---
+// --- LOGIC: Filter & Sort Assets (UPDATED: Show Both Alerts) ---
       const filteredAssets = useMemo(() => {
           let data = assets;
           
-          // ⭐ กรอง Project (Global)
-          if (globalProjectFilter !== 'All') {
-              data = data.filter(a => a.project === globalProjectFilter);
-          }
+          if (globalProjectFilter !== 'All') { data = data.filter(a => a.project === globalProjectFilter); }
           
-          // 1. Search (กรองก่อนรวมกลุ่ม)
           if (assetSearch) {
-    const lower = assetSearch.toLowerCase();
-    data = data.filter(a => 
-        a.name.toLowerCase().includes(lower) || 
-        a.id.toLowerCase().includes(lower) || 
-        (a.holder && a.holder.toLowerCase().includes(lower)) ||
-        (a.project && a.project.toLowerCase().includes(lower)) // ⭐ เพิ่มค้นหาโครงการ
-    );
-}
-
-          // 🟢 เพิ่มส่วนนี้: กรอง Project
-          if (assetProjectFilter !== 'All') {
-              data = data.filter(a => a.project === assetProjectFilter);
+            const lower = assetSearch.toLowerCase();
+            data = data.filter(a => a.name.toLowerCase().includes(lower) || a.id.toLowerCase().includes(lower) || (a.holder && a.holder.toLowerCase().includes(lower)) || (a.project && a.project.toLowerCase().includes(lower)));
           }
 
-          // 2. Tab Logic
+          if (assetProjectFilter !== 'All') { data = data.filter(a => a.project === assetProjectFilter); }
+
           if (assetTabMode === 'Summary') {
-              // ⭐ Grouping Logic
+              // ... (Summary Logic เดิม ไม่ต้องแก้) ...
               const grouped = data.reduce((acc, item) => {
                   const existing = acc.find(g => g.name === item.name);
                   if (existing) {
@@ -2075,80 +2066,77 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
                       if (item.ownerType === 'Rent') existing.rentQty++;
                       existing.items.push(item);
                   } else {
-                      acc.push({
-                          id: `GRP-${item.name}`, // Fake ID for key
-                          name: item.name,
-                          totalQty: 1,
-                          companyQty: item.ownerType === 'Company' ? 1 : 0,
-                          rentQty: item.ownerType === 'Rent' ? 1 : 0,
-                          items: [item],
-                          isSummary: true
-                      });
+                      acc.push({ id: `GRP-${item.name}`, name: item.name, totalQty: 1, companyQty: item.ownerType === 'Company' ? 1 : 0, rentQty: item.ownerType === 'Rent' ? 1 : 0, items: [item], isSummary: true });
                   }
                   return acc;
               }, []);
-              
-              // Sort Summary
               return grouped.sort((a, b) => a.name.localeCompare(b.name));
+          } else {
+            // Normal Logic
+            data = data.filter(a => a.ownerType === assetTabMode);
+            
+            const today = new Date();
+            today.setHours(0,0,0,0);
 
- } else {
-    // Normal Logic (Company / Rent)
-    data = data.filter(a => a.ownerType === assetTabMode);
-    
-    // Process Alerts & Priority
-    const today = new Date();
-    today.setHours(0,0,0,0); // เคลียร์เวลาให้เป็นเที่ยงคืน
+            const processedData = data.map(asset => {
+                let alertType = null; 
+                let priority = 0;
+                let daysLeft = null;
+                
+                // ⭐ เพิ่มตัวแปรเช็ค Overdue แยกต่างหาก
+                let isOverdue = false;
+                let overdueDays = 0;
+                
+                // 1. เช็ควันหมดสัญญา
+                if (asset.ownerType === 'Rent' && asset.rentalEnd) {
+                    const endDate = new Date(asset.rentalEnd);
+                    const diffTime = endDate - today;
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                    daysLeft = diffDays;
 
-    const processedData = data.map(asset => {
-        let alertType = null; 
-        let priority = 0;
-        let daysLeft = null;
-        
-        // 1. เช็ควันหมดสัญญา (เฉพาะของเช่า)
-        if (asset.ownerType === 'Rent' && asset.rentalEnd) {
-            const endDate = new Date(asset.rentalEnd);
-            const diffTime = endDate - today;
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            daysLeft = diffDays;
+                    if (diffDays < 0) { 
+                        alertType = 'expired'; 
+                        priority = 3; 
+                    } else if (diffDays <= 30) { 
+                        alertType = 'expiring'; 
+                        priority = 2; 
+                    }
+                }
 
-            if (diffDays < 0) { 
-                alertType = 'expired'; 
-                priority = 3; // สำคัญสุด (หมดแล้ว)
-            } else if (diffDays <= 30) { 
-                alertType = 'expiring'; 
-                priority = 2; // รองลงมา (ใกล้หมด)
-            }
-        }
+                // 2. เช็คยืมเกินกำหนด (Borrowed Overdue)
+                if (asset.status === 'Borrowed' && asset.lastUpdated) {
+                     const borrowDate = parseThaiDate(asset.lastUpdated);
+                     if (borrowDate) {
+                         const diffTime = Math.abs(today - borrowDate);
+                         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                         
+                         const isSnoozed = asset.snoozeUntil && new Date(asset.snoozeUntil) > today;
 
-        // 2. เช็คยืมเกินกำหนด (Borrowed Overdue)
-        if (asset.status === 'Borrowed' && asset.lastUpdated) {
-             const borrowDate = parseThaiDate(asset.lastUpdated);
-             if (borrowDate) {
-                 const diffTime = Math.abs(today - borrowDate);
-                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-                 // ให้ Priority ต่ำกว่าเรื่องสัญญาเช่าหน่อย (หรือจะปรับเป็น 3 เท่ากันก็ได้)
-                 if (diffDays > 7) { 
-                     if (!alertType) alertType = 'overdue'; 
-                     priority = Math.max(priority, 1); 
-                 }
-             }
-        }
-    
-        return { ...asset, alertType, priority, daysLeft };
-    });
+                         if (diffDays > 7 && !isSnoozed) { 
+                             // ⭐ ตั้งค่า Flag เป็นจริง
+                             isOverdue = true;
+                             overdueDays = diffDays;
+                             priority = Math.max(priority, 1); 
+                             
+                             // ถ้ายังไม่มี alertType (ไม่ติดสัญญา) ให้ตั้งเป็น overdue
+                             // แต่ถ้ามี (เช่น expired/expiring) ก็ปล่อยไว้ เพื่อให้แสดงผลคู่กันได้
+                             if (!alertType) alertType = 'overdue';
+                         }
+                     }
+                }
+            
+                return { ...asset, alertType, priority, daysLeft, isOverdue, overdueDays };
+            });
 
-    // Sort: เรียงตาม Priority (มากไปน้อย) -> แล้วค่อยเรียงตาม Key ที่กดหัวตาราง
-    return processedData.sort((a, b) => {
-        if (b.priority !== a.priority) return b.priority - a.priority;
-        // ถ้า Priority เท่ากัน ให้เรียงวันหมดอายุ (น้อยไปมาก = ใกล้หมดก่อน)
-        if (a.daysLeft !== null && b.daysLeft !== null && a.daysLeft !== b.daysLeft) return a.daysLeft - b.daysLeft;
-        
-        // Sorting ปกติ
-        if (a[assetSort.key] < b[assetSort.key]) return assetSort.direction === 'asc' ? -1 : 1;
-        if (a[assetSort.key] > b[assetSort.key]) return assetSort.direction === 'asc' ? 1 : -1;
-        return 0;
-    });
-}
+            // Sort: เรียงตาม Priority (มากไปน้อย)
+            return processedData.sort((a, b) => {
+                if (b.priority !== a.priority) return b.priority - a.priority;
+                if (a.daysLeft !== null && b.daysLeft !== null && a.daysLeft !== b.daysLeft) return a.daysLeft - b.daysLeft;
+                if (a[assetSort.key] < b[assetSort.key]) return assetSort.direction === 'asc' ? -1 : 1;
+                if (a[assetSort.key] > b[assetSort.key]) return assetSort.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+          }
       }, [assets, assetSearch, assetSort, assetTabMode, globalProjectFilter, assetProjectFilter]);
 
       // --- Functions & Handlers (Logic from original file) ---
@@ -4961,12 +4949,17 @@ filteredRequests.map(req => {
                                        )}
 <td className="px-6 py-4 font-medium text-gray-500">
     {ast.id}
-    {/* แจ้งเตือนหมดสัญญา */}
+    
+    {/* แจ้งเตือนสัญญา (Contract Alerts) */}
     {ast.alertType === 'expired' && <span className="block text-[9px] text-red-600 font-bold bg-red-50 px-1 rounded w-fit mt-1">หมดสัญญาแล้ว</span>}
     {ast.alertType === 'expiring' && <span className="block text-[9px] text-orange-600 font-bold bg-orange-50 px-1 rounded w-fit mt-1">เหลือ {ast.daysLeft} วัน</span>}
     
-    {/* แจ้งเตือนยืมเกิน */}
-    {ast.alertType === 'overdue' && <span className="block text-[9px] text-purple-600 font-bold bg-purple-50 px-1 rounded w-fit mt-1">ยืมเกินกำหนด</span>}
+    {/* ⭐ แจ้งเตือนยืมเกิน (แสดงเมื่อ isOverdue = true) */}
+    {ast.isOverdue && (
+        <span className="block text-[9px] text-purple-600 font-bold bg-purple-50 px-1 rounded w-fit mt-1">
+            ยืมเกิน {ast.overdueDays} วัน
+        </span>
+    )}
 </td>
                                        <td className="px-6 py-4 font-medium text-gray-900">{ast.name}</td>
 {globalProjectFilter === 'All' && assetTabMode !== 'Summary' && (
@@ -5080,13 +5073,30 @@ filteredRequests.map(req => {
         </div>
       )}
 
-{/* --- USER MANAGEMENT TAB (แก้ไข: ลบ user.isSuperAdmin ออก เพื่อให้ทุกคนเห็น) --- */}
+{/* --- USER MANAGEMENT TAB (ปรับปรุง: ค้นหา + แยกผู้ใช้ปัจจุบัน) --- */}
       {activeTab === 'users' && (
           <div className="space-y-6 max-w-7xl mx-auto">
               <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                  <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
-                      <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2"><User className="w-5 h-5"/> จัดการผู้ใช้งาน (User Management)</h3>
+                  
+                  {/* Header & Search Bar */}
+                  <div className="px-6 py-4 border-b bg-gray-50 flex flex-col md:flex-row justify-between items-center gap-4">
+                      <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                          <User className="w-5 h-5"/> จัดการผู้ใช้งาน (User Management)
+                      </h3>
+                      
+                      {/* ⭐ ช่องค้นหา User */}
+                      <div className="relative w-full md:w-64">
+                          <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
+                          <input 
+                              type="text" 
+                              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" 
+                              placeholder="ค้นหาชื่อ, รหัส..." 
+                              value={userSearch} 
+                              onChange={e => setUserSearch(e.target.value)}
+                          />
+                      </div>
                   </div>
+
                   <div className="overflow-x-auto">
                       <table className="w-full text-sm text-left">
                           <thead className="bg-gray-100 text-gray-600 font-bold border-b">
@@ -5099,54 +5109,88 @@ filteredRequests.map(req => {
                               </tr>
                           </thead>
                           <tbody className="divide-y">
-                              {allUsers.map((u, idx) => (
-                                  <tr 
-    key={u.id} 
-    className="border-b hover:bg-blue-50 cursor-pointer transition-colors"
-    onClick={() => {
-        setViewingUser(u);
-        setUserDetailTab('info');
-        setDetailSearch('');
-    }}
->
-                                      <td className="px-6 py-4 font-bold text-gray-800">{u.username}</td>
-                                      <td className="px-6 py-4">{u.firstName} {u.lastName}</td>
-                                      <td className="px-6 py-4 font-mono text-gray-500">{u.empId}</td>
-                                      <td className="px-6 py-4">
-                                          {/* ปุ่มสถานะ: แก้ได้เฉพาะ Admin (hasPermission(2) หรือ SuperAdmin) */}
-                                          {(user.isSuperAdmin || hasPermission(2)) ? (
-                                              <button 
-                                                  onClick={() => {
-                                                      const newStatus = u.status === 'Activated' ? 'Deactivated' : 'Activated';
-                                                      const updatedUser = { ...u, status: newStatus };
-                                                      setAllUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
-                                                      google.script.run.saveUserData(updatedUser);
-                                                  }}
-                                                  className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${u.status === 'Activated' ? 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200' : u.status === 'New' ? 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' : 'bg-red-100 text-red-700 border-red-200 hover:bg-red-200'}`}
-                                              >
-                                                  {u.status}
-                                              </button>
-                                          ) : (
-                                              <span className={`px-3 py-1 rounded-full text-xs font-bold border ${u.status === 'Activated' ? 'bg-green-50 text-green-600 border-green-100' : u.status === 'New' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-red-50 text-red-600 border-red-100'}`}>
-                                                  {u.status}
-                                              </span>
-                                          )}
-                                      </td>
-                                      <td className="px-6 py-4 text-center">
-                                          <button 
+                              {(() => {
+                                  // 1. กรองข้อมูลตามคำค้นหา
+                                  let filtered = allUsers;
+                                  if (userSearch) {
+                                      const lower = userSearch.toLowerCase();
+                                      filtered = filtered.filter(u => 
+                                          u.username.toLowerCase().includes(lower) ||
+                                          u.firstName.toLowerCase().includes(lower) ||
+                                          u.lastName.toLowerCase().includes(lower) ||
+                                          u.empId.toLowerCase().includes(lower)
+                                      );
+                                  }
+
+                                  // 2. ⭐ แยกผู้ใช้ปัจจุบัน (Current User) ไว้บนสุด
+                                  const myUser = filtered.find(u => u.id === user.id);
+                                  const others = filtered.filter(u => u.id !== user.id);
+                                  
+                                  // รวมกลับโดยให้เราอยู่คนแรก
+                                  const displayList = myUser ? [myUser, ...others] : others;
+
+                                  if (displayList.length === 0) {
+                                      return <tr><td colSpan="5" className="p-8 text-center text-gray-400">ไม่พบผู้ใช้งานที่ค้นหา</td></tr>;
+                                  }
+
+                                  return displayList.map((u) => {
+                                      const isMe = u.id === user.id; // เช็คว่าเป็นตัวเราหรือไม่
+                                      return (
+                                          <tr 
+                                              key={u.id} 
+                                              className={`border-b cursor-pointer transition-colors ${isMe ? 'bg-blue-50/60 hover:bg-blue-100' : 'hover:bg-blue-50'}`}
                                               onClick={() => {
-                                                  setSelectedUserForEdit(u);
-                                                  setPermissionTab(projects[0]?.name || ''); 
-                                                  setShowPermissionModal(true);
+                                                  setViewingUser(u);
+                                                  setUserDetailTab('info');
+                                                  setDetailSearch('');
                                               }}
-                                              className="bg-blue-50 text-blue-600 p-2 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200"
-                                              title="ดู/จัดการสิทธิ์"
                                           >
-                                              <Settings className="w-4 h-4"/>
-                                          </button>
-                                      </td>
-                                  </tr>
-                              ))}
+                                              <td className="px-6 py-4 font-bold text-gray-800 flex items-center gap-2">
+                                                  {u.username}
+                                                  {/* ⭐ ติดป้าย Me ถ้าเป็นเรา */}
+                                                  {isMe && <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full shadow-sm">Me</span>}
+                                              </td>
+                                              <td className="px-6 py-4">{u.firstName} {u.lastName}</td>
+                                              <td className="px-6 py-4 font-mono text-gray-500">{u.empId}</td>
+                                              <td className="px-6 py-4">
+                                                  {/* ปุ่มสถานะ: แก้ได้เฉพาะ Admin */}
+                                                  {(user.isSuperAdmin || hasPermission(2)) ? (
+                                                      <button 
+                                                          onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              const newStatus = u.status === 'Activated' ? 'Deactivated' : 'Activated';
+                                                              const updatedUser = { ...u, status: newStatus };
+                                                              setAllUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
+                                                              google.script.run.saveUserData(updatedUser);
+                                                          }}
+                                                          className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${u.status === 'Activated' ? 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200' : u.status === 'New' ? 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' : 'bg-red-100 text-red-700 border-red-200 hover:bg-red-200'}`}
+                                                      >
+                                                          {u.status}
+                                                      </button>
+                                                  ) : (
+                                                      <span className={`px-3 py-1 rounded-full text-xs font-bold border ${u.status === 'Activated' ? 'bg-green-50 text-green-600 border-green-100' : u.status === 'New' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-red-50 text-red-600 border-red-100'}`}>
+                                                          {u.status}
+                                                      </span>
+                                                  )}
+                                              </td>
+                                              <td className="px-6 py-4 text-center">
+                                                  <button 
+                                                      onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          setSelectedUserForEdit(u);
+                                                          setPermissionTab(projects[0]?.name || ''); 
+                                                          setShowPermissionModal(true);
+                                                      }}
+                                                      className="bg-blue-50 text-blue-600 p-2 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200"
+                                                      title="ดู/จัดการสิทธิ์"
+                                                  >
+                                                      <Settings className="w-4 h-4"/>
+                                                  </button>
+                                              </td>
+                                          </tr>
+                                      );
+                                  });
+                              })()}
                           </tbody>
                       </table>
                   </div>
@@ -7248,7 +7292,108 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                 
                                 {/* Action Buttons */}
  {/* Action Buttons (Updated Permissions) */}
-                                <div className="absolute top-6 right-6 flex gap-2">
+<div className="absolute top-6 right-6 flex gap-2">
+    
+    {/* ⭐ เช็คสถานะการเลื่อน (Snoozed Check) */}
+    {(() => {
+        const isSnoozed = viewingItem.snoozeUntil && new Date(viewingItem.snoozeUntil) > new Date();
+        
+        return (
+            <>
+                {/* 1. กรณีมีการแจ้งเตือน (Overdue) -> แสดงปุ่ม เลื่อน (Snooze) และ ปิดถาวร (Disable) */}
+                {viewingItem.isOverdue && viewingItem.alertType !== 'expired' && hasPermission(17) && (
+                    <>
+                        {/* ปุ่มเลื่อน 7 วัน */}
+                        <button 
+                            onClick={async () => {
+                                setIsLoading(true);
+                                try {
+                                    const nextWeek = new Date();
+                                    nextWeek.setDate(nextWeek.getDate() + 7);
+                                    const snoozeDateStr = nextWeek.toISOString().split('T')[0];
+
+                                    const updatedAsset = { ...viewingItem, snoozeUntil: snoozeDateStr };
+                                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
+                                    await addInvLog('Snooze Alert', updatedAsset.name, 'Update', `เลื่อนแจ้งเตือนถึง ${snoozeDateStr}`, [], null, updatedAsset.id);
+
+                                    setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, alertType: null, isOverdue: false } : a));
+                                    setViewingItem({ ...updatedAsset, alertType: null, isOverdue: false });
+                                    showToast(`เลื่อนการแจ้งเตือน 7 วันเรียบร้อย`);
+                                } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
+                            }}
+                            className="bg-orange-50 text-orange-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-orange-100 border border-orange-200 flex items-center gap-1 shadow-sm"
+                            title="เลื่อนไปอีก 7 วัน"
+                        >
+                            <Clock className="w-3 h-3"/> เลื่อน 7 วัน
+                        </button>
+
+                        {/* ⭐ ปุ่มปิดแจ้งเตือน (ไม่ต้องแจ้งเตือน) */}
+                        <button 
+                            onClick={async () => {
+                                if(!confirm('ยืนยัน "ปิดการแจ้งเตือน" สำหรับรายการนี้? \n(รายการจะไม่แสดงสถานะเตือนอีก จนกว่าจะมากดเปิดใหม่)')) return;
+                                setIsLoading(true);
+                                try {
+                                    // ตั้งเวลาไปไกลมากๆ (ปี 9999) เท่ากับปิดถาวร
+                                    const foreverDateStr = '9999-12-31';
+                                    const updatedAsset = { ...viewingItem, snoozeUntil: foreverDateStr };
+                                    
+                                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
+                                    await addInvLog('Disable Alert', updatedAsset.name, 'Update', `ปิดการแจ้งเตือนถาวร`, [], null, updatedAsset.id);
+
+                                    setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, alertType: null, isOverdue: false } : a));
+                                    setViewingItem({ ...updatedAsset, alertType: null, isOverdue: false });
+                                    showToast(`ปิดการแจ้งเตือนเรียบร้อย`);
+                                } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
+                            }}
+                            className="bg-gray-100 text-gray-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-gray-200 border border-gray-300 flex items-center gap-1 shadow-sm"
+                            title="ไม่ต้องแจ้งเตือนอีก"
+                        >
+                            <BellOff className="w-3 h-3"/> ปิดแจ้งเตือน
+                        </button>
+                    </>
+                )}
+
+                {/* 2. ⭐ กรณีถูกเลื่อน/ปิดอยู่ (Snoozed) -> แสดงปุ่ม กลับมาแจ้งเตือน (Enable) */}
+                {isSnoozed && hasPermission(17) && (
+                    <button 
+                        onClick={async () => {
+                            if(!confirm('ต้องการ "เปิดการแจ้งเตือน" อีกครั้ง?')) return;
+                            setIsLoading(true);
+                            try {
+                                // ลบค่า snoozeUntil ออก
+                                const updatedAsset = { ...viewingItem, snoozeUntil: '' }; // ส่งค่าว่างไปลบ
+                                
+                                await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
+                                await addInvLog('Enable Alert', updatedAsset.name, 'Update', `เปิดการแจ้งเตือนอีกครั้ง`, [], null, updatedAsset.id);
+
+                                // คำนวณสถานะใหม่หน้าบ้านทันที (เพื่อให้ Alert เด้งขึ้นมาเลยถ้ามัน Overdue อยู่)
+                                const today = new Date(); today.setHours(0,0,0,0);
+                                let isNowOverdue = false;
+                                if (updatedAsset.status === 'Borrowed' && updatedAsset.lastUpdated) {
+                                    // Logic คำนวณวันเหมือนใน filteredAssets (Copy มาเพื่อให้แสดงผลทันที)
+                                    // หมายเหตุ: ฟังก์ชัน parseThaiDate ต้องมีอยู่แล้วใน scope
+                                    // ถ้าไม่มี ให้ใช้วิธีรีเฟรชหน้า handleRefresh() แทนได้
+                                    const borrowDate = parseThaiDate(updatedAsset.lastUpdated);
+                                    if (borrowDate) {
+                                        const diff = Math.ceil(Math.abs(today - borrowDate) / (86400000));
+                                        if (diff > 7) isNowOverdue = true;
+                                    }
+                                }
+
+                                setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, snoozeUntil: '', isOverdue: isNowOverdue } : a));
+                                setViewingItem({ ...updatedAsset, snoozeUntil: '', isOverdue: isNowOverdue });
+                                
+                                showToast(`เปิดการแจ้งเตือนเรียบร้อย`);
+                            } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
+                        }}
+                        className="bg-purple-50 text-purple-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-purple-100 border border-purple-200 flex items-center gap-1 shadow-sm"
+                    >
+                        <Bell className="w-3 h-3"/> เปิดแจ้งเตือน
+                    </button>
+                )}
+            </>
+        );
+    })()}
                                     
                                     {/* ปุ่มลบ: เช็คประเภทว่าเป็น Asset(21) หรือ Inventory(18) */}
                                     {((viewingItem.serial !== undefined && hasPermission(21)) || 
@@ -8668,55 +8813,175 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
             {/* 4. Content Area */}
             <div className="p-0 overflow-y-auto flex-1 bg-gray-50/50 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
                 
-                {/* Tab 1: Info (Code เดิม) */}
+             {/* Tab 1: Info (แก้ไข: ปิดการแก้ไขอีเมล) */}
                 {userDetailTab === 'info' && (
                      <div className="p-6">
-                        {/* ... (Code ส่วนแสดงข้อมูลผู้ใช้เดิม ใส่ตรงนี้ได้เลยครับ) ... */}
-                        <div className="bg-white p-6 rounded-xl shadow-sm border space-y-6">
-                             {/* Basic Info */}
-                             <h4 className="font-bold text-gray-800 border-b pb-2 mb-4 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
-                             <div className="grid grid-cols-2 gap-6">
-                                <div><label className="text-xs font-bold text-gray-500">รหัสพนักงาน</label><div className="p-2 border rounded bg-gray-50">{viewingUser.empId}</div></div>
-                                <div><label className="text-xs font-bold text-gray-500">ชื่อ-นามสกุล</label><div className="p-2 border rounded bg-gray-50">{viewingUser.firstName} {viewingUser.lastName}</div></div>
-                                <div><label className="text-xs font-bold text-gray-500">อีเมล</label><div className="p-2 border rounded bg-gray-50">{viewingUser.email}</div></div>
-                                <div><label className="text-xs font-bold text-gray-500">สถานะ</label><div className={`p-2 border rounded font-bold ${viewingUser.status==='Activated'?'text-green-600 bg-green-50':'text-red-600 bg-red-50'}`}>{viewingUser.status}</div></div>
-                             </div>
-                             {/* Actions (Admin) */}
-                             {(user?.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
-                                <div className="pt-4 border-t flex gap-3">
-                                    {(user?.isSuperAdmin || hasPermission(2)) && (
-                                        <button 
-                                            onClick={async () => {
-                                                const isActive = viewingUser.status === 'Activated' || viewingUser.status === 'Active'; 
-                                                const newStatus = isActive ? 'Deactivated' : 'Activated';
-                                                if(confirm(`ยืนยันการเปลี่ยนสถานะเป็น ${newStatus}?`)) {
-                                                    const updated = {...viewingUser, status: newStatus};
-                                                    google.script.run.saveUserData(updated);
-                                                    await addInvLog('Edit User Status', `${viewingUser.empId} ${viewingUser.firstName}`, `Changed Status to ${newStatus}`, JSON.stringify({ from: viewingUser.status, to: newStatus }), [], viewingUser.id);
-                                                    setAllUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
-                                                    setViewingUser(updated);
+                         <div className="bg-white p-6 rounded-xl shadow-sm border space-y-6">
+                             
+                             {/* Basic Info Header */}
+                             <div className="flex justify-between items-center border-b pb-2 mb-4">
+                                <h4 className="font-bold text-gray-800 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
+                                {/* ปุ่มบันทึก */}
+                                {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2)) && (
+                                    <button 
+                                        onClick={async () => {
+                                            const originalUser = allUsers.find(u => u.id === viewingUser.id);
+                                            if (!originalUser) return;
+
+                                            // 1. เตรียมข้อมูลเปรียบเทียบ (Log Changes)
+                                            const changeDetails = [];
+                                            if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
+                                            if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
+                                            if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
+                                            // อีเมลแก้ไขไม่ได้แล้ว จึงไม่ต้องเช็ค
+
+                                            if (changeDetails.length === 0) {
+                                                showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
+                                                return;
+                                            }
+
+                                            // 2. เตรียมข้อมูลสำหรับ Global Update
+                                            const oldFullSig = `${originalUser.empId} ${originalUser.firstName} ${originalUser.lastName}`;
+                                            const newFullSig = `${viewingUser.empId} ${viewingUser.firstName} ${viewingUser.lastName}`;
+                                            const oldShortName = `${originalUser.firstName} ${originalUser.lastName}`;
+                                            const newShortName = `${viewingUser.firstName} ${viewingUser.lastName}`;
+                                            const hasNameChange = (oldFullSig !== newFullSig) || (oldShortName !== newShortName);
+
+                                            setIsLoading(true);
+                                            try {
+                                                await new Promise(r => google.script.run.withSuccessHandler(r).saveUserData(viewingUser));
+                                                
+                                                await addInvLog(
+                                                    'Edit Profile', 
+                                                    `${viewingUser.empId} ${viewingUser.firstName}`, 
+                                                    `Updated ${changeDetails.length} fields`, 
+                                                    `รายการแก้ไข:\n- ${changeDetails.join('\n- ')}`, 
+                                                    [], null, null
+                                                );
+
+                                                if (hasNameChange) {
+                                                    const res = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName));
+                                                    console.log("Global Update Result:", res);
+                                                    showToast(`บันทึกและอัปเดตชื่อในประวัติเก่า ${res.message}`);
+                                                } else {
+                                                    showToast('บันทึกการแก้ไขเรียบร้อย');
                                                 }
-                                            }}
-                                            className={`px-4 py-2 rounded text-white text-sm font-bold ${viewingUser.status === 'Activated' || viewingUser.status === 'Active' ? 'bg-red-500' : 'bg-green-500'}`}
-                                        >
-                                            {viewingUser.status === 'Activated' || viewingUser.status === 'Active' ? 'Deactivate User' : 'Activate User'}
+
+                                                setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? viewingUser : u));
+                                                if (user.id === viewingUser.id) setUser(viewingUser);
+                                                handleRefresh(); 
+
+                                            } catch (err) {
+                                                console.error(err);
+                                                showToast('เกิดข้อผิดพลาดในการบันทึก', 'error');
+                                            } finally {
+                                                setIsLoading(false);
+                                            }
+                                        }}
+                                        className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
+                                    >
+                                        <Save size={14}/> บันทึกการแก้ไข
+                                    </button>
+                                )}
+                             </div>
+
+                             {/* Form Inputs */}
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">รหัสพนักงาน (Emp ID)</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                        value={viewingUser.empId}
+                                        onChange={e => setViewingUser({...viewingUser, empId: e.target.value})}
+                                        disabled={!(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2))}
+                                    />
+                                </div>
+                                
+                                {/* ⭐ ส่วนของอีเมล (แก้ไขให้เป็น Disabled/Read-only) */}
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">อีเมล (Email)</label>
+                                    <input 
+                                        type="email" 
+                                        className="w-full p-2.5 border rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed focus:outline-none"
+                                        value={viewingUser.email}
+                                        disabled // ล็อกไว้ไม่ให้แก้ไข
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อ (First Name)</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                        value={viewingUser.firstName}
+                                        onChange={e => setViewingUser({...viewingUser, firstName: e.target.value})}
+                                        disabled={!(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2))}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">นามสกุล (Last Name)</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                        value={viewingUser.lastName}
+                                        onChange={e => setViewingUser({...viewingUser, lastName: e.target.value})}
+                                        disabled={!(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2))}
+                                    />
+                                </div>
+                                
+                                {/* Status (Admin Only) */}
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 mb-1 block">สถานะ (Status)</label>
+                                    <div className={`p-2.5 border rounded-lg font-bold flex justify-between items-center ${viewingUser.status==='Activated'?'text-green-600 bg-green-50 border-green-100':'text-red-600 bg-red-50 border-red-100'}`}>
+                                        {viewingUser.status}
+                                        
+                                        {(user?.isSuperAdmin || hasPermission(2)) && (
+                                            <button 
+                                                onClick={async () => {
+                                                    const isActive = viewingUser.status === 'Activated'; 
+                                                    const newStatus = isActive ? 'Deactivated' : 'Activated';
+                                                    if(confirm(`ยืนยันการเปลี่ยนสถานะเป็น ${newStatus}?`)) {
+                                                        const updated = {...viewingUser, status: newStatus};
+                                                        google.script.run.saveUserData(updated);
+                                                        
+                                                        // Update State
+                                                        setAllUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
+                                                        setViewingUser(updated);
+                                                        showToast(`เปลี่ยนสถานะเป็น ${newStatus} เรียบร้อย`);
+                                                    }
+                                                }}
+                                                className="text-xs underline cursor-pointer hover:text-gray-800"
+                                            >
+                                                เปลี่ยนสถานะ
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                             {/* Permissions Section */}
+                            <div className="mt-6 pt-6 border-t">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h4 className="font-bold text-gray-800 flex gap-2"><ShieldCheck size={18}/> สิทธิ์การใช้งานรายโครงการ</h4>
+                                    {(user?.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
+                                        <button onClick={() => { setSelectedUserForEdit(viewingUser); setShowPermissionModal(true); }} className="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded hover:bg-gray-200 border">
+                                            จัดการสิทธิ์ละเอียด
                                         </button>
                                     )}
-                                    <button onClick={() => { setSelectedUserForEdit(viewingUser); setShowPermissionModal(true); }} className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-bold">จัดการสิทธิ์การใช้งาน</button>
                                 </div>
-                            )}
-                             {/* Permissions */}
-                            <div className="mt-6 pt-6 border-t">
-                                <h4 className="font-bold text-gray-800 mb-4 flex gap-2"><ShieldCheck size={18}/> สิทธิ์การใช้งานรายโครงการ</h4>
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
                                      {viewingUser.permissions && Object.entries(viewingUser.permissions)
                                         .filter(([p]) => p && p !== 'undefined' && p !== 'null' && p.trim() !== '')
                                         .map(([project, perms]) => (
-                                            <div key={project} className="border p-3 rounded bg-gray-50 hover:bg-blue-50 transition-colors">
+                                            <div key={project} className="border p-3 rounded bg-gray-50">
                                                 <div className="font-bold text-blue-700 mb-2 flex items-center gap-2"><Building size={14}/> {project}</div>
-                                                <div className="flex flex-wrap gap-1">{perms.map(id => <span key={id} className="text-[10px] bg-white border px-1 rounded">{PERMISSIONS[id]}</span>)}</div>
+                                                <div className="flex flex-wrap gap-1">{perms.map(id => <span key={id} className="text-[10px] bg-white border px-1.5 py-0.5 rounded text-gray-600">{PERMISSIONS[id]}</span>)}</div>
                                             </div>
                                      ))}
+                                     {(!viewingUser.permissions || Object.keys(viewingUser.permissions).length === 0) && (
+                                         <div className="col-span-2 text-center text-gray-400 text-sm py-4 border border-dashed rounded">ไม่มีสิทธิ์ในโครงการใดๆ</div>
+                                     )}
                                 </div>
                             </div>
                         </div>
