@@ -2861,7 +2861,9 @@ needApproval: req.isPreviouslyApproved ? false : !hasEmail,
     setShowVerificationModal(true);
 };
 
- // --- UPDATED CONFIRM VERIFICATION (Fix: Log User Name) ---
+// [ค้นหาฟังก์ชัน handleConfirmVerification เดิม แล้วแทนที่ด้วยโค้ดนี้]
+
+// --- UPDATED CONFIRM VERIFICATION (Fix: Call saveRequestToSheet to trigger email) ---
 const handleConfirmVerification = () => {
     const { requestId, needApproval, needContract, note, checks, filesExist, isChangeMode } = verificationData;
     const req = requests.find(r => r.id === requestId);
@@ -2869,6 +2871,10 @@ const handleConfirmVerification = () => {
 
     // ⭐ สร้างตัวแปรระบุชื่อคนทำรายการ (User ปัจจุบัน)
     const actionBy = user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole;
+    
+    let updatedReq = null;
+    let toastMessage = '';
+    let toastType = 'success';
 
     // 1. กรณีไม่ผ่าน -> ส่งคืนแก้ไข (Revise Needed)
     if (!isVerificationPass()) {
@@ -2879,59 +2885,68 @@ const handleConfirmVerification = () => {
          
          const combinedNote = `สิ่งที่ต้องแก้ไข: ${failureReasons.join(', ')} ${note ? `(เพิ่มเติม: ${note})` : ''}`;
          
-         setRequests(prev => prev.map(r => r.id === requestId ? { 
-             ...r, 
-             type: isChangeMode ? 'HO' : r.type,
+         updatedReq = { 
+             ...req, 
+             type: isChangeMode ? 'HO' : req.type,
              status: 'Revise Needed', 
-             isPreviouslyApproved: isChangeMode ? true : (r.isPreviouslyApproved || false),
-             // ⭐ ใช้ actionBy แทน currentUserRole
-             history: [...r.history, createLog(isChangeMode ? 'Change to HO (Revise)' : 'Return for Revision', actionBy, combinedNote)] 
-         } : r));
-         showToast('ส่งคืนเอกสารให้ผู้ขอแก้ไขเรียบร้อย', 'error');
+             isPreviouslyApproved: isChangeMode ? true : (req.isPreviouslyApproved || false),
+             history: [...req.history, createLog(isChangeMode ? 'Change to HO (Revise)' : 'Return for Revision', actionBy, combinedNote)] 
+         };
+         toastMessage = 'ส่งคืนเอกสารให้ผู้ขอแก้ไขเรียบร้อย';
+         toastType = 'error';
     } 
     // 2. กรณีผ่าน (Pass)
     else {
          if (isChangeMode) {
-             setRequests(prev => prev.map(r => r.id === requestId ? { 
-                 ...r, 
+             updatedReq = { 
+                 ...req, 
                  type: 'HO', 
                  status: 'Approved', 
                  purchaseType: 'Buy', 
                  needContract: needContract,
-                 // ⭐ ใช้ actionBy แทน currentUserRole
-                 history: [...r.history, createLog('Change to HO (Verified)', actionBy, `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว: ${note}`)] 
-             } : r));
-             showToast('เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว (รอออก PR)');
+                 history: [...req.history, createLog('Change to HO (Verified)', actionBy, `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว: ${note}`)] 
+             };
+             toastMessage = 'เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว (รอออก PR)';
          }
          else if (needApproval) {
-             setRequests(prev => prev.map(r => r.id === requestId ? { 
-                 ...r, 
+             // ⭐⭐ กรณีนี้คือ Full Flow -> ต้องบันทึกเพื่อให้ syncRequest ทำงานและส่งเมล ⭐⭐
+             updatedReq = { 
+                 ...req, 
                  status: 'Pending Head', 
                  isFullApprovalFlow: true, 
                  needContract: needContract, 
-                 // ⭐ ใช้ actionBy แทน currentUserRole
-                 history: [...r.history, createLog('Forward for Approval', actionBy, `ส่งต่ออนุมัติ: ${note}`)] 
-             } : r));
-             showToast('ส่งต่อให้หัวหน้าแผนกอนุมัติเรียบร้อย');
+                 history: [...req.history, createLog('Forward for Approval', actionBy, `ส่งต่ออนุมัติ: ${note}`)] 
+             };
+             toastMessage = 'ส่งต่อให้หัวหน้าแผนกอนุมัติเรียบร้อย';
          } 
          else {
-             setRequests(prev => {
-                 const count = getNextDocIndex(prev, req.type, req.purchaseType);
-                 const newDocId = req.docNumber || generateDocId(req.type, count, req.purchaseType);
-                 return prev.map(r => r.id === requestId ? { 
-                     ...r, 
-                     status: 'Approved', 
-                     needContract: needContract, 
-                     docNumber: newDocId, 
-                     // ⭐ ใช้ actionBy แทน currentUserRole
-                     history: [...r.history, createLog('Pass Verification', actionBy, `ตรวจสอบผ่าน: ${note}`)] 
-                 } : r);
-             });
-             showToast('ตรวจสอบผ่านแล้ว รอออกใบขอซื้อ (PR)');
+             const count = getNextDocIndex(requests, req.type, req.purchaseType);
+             const newDocId = req.docNumber || generateDocId(req.type, count, req.purchaseType);
+             updatedReq = { 
+                 ...req, 
+                 status: 'Approved', 
+                 needContract: needContract, 
+                 docNumber: newDocId, 
+                 history: [...req.history, createLog('Pass Verification', actionBy, `ตรวจสอบผ่าน: ${note}`)] 
+             };
+             toastMessage = 'ตรวจสอบผ่านแล้ว รอออกใบขอซื้อ (PR)';
          }
     }
+
+    // ⭐ ดำเนินการบันทึกและอัปเดต State
+    if (updatedReq) {
+        // 1. เรียก Backend เพื่อบันทึกและส่งเมล (สำคัญมากสำหรับ Pending Head)
+        saveRequestToSheet(updatedReq);
+        
+        // 2. อัปเดตหน้าจอทันที
+        setRequests(prev => prev.map(r => r.id === requestId ? updatedReq : r));
+        showToast(toastMessage, toastType);
+    }
+
     setShowVerificationModal(false);
 };
+
+
       const handleChecklistChange = (field) => {
           setVerificationData(prev => ({...prev, checks: {...prev.checks, [field]: !prev.checks[field]}}));
       };
