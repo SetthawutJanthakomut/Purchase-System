@@ -34,21 +34,24 @@
     // สร้าง Component รอไว้เลย ไม่ต้องรอ Library โหลดเสร็จ ป้องกัน Error 100%
     // =================================================================
     
-    // รายชื่อไอคอนทั้งหมดที่ใช้ในแอปนี้
 // รายชื่อไอคอนทั้งหมดที่ใช้ในแอปนี้
     const USED_ICONS = [
       'LayoutDashboard', 'Plus', 'Package', 'CheckCircle', 'Clock', 
       'FileText', 'Search', 'User', 'LogOut', 'ChevronRight', 
       'ShoppingCart', 'Truck', 'AlertCircle', 'Paperclip',
       'HardHat', 'Briefcase', 'Building', 'ShieldCheck', 'BadgeCheck',
-      'UploadCloud', 'FileCheck', 'Sparkles', 'X', 'MessageSquare', 'History', 'Store', 'Mail', 'Trash2', 'FileInput',
-      'Save', 'Edit', 'RotateCcw', 'Send', 'AlertTriangle', 'Bell', 'Pencil', 'Box', 'Filter', 'RefreshCw', 'ArrowRight', 'List', 'ClipboardList', 'ArrowLeftRight', 'Monitor', 'Smartphone', 'Tag', 'Wrench', 'ArrowUpDown', 'Download', 
+      'UploadCloud', 'FileCheck', 'Sparkles', 'X', 'MessageSquare', 'History', 
+      'Store', 'Mail', 'Trash2', 'FileInput',
+      'Save', 'Edit', 'RotateCcw', 'Send', 'AlertTriangle', 'Bell', 'Pencil', 'Box', 'Filter', 'RefreshCw', 'ArrowRight', 'List', 'ClipboardList', 'ArrowLeftRight', 
+      'Monitor', 'Smartphone', 'Tag', 'Wrench', 'ArrowUpDown', 'Download', 
       'Image', // Alias: ImageIcon
       'Eye', 'XCircle', 'Camera', 
       'Info', 
       'Printer', 'CornerUpLeft', 'CheckSquare', 'XSquare', 'ExternalLink', 'PlayCircle', 'ArrowUpRight', 'PenTool', 'FileSignature', 'Calendar', 'CalendarClock', 'CreditCard', 'Flame', 'MousePointerClick',
       'Upload',
-      'Settings' 
+      'Settings',
+      'Lock',
+       EyeOff// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
     ];
     const lucideReact = {};
     // --- PERMISSION CONSTANTS ---
@@ -142,7 +145,7 @@ const {
       Briefcase: BriefcaseIcon, 
       Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
       Upload,
-      Settings,Lock // ⭐ เพิ่มตรงนี้ครับ
+      Settings,Lock,EyeOff // ⭐ เพิ่มตรงนี้ครับ
     } = lucideReact;
 
     // Manual Aliasing for missing/renamed icons
@@ -398,15 +401,61 @@ const hasPermission = (permId, project = globalProjectFilter) => {
       };
 
 
-// --- AUTH SCREEN (Login / Register) ---
-    const AuthScreen = ({ onLoginSuccess }) => {
-        const [view, setView] = useState('login'); // 'login' | 'register'
+// --- AUTH SCREEN (Full Features: Login, Register, Forgot Password, Forgot Username) ---
+    const AuthScreen = ({ onLoginSuccess, requests = [] }) => {
+        // view state: 'login' | 'register' | 'forgot' | 'forgotUser'
+        const [view, setView] = useState('login'); 
         const [loading, setLoading] = useState(false);
+        
+        // State สำหรับ OTP (Register/Forgot Password)
+        const [otpSent, setOtpSent] = useState(false);
+        const [refCode, setRefCode] = useState('');
+        const [countdown, setCountdown] = useState(0);
+        
+        // State สำหรับ UI
+        const [rememberMe, setRememberMe] = useState(false);
+        const [showPassword, setShowPassword] = useState(false);
+
         const [formData, setFormData] = useState({
-            username: '', password: '', email: '', empId: '', firstName: '', lastName: ''
+            username: '', password: '', confirmPassword: '', email: '', empId: '', firstName: '', lastName: '', otp: '', newPassword: ''
         });
 
+        // --- Auto Fill Check ---
+        useEffect(() => {
+            const savedCreds = localStorage.getItem('purchaseHubCreds');
+            if (savedCreds) {
+                try {
+                    const creds = JSON.parse(savedCreds);
+                    if (creds.username && creds.password) {
+                        setFormData(prev => ({ ...prev, username: creds.username, password: creds.password }));
+                        setRememberMe(true);
+                    }
+                } catch (e) { localStorage.removeItem('purchaseHubCreds'); }
+            }
+        }, []);
+
+        // --- Countdown Timer ---
+        useEffect(() => {
+            let timer;
+            if (countdown > 0) timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+            return () => clearTimeout(timer);
+        }, [countdown]);
+
+        // Stats Logic
+        const stats = useMemo(() => {
+            const active = requests.filter(r => r.status !== 'Draft');
+            return {
+                pending: active.filter(r => r.status.includes('Pending') || r.status === 'PR Issued' || r.status === 'Approved' || r.status === 'Revise Needed' || r.status === 'Contract Pending').length,
+                processing: active.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received'].includes(r.status)).length,
+                ready: active.filter(r => r.status === 'Ready to Disburse').length,
+                completed: active.filter(r => r.status === 'Completed' || r.status === 'Returned').length
+            };
+        }, [requests]);
+
         const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+        const validatePassword = (pwd) => pwd.length >= 6 && /[a-zA-Z]/.test(pwd) && /[0-9]/.test(pwd);
+
+        // --- Actions ---
 
         const handleLogin = (e) => {
             e.preventDefault();
@@ -414,76 +463,270 @@ const hasPermission = (permId, project = globalProjectFilter) => {
             google.script.run.withSuccessHandler((res) => {
                 setLoading(false);
                 if (res.success) {
+                    if (rememberMe) {
+                        localStorage.setItem('purchaseHubCreds', JSON.stringify({ username: formData.username, password: formData.password }));
+                    } else {
+                        localStorage.removeItem('purchaseHubCreds');
+                    }
                     onLoginSuccess(res.user);
-                } else {
-                    alert(res.message);
-                }
+                } else { alert(res.message); }
             }).loginUser(formData.username, formData.password);
         };
 
-        const handleRegister = (e) => {
-            e.preventDefault();
-            if(!formData.username || !formData.password || !formData.firstName) {
-                alert('กรุณากรอกข้อมูลให้ครบ'); return;
-            }
+        const handleRegisterRequestOTP = () => {
+            if(!formData.username || !formData.password || !formData.email) { alert('กรุณากรอกข้อมูลให้ครบ'); return; }
+            if (!validatePassword(formData.password)) { alert('รหัสผ่านต้องมี 6 ตัวขึ้นไป (ตัวอักษร+ตัวเลข)'); return; }
+            if (formData.password !== formData.confirmPassword) { alert('รหัสผ่านไม่ตรงกัน'); return; }
+
             setLoading(true);
             google.script.run.withSuccessHandler((res) => {
                 setLoading(false);
                 if (res.success) {
-                    alert('ลงทะเบียนสำเร็จ! กรุณาเข้าสู่ระบบ');
-                    setView('login');
-                    setFormData({ ...formData, password: '' });
-                } else {
+                    alert(`${res.message}\nRef: ${res.refCode}`);
+                    setOtpSent(true); setRefCode(res.refCode); setCountdown(15);
+                } else { alert(res.message); }
+            }).sendRegistrationOTP(formData.email, formData.username);
+        };
+
+        const handleRegisterConfirm = (e) => {
+            e.preventDefault();
+            setLoading(true);
+            google.script.run.withSuccessHandler((res) => {
+                setLoading(false);
+                if (res.success) {
+                    alert('ลงทะเบียนสำเร็จ!');
+                    setView('login'); setOtpSent(false); setFormData({...formData, password:'', confirmPassword:'', otp:''});
+                } else { alert(res.message); }
+            }).registerUser(formData, formData.otp);
+        };
+
+        const handleForgotRequestOTP = () => {
+            if(!formData.email) { alert('กรุณาระบุอีเมล'); return; }
+            setLoading(true);
+            google.script.run.withSuccessHandler((res) => {
+                setLoading(false);
+                if (res.success) {
+                    alert(`${res.message}\nRef: ${res.refCode}`);
+                    setOtpSent(true); setRefCode(res.refCode); setCountdown(15);
+                } else { alert(res.message); }
+            }).sendForgotPasswordOTP(formData.email);
+        };
+
+        const handleResetPassword = (e) => {
+            e.preventDefault();
+            if(!formData.otp || !formData.newPassword) { alert('กรุณากรอกข้อมูลให้ครบ'); return; }
+            if (!validatePassword(formData.newPassword)) { alert('รหัสผ่านใหม่ต้องมี 6 ตัวขึ้นไป (ตัวอักษร+ตัวเลข)'); return; }
+            if (formData.newPassword !== formData.confirmPassword) { alert('รหัสผ่านยืนยันไม่ตรงกัน'); return; }
+
+            setLoading(true);
+            google.script.run.withSuccessHandler((res) => {
+                setLoading(false);
+                if (res.success) {
                     alert(res.message);
+                    setView('login'); setOtpSent(false); setFormData({...formData, email:'', otp:'', newPassword:'', confirmPassword:''});
+                } else { alert(res.message); }
+            }).resetPassword(formData.email, formData.otp, formData.newPassword);
+        };
+
+        // ⭐ ฟังก์ชันกู้คืนชื่อผู้ใช้งาน
+        const handleRecoverUsername = (e) => {
+            e.preventDefault();
+            if(!formData.email) { alert('กรุณาระบุอีเมล'); return; }
+            setLoading(true);
+            google.script.run.withSuccessHandler((res) => {
+                setLoading(false);
+                alert(res.message);
+                if (res.success) {
+                    setView('login');
+                    setFormData({...formData, email:''});
                 }
-            }).registerUser(formData);
+            }).sendUsernameToEmail(formData.email);
         };
 
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4 font-sans">
-                <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md animate-in fade-in slide-in-from-bottom-4">
-                    <div className="text-center mb-6">
-                        <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 text-blue-600 rounded-full mb-4">
-                            <Package className="w-8 h-8" />
-                        </div>
-                        <h1 className="text-2xl font-bold text-gray-800">PurchaseHub System</h1>
-                        <p className="text-gray-500 text-sm mt-1">{view === 'login' ? 'เข้าสู่ระบบเพื่อใช้งาน' : 'ลงทะเบียนผู้ใช้งานใหม่'}</p>
+            <div className="min-h-screen flex bg-white font-sans overflow-hidden">
+                {/* LEFT SIDE (Dashboard) */}
+                <div className="hidden lg:flex w-7/12 bg-slate-50 relative flex-col justify-between p-10 overflow-hidden">
+                    <div className="absolute top-0 right-0 w-96 h-96 bg-blue-100 rounded-full blur-3xl opacity-50 -mr-20 -mt-20"></div>
+                    <div className="absolute bottom-0 left-0 w-full h-64 bg-gradient-to-t from-white to-transparent z-10"></div>
+                    <div className="absolute bottom-0 left-0 w-full h-1/2 bg-[url('https://img.freepik.com/free-vector/city-skyline-concept-illustration_114360-8923.jpg?w=1380')] bg-contain bg-bottom bg-no-repeat opacity-20 pointer-events-none mix-blend-multiply"></div>
+
+                    <div className="relative z-20">
+                        <h1 className="text-4xl font-extrabold text-slate-800 mb-2">ภาพรวม</h1>
+                        <p className="text-slate-500 text-lg">"ระบบบริหารจัดการงานจัดซื้อและคลังสินค้า ครบวงจร ใช้งานง่าย โปร่งใส ตรวจสอบได้"</p>
                     </div>
 
-                    <form onSubmit={view === 'login' ? handleLogin : handleRegister} className="space-y-4">
-                        {view === 'register' && (
-                            <>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <input name="firstName" placeholder="ชื่อ" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
-                                    <input name="lastName" placeholder="นามสกุล" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
+                    <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 relative z-20 mt-8">
+                        <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-amber-600 group-hover:scale-110 transition-transform"><Clock size={24} strokeWidth={2}/></div></div>
+                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.pending}</div>
+                            <p className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded w-fit">รออนุมัติ/ตรวจสอบ</p>
+                        </div>
+                        <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-blue-600 group-hover:scale-110 transition-transform"><Truck size={24} strokeWidth={2}/></div></div>
+                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.processing}</div>
+                            <p className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded w-fit">กำลังดำเนินการ</p>
+                        </div>
+                        <div className="bg-purple-50 border border-purple-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-purple-600 group-hover:scale-110 transition-transform"><Package size={24} strokeWidth={2}/></div></div>
+                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.ready}</div>
+                            <p className="text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-1 rounded w-fit">รอจ่ายของ/เบิก</p>
+                        </div>
+                        <div className="bg-green-50 border border-green-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-green-600 group-hover:scale-110 transition-transform"><CheckCircle size={24} strokeWidth={2}/></div></div>
+                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.completed}</div>
+                            <p className="text-[10px] font-bold text-green-700 bg-green-100 px-2 py-1 rounded w-fit">เสร็จสิ้น/รับของแล้ว</p>
+                        </div>
+                    </div>
+
+                    <div className="relative z-20 mt-6 bg-white/90 backdrop-blur-sm p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4 max-w-2xl">
+                        <div className="p-3 bg-indigo-100 text-indigo-700 rounded-xl"><Sparkles size={24}/></div>
+                        <div>
+                            <h3 className="font-bold text-slate-800 text-base">ยินดีต้อนรับสู่ PurchaseHub!</h3>
+                            <p className="text-xs text-slate-500 mt-0.5">พบกับโมเดลใหม่ในการจัดการ การเบิก/ยืม และแผนติดตามงานแบบ Real-time</p>
+                            <div className="flex gap-2 mt-2">
+                                <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded border">**** Papers</span>
+                                <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded border">System Online</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex-1"></div>
+                </div>
+
+                {/* RIGHT SIDE (Forms) */}
+                <div className="w-full lg:w-5/12 flex flex-col justify-center items-center p-8 bg-white relative shadow-2xl z-30 overflow-y-auto">
+                    <div className="w-full max-w-md my-auto">
+                        <div className="mb-8 flex flex-col items-center text-center">
+                            <img src="https://www.appsheet.com/template/gettablefileurl?appName=ImageURL-701958446&tableName=URL&fileName=URL_Images%2F01-17-2026%2010-30-07.Photo.033012.png" 
+                                alt="Logo" className="h-32 lg:h-48 w-auto object-contain mb-4 drop-shadow-sm hover:scale-105 transition-transform duration-500" 
+                                onError={(e)=>{e.target.onerror=null;e.target.style.display='none'}}/>
+                            <h2 className="text-2xl font-bold text-slate-800">PurchaseHub System</h2>
+                            <p className="text-slate-500 text-sm mt-1">
+                                {view === 'login' && 'เข้าสู่ระบบเพื่อจัดการข้อมูล'}
+                                {view === 'register' && 'ลงทะเบียนผู้ใช้งานใหม่'}
+                                {view === 'forgot' && 'กู้คืนรหัสผ่าน (Reset Password)'}
+                                {view === 'forgotUser' && 'กู้คืนชื่อผู้ใช้งาน (Forgot Username)'}
+                            </p>
+                        </div>
+
+                        {/* --- LOGIN FORM --- */}
+                        {view === 'login' && (
+                            <form onSubmit={handleLogin} className="space-y-4">
+                                <div><label className="text-xs font-bold text-slate-500 flex items-center gap-1"><User size={12}/> ชื่อผู้ใช้งาน</label><input name="username" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all" value={formData.username} onChange={handleChange} /></div>
+                                
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500 flex items-center gap-1"><Lock size={12}/> รหัสผ่าน</label>
+                                    <div className="relative">
+                                        <input name="password" type={showPassword ? "text" : "password"} required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all pr-10" value={formData.password} onChange={handleChange} />
+                                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" tabIndex="-1">
+                                            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                        </button>
+                                    </div>
                                 </div>
-                                <input name="empId" placeholder="รหัสพนักงาน" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
-                                <input name="email" type="email" placeholder="อีเมล" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
-                            </>
-                        )}
-                        
-                        <input name="username" placeholder="Username" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
-                        <input name="password" type="password" placeholder="Password" required className="p-3 border rounded-lg w-full text-sm outline-none focus:ring-2 focus:ring-blue-500" onChange={handleChange} />
 
-                        <button type="submit" disabled={loading} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-lg transition-transform active:scale-95 flex justify-center gap-2">
-                            {loading ? 'กำลังโหลด...' : (view === 'login' ? 'เข้าสู่ระบบ' : 'ลงทะเบียน')}
-                        </button>
-                    </form>
-
-                    <div className="mt-6 text-center border-t pt-4">
-                        {view === 'login' ? (
-                            <p className="text-sm text-gray-600">ยังไม่มีบัญชี? <button onClick={() => setView('register')} className="text-blue-600 font-bold hover:underline">ลงทะเบียน</button></p>
-                        ) : (
-                            <p className="text-sm text-gray-600">มีบัญชีแล้ว? <button onClick={() => setView('login')} className="text-blue-600 font-bold hover:underline">กลับไปหน้า Login</button></p>
+                                <div className="flex justify-between items-center">
+                                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                                        <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
+                                        <span className="text-xs text-slate-500 font-medium">จดจำฉันไว้</span>
+                                    </label>
+                                    
+                                    {/* ⭐ เพิ่มลิงก์ลืมชื่อผู้ใช้งาน ตรงนี้ */}
+                                    <div className="flex gap-3 text-xs font-bold">
+                                        <button type="button" onClick={() => { setView('forgotUser'); setFormData({...formData, email:''}); }} className="text-indigo-600 hover:underline">ลืมชื่อผู้ใช้?</button>
+                                        <span className="text-slate-300">|</span>
+                                        <button type="button" onClick={() => { setView('forgot'); setOtpSent(false); setFormData({...formData, email:''}); }} className="text-blue-600 hover:underline">ลืมรหัสผ่าน?</button>
+                                    </div>
+                                </div>
+                                <button type="submit" disabled={loading} className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold shadow-lg shadow-blue-200 transition-all transform active:scale-95 mt-4">{loading ? 'กำลังโหลด...' : 'เข้าสู่ระบบ'}</button>
+                            </form>
                         )}
+
+                        {/* --- REGISTER FORM --- */}
+                        {view === 'register' && (
+                            <form onSubmit={handleRegisterConfirm} className="space-y-4">
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div><label className="text-xs font-bold text-slate-500">ชื่อ</label><input name="firstName" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                    <div><label className="text-xs font-bold text-slate-500">นามสกุล</label><input name="lastName" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                </div>
+                                <div><label className="text-xs font-bold text-slate-500">รหัสพนักงาน</label><input name="empId" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                <div><label className="text-xs font-bold text-slate-500">อีเมล (รับ OTP)</label><input name="email" type="email" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                <div><label className="text-xs font-bold text-slate-500">ชื่อผู้ใช้งาน</label><input name="username" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                <div><label className="text-xs font-bold text-slate-500">รหัสผ่าน (6+ ตัวอักษร/ตัวเลข)</label><input name="password" type="password" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                {!otpSent && <div><label className="text-xs font-bold text-slate-500">ยืนยันรหัสผ่าน</label><input name="confirmPassword" type="password" required className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>}
+                                
+                                {otpSent && (
+                                    <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-center animate-in fade-in">
+                                        <p className="text-xs text-blue-600 mb-2">Ref: <b>{refCode}</b> | กรอก OTP 4 หลักที่ส่งไปอีเมล</p>
+                                        <input name="otp" type="text" maxLength="4" required className="w-32 mx-auto p-3 text-center text-xl font-bold bg-white border rounded-lg outline-none focus:ring-4 focus:ring-blue-200" placeholder="0000" onChange={handleChange} />
+                                        <div className="mt-2"><button type="button" onClick={handleRegisterRequestOTP} disabled={countdown > 0} className={`text-xs underline ${countdown>0?'text-gray-400':'text-blue-600'}`}>{countdown>0 ? `ขอใหม่ใน ${countdown} วิ` : 'ขอรหัสใหม่'}</button></div>
+                                    </div>
+                                )}
+
+                                {!otpSent ? (
+                                    <button type="button" onClick={handleRegisterRequestOTP} disabled={loading} className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-lg mt-4">{loading?'Checking...':'ขอรหัส OTP'}</button>
+                                ) : (
+                                    <div className="flex gap-2 mt-4">
+                                        <button type="button" onClick={() => setOtpSent(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold">แก้ไข</button>
+                                        <button type="submit" disabled={loading} className="flex-[2] py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold shadow-lg">{loading?'Verifying...':'ยืนยันลงทะเบียน'}</button>
+                                    </div>
+                                )}
+                            </form>
+                        )}
+
+                        {/* --- FORGOT PASSWORD FORM --- */}
+                        {view === 'forgot' && (
+                            <form onSubmit={handleResetPassword} className="space-y-4 animate-in fade-in">
+                                <div><label className="text-xs font-bold text-slate-500">อีเมลที่ลงทะเบียนไว้</label><input name="email" type="email" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                
+                                {otpSent && (
+                                    <>
+                                        <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 text-center">
+                                            <p className="text-xs text-orange-800 mb-2">Ref: <b>{refCode}</b> | กรอก OTP เพื่อตั้งรหัสใหม่</p>
+                                            <input name="otp" type="text" maxLength="4" required className="w-32 mx-auto p-3 text-center text-xl font-bold bg-white border rounded-lg outline-none focus:ring-4 focus:ring-orange-200" placeholder="0000" onChange={handleChange} />
+                                            <div className="mt-2"><button type="button" onClick={handleForgotRequestOTP} disabled={countdown > 0} className={`text-xs underline ${countdown>0?'text-gray-400':'text-orange-600'}`}>{countdown>0 ? `ขอใหม่ใน ${countdown} วิ` : 'ขอรหัสใหม่'}</button></div>
+                                        </div>
+                                        <div><label className="text-xs font-bold text-slate-500">รหัสผ่านใหม่</label><input name="newPassword" type="password" required className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                        <div><label className="text-xs font-bold text-slate-500">ยืนยันรหัสผ่านใหม่</label><input name="confirmPassword" type="password" required className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+                                    </>
+                                )}
+
+                                {!otpSent ? (
+                                    <button type="button" onClick={handleForgotRequestOTP} disabled={loading} className="w-full py-3.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-bold shadow-lg mt-4">{loading?'Sending...':'ส่งรหัส OTP'}</button>
+                                ) : (
+                                    <div className="flex gap-2 mt-4">
+                                        <button type="button" onClick={() => setOtpSent(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold">ยกเลิก</button>
+                                        <button type="submit" disabled={loading} className="flex-[2] py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold shadow-lg">{loading?'Resetting...':'เปลี่ยนรหัสผ่าน'}</button>
+                                    </div>
+                                )}
+                            </form>
+                        )}
+
+                        {/* --- ⭐ FORGOT USERNAME FORM --- */}
+                        {view === 'forgotUser' && (
+                            <form onSubmit={handleRecoverUsername} className="space-y-4 animate-in fade-in">
+                                <div className="text-center mb-6">
+                                    <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-3"><User size={24}/></div>
+                                    <p className="text-sm text-gray-600">กรุณากรอกอีเมลที่ใช้ลงทะเบียน<br/>ระบบจะส่งชื่อผู้ใช้งาน (Username) ไปให้ทางอีเมล</p>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500">อีเมล</label>
+                                    <input name="email" type="email" required className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} value={formData.email} placeholder="name@example.com"/>
+                                </div>
+                                <button type="submit" disabled={loading} className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-lg mt-2">{loading?'Sending...':'ส่งชื่อผู้ใช้งาน'}</button>
+                                <button type="button" onClick={() => setView('login')} className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold text-sm">กลับหน้าเข้าสู่ระบบ</button>
+                            </form>
+                        )}
+
+                        <div className="mt-8 text-center pb-8">
+                            {view !== 'login' && view !== 'forgotUser' && <p className="text-xs text-slate-500 mb-2">มีบัญชีอยู่แล้ว? <button onClick={() => { setView('login'); setOtpSent(false); }} className="text-blue-600 font-bold hover:underline">เข้าสู่ระบบ</button></p>}
+                            {view === 'login' && <p className="text-xs text-slate-500">ยังไม่มีบัญชี? <button onClick={() => { setView('register'); setOtpSent(false); }} className="text-blue-600 font-bold hover:underline">สมัครสมาชิก</button></p>}
+                            <div className="mt-6 flex justify-center items-center gap-2 text-[10px] text-slate-400"><ShieldCheck size={12}/> PurchaseHub System v1.0</div>
+                        </div>
                     </div>
                 </div>
             </div>
         );
     };
-      
-
-
 
       // --- LOGIC: PROJECT MANAGEMENT ---
 const handleSaveProject = () => {
@@ -3698,15 +3941,15 @@ const handleSubmitContract = async () => {
       };
 
       // --- RENDER ---
-
-      // ⭐ 2. เพิ่มการตรวจสอบ Login (วางตรงนี้ เพื่อให้ผ่าน Hooks ด้านบนให้ครบก่อน)
+// ⭐ 2. เพิ่มการตรวจสอบ Login (แก้ตรงนี้เพื่อส่ง requests ไปแสดงผลตัวเลข)
       if (!user) {
-          return <AuthScreen onLoginSuccess={(userData) => {
+          return <AuthScreen 
+            requests={requests} // ส่งข้อมูลไปคำนวณตัวเลข
+            onLoginSuccess={(userData) => {
               setUser(userData);
-              setCurrentUserRole(userData.role || ROLES.USER); // อัปเดต Role ตามข้อมูล User
+              setCurrentUserRole(userData.role || ROLES.USER); 
           }} />;
       }
-      
       
       if (isLoading) {
          return <div className="flex h-screen items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>;
