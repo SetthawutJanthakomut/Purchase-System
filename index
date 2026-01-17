@@ -1302,6 +1302,7 @@ const newUsersCount = useMemo(() => {
       const [showPOPreviewModal, setShowPOPreviewModal] = useState(false);
       const [showSelectionModal, setShowSelectionModal] = useState(false);
       const [isForceClose, setIsForceClose] = useState(false);
+      const [expandedChart, setExpandedChart] = useState(null);
       
       // Verification Modal State
       const [showVerificationModal, setShowVerificationModal] = useState(false);
@@ -3589,6 +3590,73 @@ const handleSubmitContract = async () => {
         return data;
       }, [requests, dashboardView, dashboardSearch, dashboardStatusFilter]);
 
+     // --- LOGIC: BUDGET CHART DATA PREPARATION (UPDATED) ---
+      const budgetChartData = useMemo(() => {
+          let targetProjects = projects;
+          // ถ้าเลือกเจาะจงโครงการ ก็กรองมาเฉพาะอันนั้น
+          if (globalProjectFilter !== 'All') {
+              targetProjects = projects.filter(p => p.name === globalProjectFilter);
+          }
+
+          // ฟังก์ชันคำนวณยอดใช้จริง (Used)
+          const calculateUsed = (code, type) => {
+              return requests.reduce((sum, req) => {
+                  // 1. กรองเฉพาะ Local/HO และ Project ที่อยู่ใน scope
+                  if (!['Local', 'HO'].includes(req.type)) return sum;
+                  if (globalProjectFilter !== 'All' && req.job !== globalProjectFilter) return sum;
+                  
+                  // ⭐ 2. แก้ไข Logic: คิดงบเฉพาะที่ "Completed" (รับของสำเร็จแล้ว) เท่านั้น
+                  if (req.status !== 'Completed') return sum; 
+
+                  // 3. รวมเงิน item ที่ตรงกับ code
+                  const itemTotal = req.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code)
+                      .reduce((s, i) => {
+                          // ใช้ราคาจริง (actualPrice) ถ้ามี ถ้าไม่มีใช้ unitPrice
+                          const price = i.actualPrice || i.unitPrice || 0;
+                          const duration = (req.type === 'HO' && req.purchaseType === 'Rent') ? (i.duration || 1) : 1;
+                          return s + (i.qty * price * duration);
+                      }, 0);
+                  
+                  return sum + itemTotal;
+              }, 0);
+          };
+
+          // เตรียมข้อมูล SubJob
+          const subJobData = [];
+          targetProjects.forEach(p => {
+              (p.subJobs || []).forEach(sj => {
+                  const existing = subJobData.find(x => x.code === sj.code);
+                  const used = calculateUsed(sj.code, 'SubJob');
+                  if (existing) {
+                      existing.budget += (sj.budget || 0);
+                      existing.used += used; 
+                  } else {
+                      subJobData.push({ code: sj.code, budget: sj.budget || 0, used: used });
+                  }
+              });
+          });
+
+          // เตรียมข้อมูล EP Code
+          const epCodeData = [];
+          targetProjects.forEach(p => {
+              (p.epCodes || []).forEach(ep => {
+                  const existing = epCodeData.find(x => x.code === ep.code);
+                  const used = calculateUsed(ep.code, 'EPCode');
+                  if (existing) {
+                      existing.budget += (ep.budget || 0);
+                      existing.used += used;
+                  } else {
+                      epCodeData.push({ code: ep.code, budget: ep.budget || 0, used: used });
+                  }
+              });
+          });
+
+          subJobData.sort((a,b) => a.code.localeCompare(b.code));
+          epCodeData.sort((a,b) => a.code.localeCompare(b.code));
+
+          return { subJobData, epCodeData };
+      }, [projects, requests, globalProjectFilter]);
+
 // --- HELPER: แปลง Google Drive URL เป็น Image Link ---
       const getDriveImageUrl = (src) => {
           if (!src) return null;
@@ -3776,8 +3844,156 @@ const handleSubmitContract = async () => {
     
             {/* Content */}
             <div className="flex-1 overflow-auto p-6 bg-slate-50">
-              {activeTab === 'dashboard' && (
-                <div className="space-y-6 max-w-7xl mx-auto">
+            
+            
+    {activeTab === 'dashboard' && (
+                 <div className="space-y-6 max-w-7xl mx-auto pb-20">
+                   
+                   {/* Styles */}
+                   <style>{`
+                      .custom-scrollbar::-webkit-scrollbar { height: 12px; }
+                      .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 6px; }
+                      .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 3px solid #f1f5f9; }
+                      .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+                      .chart-tooltip { z-index: 9999 !important; pointer-events: none; }
+                   `}</style>
+
+                   {/* 1. ⭐ Budget Tracking Charts (ย้ายขึ้นมาเป็นอันดับ 1) */}
+                   {dashboardView === 'Purchase' && (budgetChartData.subJobData.length > 0 || budgetChartData.epCodeData.length > 0) && (
+                       <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm animate-in fade-in">
+                           
+                           {/* Header & Summary */}
+                           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b border-gray-100 pb-4 gap-4">
+                               <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                   <div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><CreditCard className="w-5 h-5" /></div>
+                                   สรุปติดตามงบประมาณ (Budget Tracking)
+                               </h3>
+                               
+                               <div className="flex gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
+                                   {['SubJob', 'EPCode'].map(type => {
+                                       const data = type === 'SubJob' ? budgetChartData.subJobData : budgetChartData.epCodeData;
+                                       const totalBudget = data.reduce((s, i) => s + i.budget, 0);
+                                       const totalUsed = data.reduce((s, i) => s + i.used, 0);
+                                       const pct = totalBudget > 0 ? (totalUsed / totalBudget) * 100 : 0;
+                                       
+                                       if(data.length === 0) return null;
+
+                                       return (
+                                           <div key={type} className="px-3 py-1 border-r last:border-0 border-gray-300">
+                                               <div className="text-[10px] font-bold text-gray-500 uppercase flex justify-between gap-4">
+                                                   <span>{type} TOTAL</span>
+                                                   <span className={pct > 100 ? 'text-red-500' : 'text-green-600'}>{pct.toFixed(1)}%</span>
+                                               </div>
+                                               <div className="font-mono text-sm font-bold text-gray-800">
+                                                   {totalUsed.toLocaleString()} <span className="text-gray-400 text-xs font-normal">/ {totalBudget.toLocaleString()}</span>
+                                               </div>
+                                           </div>
+                                       );
+                                   })}
+                               </div>
+                           </div>
+
+                           {/* Charts Grid */}
+                           {globalProjectFilter !== 'All' ? (
+                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                                   {[
+                                       { title: 'SubJob Breakdown', data: budgetChartData.subJobData, color: 'bg-indigo-600' },
+                                       { title: 'EP Code Breakdown', data: budgetChartData.epCodeData, color: 'bg-purple-600' }
+                                   ].map((chart, cIdx) => (
+                                       <div key={cIdx} className="flex flex-col relative group/chart">
+                                           <div className="flex justify-between items-end mb-2">
+                                               <h4 className="font-bold text-gray-700 text-sm flex items-center gap-2">
+                                                   {chart.title}
+                                                   <button 
+                                                       onClick={() => setExpandedChart(chart)}
+                                                       className="bg-gray-100 text-gray-600 hover:text-blue-600 p-1.5 rounded-lg border border-gray-200 hover:bg-blue-50 transition-colors shadow-sm ml-2"
+                                                       title="ขยายเต็มจอ"
+                                                   >
+                                                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                           <polyline points="15 3 21 3 21 9"></polyline>
+                                                           <polyline points="9 21 3 21 3 15"></polyline>
+                                                           <line x1="21" y1="3" x2="14" y2="10"></line>
+                                                           <line x1="3" y1="21" x2="10" y2="14"></line>
+                                                       </svg>
+                                                   </button>
+                                               </h4>
+                                               <div className="text-[10px] text-gray-400 flex gap-2">
+                                                   <span className="flex items-center gap-1"><div className="w-2 h-2 bg-gray-300 rounded-sm"></div> งบประมาณ</span>
+                                                   <span className="flex items-center gap-1"><div className={`w-2 h-2 rounded-sm ${chart.color}`}></div> ใช้จริง</span>
+                                               </div>
+                                           </div>
+                                           
+                                           <div className="relative border-b border-l border-gray-200 bg-gray-50/30 rounded-bl-lg">
+                                               {/* Grid Lines */}
+                                               <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-30">
+                                                   <div className="border-t border-dashed border-gray-300 w-full h-full"></div>
+                                                   <div className="border-t border-dashed border-gray-300 w-full h-full"></div>
+                                               </div>
+
+                                               <div className="relative h-64 w-full flex items-end gap-6 overflow-x-auto pb-4 px-4 pt-16 custom-scrollbar">
+                                                   {chart.data.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-gray-300 text-sm">ไม่มีข้อมูล</div>}
+                                                   
+                                                   {chart.data.map((item, i) => {
+                                                       const groupMax = Math.max(...chart.data.map(d => Math.max(d.budget, d.used))) || 1;
+                                                       const budgetH = (item.budget / groupMax) * 100;
+                                                       const usedH = (item.used / groupMax) * 100;
+                                                       const percent = item.budget > 0 ? (item.used / item.budget) * 100 : 0;
+                                                       const isOver = item.used > item.budget;
+
+                                                       return (
+                                                           <div key={i} className="group relative flex flex-col justify-end items-center h-full min-w-[40px] flex-1">
+                                                               {/* Percent Label */}
+                                                               <div 
+                                                                   className="absolute text-center transition-all duration-300 z-10 w-20"
+                                                                   style={{ bottom: `${Math.max(budgetH, usedH) + 5}%` }} 
+                                                               >
+                                                                   <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shadow-sm border ${isOver ? 'text-red-600 bg-red-50 border-red-200' : 'text-gray-600 bg-white border-gray-200'}`}>
+                                                                       {percent.toFixed(0)}%
+                                                                   </span>
+                                                               </div>
+
+                                                               {/* Bar */}
+                                                               <div className="relative w-8 h-full flex items-end justify-center">
+                                                                   <div className="absolute bottom-0 w-full bg-gray-300 rounded-t-sm transition-all hover:bg-gray-400" style={{ height: `${budgetH}%`, minHeight: '4px' }}></div>
+                                                                   <div className={`absolute bottom-0 w-3/5 rounded-t-sm transition-all opacity-90 ${isOver ? 'bg-red-500' : chart.color}`} style={{ height: `${usedH}%`, minHeight: '1px' }}></div>
+                                                               </div>
+
+                                                               {/* Label */}
+                                                               <div className="mt-3 text-[10px] font-bold text-gray-500 -rotate-45 origin-top-left translate-y-2 whitespace-nowrap w-0 overflow-visible">
+                                                                   {item.code}
+                                                               </div>
+
+                                                               {/* Tooltip */}
+                                                               <div className="chart-tooltip absolute bottom-full mb-2 hidden group-hover:block">
+                                                                   <div className="bg-gray-800 text-white text-xs p-3 rounded-lg shadow-xl relative min-w-[150px] z-50">
+                                                                       <div className="font-bold text-yellow-300 mb-1 border-b border-gray-600 pb-1">{item.code}</div>
+                                                                       <div className="grid grid-cols-2 gap-x-3 text-[11px]">
+                                                                           <span className="text-gray-400">งบ:</span> <span className="text-right font-mono">{item.budget.toLocaleString()}</span>
+                                                                           <span className="text-gray-400">ใช้:</span> <span className="text-right font-mono">{item.used.toLocaleString()}</span>
+                                                                           <span className="text-gray-400">เหลือ:</span> <span className={`text-right font-mono ${item.budget - item.used < 0 ? 'text-red-400' : 'text-green-400'}`}>{(item.budget - item.used).toLocaleString()}</span>
+                                                                       </div>
+                                                                       <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                                                                   </div>
+                                                               </div>
+                                                           </div>
+                                                       );
+                                                   })}
+                                               </div>
+                                           </div>
+                                       </div>
+                                   ))}
+                               </div>
+                           ) : (
+                               <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-300 mt-6">
+                                   <CreditCard className="w-12 h-12 mx-auto mb-3 text-gray-300"/>
+                                   <p className="text-gray-500 font-medium">เลือกโครงการเฉพาะเจาะจงเพื่อดูกราฟรายละเอียด (SubJob / EP Code)</p>
+                                   <p className="text-xs text-gray-400 mt-1">(ขณะนี้เลือก: ทุกโครงการ)</p>
+                               </div>
+                           )}
+                       </div>
+                   )}
+
+                   {/* 2. ⭐ Stats Cards (ย้ายมาเป็นอันดับ 2) */}
                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                       <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Pending' ? 'ring-2 ring-amber-500 bg-amber-50' : ''}`} onClick={() => handleCardClick('Pending')}>
                           <div className="flex justify-between items-start mb-2"><div className="p-2 bg-amber-100 rounded-lg"><Clock className="w-6 h-6 text-amber-600"/></div><span className="text-2xl font-bold text-gray-800">{dashboardView === 'Purchase' ? dashboardStats.purchase.pending : dashboardStats.withdraw.pending}</span></div>
@@ -3796,35 +4012,108 @@ const handleSubmitContract = async () => {
                           <p className="text-sm text-gray-500 font-medium">เสร็จสิ้น/รับของแล้ว</p>
                       </div>
                    </div>
-                   <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-                     <div className="flex bg-gray-200 p-1 rounded-lg">
+
+                   {/* 3. ⭐ Filter Toolbar & Table (อันดับ 3) */}
+                   <div className="flex flex-col md:flex-row justify-between items-center gap-4 mt-8">
+                      <div className="flex bg-gray-200 p-1 rounded-lg">
                         <button onClick={() => setDashboardView('Purchase')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${dashboardView === 'Purchase' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><ShoppingCart className="w-4 h-4"/> งานสั่งซื้อ</button>
                         <button onClick={() => setDashboardView('Withdraw')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${dashboardView === 'Withdraw' ? 'bg-white text-pink-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><ArrowLeftRight className="w-4 h-4"/> งานเบิก/ยืม</button>
                      </div>
                      <div className="relative w-full md:w-96"><Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/><input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="ค้นหารายการ..." value={dashboardSearch} onChange={e => setDashboardSearch(e.target.value)}/></div>
                   </div>
-                  {dashboardRequests.length > 0 ? (
-                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      
+                   {/* Table */}
+                   {dashboardRequests.length > 0 ? (
+                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-10">
                           <div className="overflow-x-auto">
                               <table className="w-full text-sm text-left">
                                   <thead className="bg-gray-100 text-gray-600 font-medium border-b">
-                                      <tr><th className="px-6 py-3">ID</th><th className="px-6 py-3">เรื่อง</th><th className="px-6 py-3">ผู้ขอ</th><th className="px-6 py-3">วันที่</th><th className="px-6 py-3 text-center">สถานะ</th><th className="px-6 py-3 text-right">Action</th></tr>
+                                      <tr>
+                                          <th className="px-6 py-3">ID</th>
+                                          <th className="px-6 py-3">เรื่อง</th>
+                                          <th className="px-6 py-3">ผู้ขอ</th>
+                                          <th className="px-6 py-3">
+                                              <div className="flex items-center gap-1 cursor-pointer">
+                                                  อัปเดตล่าสุด <ArrowUpDown className="w-3 h-3 opacity-50"/>
+                                              </div>
+                                          </th>
+                                          <th className="px-6 py-3 text-center">สถานะ</th>
+                                      </tr>
                                   </thead>
                                   <tbody className="divide-y">
-                                      {dashboardRequests.slice(0, 5).map(req => (
-                                          <tr key={req.id} className="hover:bg-gray-50">
-                                              <td className="px-6 py-4 font-bold text-blue-600">{req.id}</td>
-                                              <td className="px-6 py-4">{req.items[0]?.name} <span className="text-gray-400 text-xs">+{req.items.length - 1} more</span></td>
-                                              <td className="px-6 py-4">{req.requester}</td>
-                                              <td className="px-6 py-4 text-gray-500">{req.created}</td>
-                                              <td className="px-6 py-4 text-center"><StatusBadge status={req.status} /></td>
-                                              <td className="px-6 py-4 text-right"><button onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="text-gray-400 hover:text-blue-600"><ChevronRight className="w-5 h-5"/></button></td>
-                                          </tr>
-                                      ))}
+                                      {dashboardRequests
+                                          .map(req => {
+                                              let lastUpdateStr = req.created;
+                                              let displayTime = req.created;
+                                              if (req.history && req.history.length > 0) {
+                                                  const lastLog = req.history[req.history.length - 1];
+                                                  lastUpdateStr = lastLog.date;
+                                                  displayTime = lastLog.date;
+                                              }
+                                              const parseThaiDateToTs = (dStr) => {
+                                                  if(!dStr) return 0;
+                                                  try {
+                                                      if(dStr.includes('/')) {
+                                                          const parts = dStr.split(' ');
+                                                          const dateParts = parts[0].split('/');
+                                                          const timeParts = parts[1] ? parts[1].split(':') : [0,0,0];
+                                                          let year = parseInt(dateParts[2]);
+                                                          if(year > 2400) year -= 543;
+                                                          return new Date(year, parseInt(dateParts[1])-1, parseInt(dateParts[0]), ...timeParts).getTime();
+                                                      }
+                                                      return new Date(dStr).getTime();
+                                                  } catch(e) { return 0; }
+                                              };
+                                              return { ...req, _sortTime: parseThaiDateToTs(lastUpdateStr), _displayTime: displayTime };
+                                          })
+                                          .sort((a, b) => b._sortTime - a._sortTime)
+                                          .map(req => {
+                                              const getDaysDiff = (d) => {
+                                                  if(!d) return 999;
+                                                  const diff = new Date(d) - new Date();
+                                                  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+                                              };
+                                              const daysLeft = getDaysDiff(req.dateRequired);
+                                              let alertBadge = null;
+                                              if (!['Completed', 'Rejected', 'Returned', 'Draft'].includes(req.status)) {
+                                                  if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse' };
+                                                  else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้!', color: 'bg-red-500 text-white' };
+                                                  else if (daysLeft <= 3) alertBadge = { text: 'ด่วน (3 วัน)', color: 'bg-orange-50 text-orange-600 border-orange-200' };
+                                              }
+                                              return (
+                                                  <tr 
+                                                      key={req.id} 
+                                                      className="hover:bg-blue-50 cursor-pointer transition-colors group"
+                                                      onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }}
+                                                  >
+                                                      <td className="px-6 py-4 font-bold text-blue-600 group-hover:text-blue-800 underline decoration-dotted decoration-blue-300 underline-offset-4">
+                                                          {req.id}
+                                                          <div className="flex flex-col gap-1 mt-1">
+                                                              {req.docNumber && <span className="text-[10px] text-gray-500 font-normal border px-1 rounded bg-gray-50 w-fit">{req.docNumber}</span>}
+                                                              {alertBadge && (
+                                                                  <span className={`text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 font-bold w-fit ${alertBadge.color}`}>
+                                                                      <Clock className="w-3 h-3"/> {alertBadge.text}
+                                                                  </span>
+                                                              )}
+                                                          </div>
+                                                      </td>
+                                                      <td className="px-6 py-4">
+                                                          <div className="font-bold text-gray-800">{req.items[0]?.name}</div>
+                                                          {req.items.length > 1 && <span className="text-xs text-gray-500 bg-gray-100 px-1.5 rounded">+{req.items.length - 1} รายการ</span>}
+                                                      </td>
+                                                      <td className="px-6 py-4">{req.requester}</td>
+                                                      <td className="px-6 py-4 text-gray-500 text-xs font-mono">
+                                                          <div className="font-bold text-gray-700">{req._displayTime.split(' ')[0]}</div>
+                                                          <div className="text-[10px] text-gray-400">{req._displayTime.split(' ')[1]}</div>
+                                                          {req.dateRequired && <div className="text-[10px] text-orange-400 mt-1">Due: {req.dateRequired}</div>}
+                                                      </td>
+                                                      <td className="px-6 py-4 text-center"><StatusBadge status={req.status} /></td>
+                                                  </tr>
+                                              );
+                                          })}
                                   </tbody>
                               </table>
                           </div>
-                          {dashboardRequests.length > 5 && <div className="p-3 text-center bg-gray-50 text-xs text-blue-600 cursor-pointer font-bold hover:bg-gray-100" onClick={() => setActiveTab('orders')}>ดูทั้งหมด ({dashboardRequests.length})</div>}
                       </div>
                   ) : (
                       <div className="text-center py-10 bg-white rounded-xl border border-dashed border-gray-300 text-gray-400">
@@ -3832,7 +4121,100 @@ const handleSubmitContract = async () => {
                           <p>ไม่พบรายการที่ค้นหา</p>
                       </div>
                   )}
-                </div>
+                 </div>
+              )}
+
+              {/* Expanded Chart Modal */}
+              {expandedChart && (
+                  <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in">
+                      <div className="bg-white rounded-xl shadow-2xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden">
+                          {/* Header */}
+                          <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
+                              <h3 className="font-bold text-xl text-gray-800 flex items-center gap-2">
+                                  <LayoutDashboard className="w-6 h-6 text-blue-600"/> {expandedChart.title} (Full View)
+                              </h3>
+                              <button onClick={() => setExpandedChart(null)} className="p-2 bg-white hover:bg-gray-200 rounded-full transition-colors">
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-600">
+                                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                                  </svg>
+                              </button>
+                          </div>
+
+                          <div className="flex-1 p-8 bg-white overflow-hidden flex flex-col">
+                              {/* Summary Card */}
+                              <div className="mb-6 flex justify-center">
+                                  {(() => {
+                                      const totalBudget = expandedChart.data.reduce((s, i) => s + i.budget, 0);
+                                      const totalUsed = expandedChart.data.reduce((s, i) => s + i.used, 0);
+                                      const pct = totalBudget > 0 ? (totalUsed / totalBudget) * 100 : 0;
+                                      return (
+                                          <div className="bg-blue-50 border border-blue-200 rounded-xl px-6 py-3 flex gap-8 items-center shadow-sm">
+                                              <div>
+                                                  <div className="text-xs font-bold text-gray-500 uppercase">งบประมาณ (Total Budget)</div>
+                                                  <div className="text-xl font-bold text-gray-800">{totalBudget.toLocaleString()}</div>
+                                              </div>
+                                              <div className="h-8 w-px bg-blue-200"></div>
+                                              <div>
+                                                  <div className="text-xs font-bold text-gray-500 uppercase">ใช้จริง (Total Used)</div>
+                                                  <div className="text-xl font-bold text-indigo-700">{totalUsed.toLocaleString()}</div>
+                                              </div>
+                                              <div className="h-8 w-px bg-blue-200"></div>
+                                              <div>
+                                                  <div className="text-xs font-bold text-gray-500 uppercase">% การใช้</div>
+                                                  <div className={`text-2xl font-bold ${pct > 100 ? 'text-red-600' : 'text-green-600'}`}>{pct.toFixed(2)}%</div>
+                                              </div>
+                                          </div>
+                                      );
+                                  })()}
+                              </div>
+
+                              {/* กราฟขนาดใหญ่ */}
+                              <div className="relative flex-1 border-b border-l border-gray-300 bg-gray-50/20 w-full flex items-end gap-8 overflow-x-auto pb-4 px-8 pt-16 custom-scrollbar">
+                                  {expandedChart.data.map((item, i) => {
+                                       const groupMax = Math.max(...expandedChart.data.map(d => Math.max(d.budget, d.used))) || 1;
+                                       const budgetH = (item.budget / groupMax) * 100;
+                                       const usedH = (item.used / groupMax) * 100;
+                                       const percent = item.budget > 0 ? (item.used / item.budget) * 100 : 0;
+                                       const isOver = item.used > item.budget;
+
+                                       return (
+                                           <div key={i} className="group relative flex flex-col justify-end items-center h-full min-w-[60px] flex-1">
+                                               {/* Large Percent Label */}
+                                               <div className="absolute text-center transition-all duration-300 z-10" style={{ bottom: `${Math.max(budgetH, usedH) + 2}%` }}>
+                                                   <span className={`text-sm font-bold px-2 py-1 rounded shadow border ${isOver ? 'text-red-600 bg-white border-red-200' : 'text-gray-700 bg-white border-gray-200'}`}>
+                                                       {percent.toFixed(0)}%
+                                                   </span>
+                                               </div>
+                                               
+                                               <div className="relative w-16 h-full flex items-end justify-center">
+                                                   <div className="absolute bottom-0 w-full bg-gray-300 rounded-t transition-all hover:bg-gray-400" style={{ height: `${budgetH}%` }}></div>
+                                                   <div className={`absolute bottom-0 w-3/4 rounded-t transition-all opacity-90 ${isOver ? 'bg-red-500' : expandedChart.color}`} style={{ height: `${usedH}%` }}></div>
+                                               </div>
+
+                                               <div className="mt-4 text-xs font-bold text-gray-600 -rotate-45 origin-top-left translate-y-2 whitespace-nowrap">
+                                                   {item.code}
+                                               </div>
+
+                                               {/* Tooltip Large */}
+                                               <div className="chart-tooltip absolute bottom-1/3 z-50 hidden group-hover:block">
+                                                   <div className="bg-gray-900 text-white text-sm p-4 rounded-xl shadow-2xl relative min-w-[180px]">
+                                                       <div className="font-bold text-yellow-300 text-lg mb-2 border-b border-gray-600 pb-1">{item.code}</div>
+                                                       <div className="grid grid-cols-2 gap-x-4">
+                                                           <span className="text-gray-400">งบ:</span> <span className="text-right font-mono">{item.budget.toLocaleString()}</span>
+                                                           <span className="text-gray-400">ใช้:</span> <span className="text-right font-mono">{item.used.toLocaleString()}</span>
+                                                           <span className="text-gray-400">เหลือ:</span> <span className={`text-right font-mono ${item.budget - item.used < 0 ? 'text-red-400' : 'text-green-400'}`}>{(item.budget - item.used).toLocaleString()}</span>
+                                                       </div>
+                                                       <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-gray-900"></div>
+                                                   </div>
+                                               </div>
+                                           </div>
+                                       );
+                                  })}
+                              </div>
+                          </div>
+                      </div>
+                  </div>
               )}
     
               {activeTab === 'orders' && (
