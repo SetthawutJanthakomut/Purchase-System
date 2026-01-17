@@ -1009,3 +1009,139 @@ function sendUsernameToEmail(email) {
     return { success: false, message: 'ส่งอีเมลไม่สำเร็จ: ' + e.toString() };
   }
 }
+
+// --- [เพิ่มฟังก์ชันนี้ที่ท้ายไฟล์ Code.gs] ---
+
+// ฟังก์ชันสำหรับอัปเดตชื่อผู้ทำรายการในประวัติ (Logs) เมื่อมีการเปลี่ยนชื่อ/รหัส
+function updateHistoryLogSignature(oldSignature, newSignature) {
+  console.log(`[UpdateLog] Changing from "${oldSignature}" to "${newSignature}"`);
+  
+  const sheet = getOrCreateSheet('Logs');
+  const data = sheet.getDataRange().getValues();
+  let updateCount = 0;
+  
+  // เริ่มวนลูปตั้งแต่แถวที่ 2 (index 1) เพื่อข้าม Header
+  for (let i = 1; i < data.length; i++) {
+    // data[i][1] คือคอลัมน์ JSON_Data
+    if (!data[i][1]) continue;
+    
+    try {
+      let log = JSON.parse(data[i][1]);
+      
+      // ถ้าชื่อคนทำรายการ (by) ตรงกับชื่อเก่า
+      if (log.by === oldSignature) {
+        log.by = newSignature; // เปลี่ยนเป็นชื่อใหม่
+        
+        // บันทึกกลับลงไปใน Sheet (แถว i+1 เพราะ index เริ่มที่ 0 แต่ Sheet เริ่มที่ 1)
+        sheet.getRange(i + 1, 2).setValue(JSON.stringify(log));
+        updateCount++;
+      }
+    } catch (e) {
+      console.error(`[UpdateLog] Error parsing row ${i + 1}: ${e.toString()}`);
+    }
+  }
+  
+  console.log(`[UpdateLog] Updated ${updateCount} records.`);
+  return { success: true, count: updateCount };
+}
+
+// ฟังก์ชันอัปเดตข้อมูลผู้ใช้ในทุก Sheet (Requests, Assets, Logs)
+function updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName) {
+  console.log(`[GlobalUpdate] Starting update...`);
+  console.log(`Full Sig: "${oldFullSig}" -> "${newFullSig}"`);
+  
+  // เพิ่มการรองรับรูปแบบที่มี (Email) ต่อท้าย
+  const oldEmailSig = oldFullSig + " (Email)";
+  const newEmailSig = newFullSig + " (Email)";
+
+  let logCount = 0;
+  let reqCount = 0;
+  let assetCount = 0;
+
+  // 1. อัปเดต Sheet "Logs"
+  const logSheet = getOrCreateSheet('Logs');
+  const logData = logSheet.getDataRange().getValues();
+  for (let i = 1; i < logData.length; i++) {
+    if (!logData[i][1]) continue;
+    try {
+      let log = JSON.parse(logData[i][1]);
+      let isLogChanged = false;
+
+      // เช็คแบบปกติ
+      if (log.by === oldFullSig) {
+        log.by = newFullSig;
+        isLogChanged = true;
+      } 
+      // ⭐ เช็คแบบที่มาจาก Email
+      else if (log.by === oldEmailSig) {
+        log.by = newEmailSig;
+        isLogChanged = true;
+      }
+
+      if (isLogChanged) {
+        logSheet.getRange(i + 1, 2).setValue(JSON.stringify(log));
+        logCount++;
+      }
+    } catch (e) {}
+  }
+
+  // 2. อัปเดต Sheet "Requests"
+  const reqSheet = getOrCreateSheet('Requests');
+  const reqData = reqSheet.getDataRange().getValues();
+  for (let i = 1; i < reqData.length; i++) {
+    if (!reqData[i][1]) continue;
+    try {
+      let req = JSON.parse(reqData[i][1]);
+      let isReqChanged = false;
+
+      // 2.1 แก้ชื่อผู้ขอ
+      if (req.requester === oldShortName) {
+        req.requester = newShortName;
+        isReqChanged = true;
+      }
+
+      // 2.2 แก้ประวัติในใบคำขอ (History)
+      if (req.history && req.history.length > 0) {
+        req.history.forEach(h => {
+          // เช็คแบบปกติ
+          if (h.user === oldFullSig) {
+            h.user = newFullSig;
+            isReqChanged = true;
+          }
+          // ⭐ เช็คแบบที่มาจาก Email
+          else if (h.user === oldEmailSig) {
+            h.user = newEmailSig;
+            isReqChanged = true;
+          }
+        });
+      }
+
+      if (isReqChanged) {
+        reqSheet.getRange(i + 1, 2).setValue(JSON.stringify(req));
+        reqCount++;
+      }
+    } catch (e) {}
+  }
+
+  // 3. อัปเดต Sheet "Assets" (แก้ที่ holder)
+  const assetSheet = getOrCreateSheet('Assets');
+  const assetData = assetSheet.getDataRange().getValues();
+  for (let i = 1; i < assetData.length; i++) {
+    if (!assetData[i][1]) continue;
+    try {
+      let asset = JSON.parse(assetData[i][1]);
+      
+      // เช็คทั้งแบบสั้น แบบเต็ม และแบบมี (Email)
+      if (asset.holder === oldShortName || asset.holder === oldFullSig || asset.holder === oldEmailSig) {
+        asset.holder = newShortName; 
+        assetSheet.getRange(i + 1, 2).setValue(JSON.stringify(asset));
+        assetCount++;
+      }
+    } catch (e) {}
+  }
+
+  return { 
+    success: true, 
+    message: `อัปเดตข้อมูลสำเร็จ: ประวัติ(${logCount}), เอกสาร(${reqCount}), ทรัพย์สิน(${assetCount})` 
+  };
+}
