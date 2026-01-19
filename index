@@ -1761,9 +1761,16 @@ const confirmImportAssets = async () => {
       }, [filteredRequests]);
 
 
-// --- LOGIC: Filtered Logs (Updated: Date Sorting) ---
+
+// --- LOGIC: Filtered Logs (Updated: Exclude User Mgmt from All Logs) ---
 const filteredLogs = useMemo(() => {
     let data = invLogs;
+
+    // ⭐ [เพิ่มส่วนนี้] 0. ถ้าเป็นการดูประวัติรวม (ไม่ได้เจาะจง Item) ให้ตัดเรื่อง User/Permission ออก
+    if (!viewingItem) {
+        const excludeActions = ['Edit Permissions', 'Edit Profile', 'Edit User Status', 'Register', 'Change Password'];
+        data = data.filter(l => !excludeActions.includes(l.action));
+    }
 
     // 1. กรองตาม Project (ถ้ามีการเลือก และไม่ได้ดู item เฉพาะเจาะจง)
     if (!viewingItem && globalProjectFilter !== 'All') {
@@ -1782,7 +1789,7 @@ const filteredLogs = useMemo(() => {
              data = data.filter(l => {
                  if (l.assetId === viewingItem.id) return true;
                  if (!l.assetId && l.item === viewingItem.name) {
-                     const assetOnlyActions = ['Import Assets', 'Add Asset', 'Register Asset', 'Return Asset', 'Restore Asset', 'Delete Asset'];
+                     const assetOnlyActions = ['Import Assets', 'Add Asset', 'Register Asset', 'Return Asset', 'Restore Asset', 'Delete Asset', 'Snooze Alert', 'Disable Alert', 'Enable Alert', 'Update Image'];
                      const isLogForAsset = assetOnlyActions.includes(l.action) || (l.action === 'Borrow' && isAssetView) || (l.action === 'Return' && isAssetView);
                      return isAssetView ? isLogForAsset : !isLogForAsset;
                  }
@@ -1791,15 +1798,16 @@ const filteredLogs = useMemo(() => {
          }
     }
 
+    // ... (ส่วน Search Logic, Filter Action และ Sort Logic ด้านล่างใช้โค้ดเดิมได้เลยครับ) ...
     // 3. Search Logic
     if (historySearch) {
         const lower = historySearch.toLowerCase();
         data = data.filter(l => 
-            l.action.toLowerCase().includes(lower) ||
-            l.item.toLowerCase().includes(lower) ||
-            l.by.toLowerCase().includes(lower) ||
-            l.note.toLowerCase().includes(lower) ||
-            (l.relatedRequestId && l.relatedRequestId.toLowerCase().includes(lower))
+            log.action.toLowerCase().includes(lower) ||
+            log.item.toLowerCase().includes(lower) ||
+            log.by.toLowerCase().includes(lower) ||
+            log.note.toLowerCase().includes(lower) ||
+            (log.relatedRequestId && log.relatedRequestId.toLowerCase().includes(lower))
         );
     }
 
@@ -1808,31 +1816,23 @@ const filteredLogs = useMemo(() => {
         data = data.filter(l => l.action === historyActionFilter);
     }
     
-    // ⭐ 5. Sort Logic (เพิ่มฟังก์ชันแปลงวันที่ไทย)
+    // 5. Sort Logic
     const parseLogDate = (dStr) => {
         if (!dStr) return 0;
         try {
-            // รูปแบบ: "14/1/2569 15:58:55"
             const [datePart, timePart] = dStr.split(' ');
             if (!datePart) return 0;
-            
             const [day, month, year] = datePart.split('/').map(Number);
             const [hour, min, sec] = timePart ? timePart.split(':').map(Number) : [0, 0, 0];
-            
-            // แปลงปี พ.ศ. (ถ้า > 2400) เป็น ค.ศ.
             const adYear = year > 2400 ? year - 543 : year;
-            
             return new Date(adYear, month - 1, day, hour, min, sec).getTime();
-        } catch (e) {
-            return 0;
-        }
+        } catch (e) { return 0; }
     };
 
     return [...data].sort((a, b) => {
         if (historySort.key === 'date') {
             const timeA = parseLogDate(a.date);
             const timeB = parseLogDate(b.date);
-            // Default คือ desc (มากไปน้อย = ล่าสุดขึ้นก่อน)
             return historySort.direction === 'asc' ? timeA - timeB : timeB - timeA;
         } else {
             const valA = (a[historySort.key] || '').toString().toLowerCase();
@@ -1844,7 +1844,6 @@ const filteredLogs = useMemo(() => {
     });
 
 }, [invLogs, viewingItem, historySearch, historyActionFilter, historySort, globalProjectFilter]);
-
 
 
       // --- Helper Validation Logic ---
@@ -8989,30 +8988,35 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                 )}
 
                 {/* ⭐ Tab 2: History (เฉพาะที่ User ทำเอง & ตัดการแสดง By ออก) */}
-                {userDetailTab === 'history' && (() => {
-                    // 1. System Logs: กรองเฉพาะ log.by เป็น User นี้เท่านั้น
+{userDetailTab === 'history' && (() => {
+                    // 1. System Logs: กรองเฉพาะ log.by เป็น User นี้เท่านั้น (เหมือนเดิม)
                     const systemLogs = invLogs.filter(log => 
                         log.by && (log.by.includes(viewingUser.empId) || log.by.includes(viewingUser.firstName))
                     ).map(log => ({ ...log, sourceType: 'System' }));
 
-                    // 2. Request Timeline: กรองเฉพาะขั้นตอนที่ User เป็นคนกด (h.by ตรงกับ User)
-                    const requestTimelineLogs = requests
-                        .filter(r => r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName))
-                        .flatMap(req => {
-                            return (req.history || [])
-                                .filter(h => h.by && (h.by.includes(viewingUser.empId) || h.by.includes(viewingUser.firstName))) // ⭐ กรอง History ย่อย เอาเฉพาะที่ User ทำ
-                                .map(h => ({
-                                    date: h.timestamp || h.date,
-                                    action: h.action,
-                                    by: h.by, 
-                                    item: req.docNumber,
-                                    note: h.note,
-                                    change: `Status: ${req.status}`,
-                                    relatedRequestId: req.id,
-                                    sourceType: 'Request'
-                                }));
-                        });
+// 2. Request Timeline: (แก้ไขใหม่) สแกนเอกสารทุกใบ เพื่อหาว่า User คนนี้ไปทำรายการอะไรไว้บ้าง
+                    const requestTimelineLogs = requests.flatMap(req => {
+                        // เข้าไปดูใน history ของแต่ละใบ (โดยไม่สนว่าใครเป็นเจ้าของใบงาน)
+                        return (req.history || [])
+                            .filter(h => h.user && ( // ⭐ แก้ไขจุดที่ 1: เปลี่ยนจาก h.by เป็น h.user
+                                // เช็คว่าคนทำรายการ (User) คือ User ที่กำลังดูอยู่หรือไม่
+                                h.user.includes(viewingUser.empId) || 
+                                h.user.includes(viewingUser.firstName)
+                            )) 
+                            .map(h => ({
+                                date: h.timestamp || h.date,
+                                action: h.action,
+                                by: h.user, // ⭐ แก้ไขจุดที่ 2: แมพค่า h.user ใส่ตัวแปร by (เพื่อให้ตารางแสดงผลได้)
+                                // แสดงเลขที่เอกสาร + ชื่อสินค้าตัวแรก
+                                item: req.docNumber ? `${req.docNumber} (${req.items[0]?.name})` : `${req.id} (${req.items[0]?.name})`,
+                                note: h.note,
+                                change: `Status: ${req.status}`,
+                                relatedRequestId: req.id,
+                                sourceType: 'Request'
+                            }));
+                    });
 
+                    // รวมข้อมูล + กรอง Search + เรียงลำดับ (เหมือนเดิม)
                     const allUserLogs = [...systemLogs, ...requestTimelineLogs]
                         .filter(log => 
                             log.action?.toLowerCase().includes(detailSearch.toLowerCase()) ||
@@ -9103,58 +9107,116 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     );
                 })()}
 
-                {/* Tab 3: Purchase (Update layout to match) */}
+               {/* ⭐ Tab 3: Purchase (ปรับปรุง: แสดงเฉพาะ Local/HO ที่จบงานแล้ว + คำนวณราคาจริง) */}
                 {userDetailTab === 'purchase' && (() => {
-                     // ... (Logic การคำนวณเดิม) ...
-                     const purchaseHistory = requests.filter(r => 
+                    // 1. กรองข้อมูล: เป็นของ User นี้ + เป็น Local/HO + จบงานแล้ว (Completed)
+                    const purchaseRequests = requests.filter(r => 
                         (r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName)) && 
-                        r.status === 'Received' && 
+                        ['Local', 'HO'].includes(r.type) &&
+                        (r.status === 'Completed' || r.status === 'Received') && 
                         (r.docNumber?.toLowerCase().includes(detailSearch.toLowerCase()) || r.items.some(i => i.name.toLowerCase().includes(detailSearch.toLowerCase())))
-                    ).sort((a, b) => {
-                         const getDate = (req) => { const rxLog = req.history?.find(h => h.action === 'Receive Items'); return rxLog ? new Date(rxLog.timestamp).getTime() : new Date(req.date).getTime(); };
-                         return getDate(b) - getDate(a);
+                    );
+
+                    // 2. แตกรายการสินค้า (Flatten) & คำนวณยอด
+                    let grandTotal = 0;
+                    const tableRows = [];
+
+                    purchaseRequests.forEach(req => {
+                        // หาวันที่รับของล่าสุดจากประวัติ (Completed/Receive)
+                        const lastLog = req.history?.slice().reverse().find(h => 
+                            h.action === 'Completed' || h.action.includes('Receive')
+                        );
+                        // ถ้าไม่มีให้ใช้วันที่สร้างเอกสารแทน
+                        const displayDate = lastLog ? (lastLog.timestamp || lastLog.date) : req.created;
+
+                        req.items.forEach(item => {
+                            // ⭐ ราคา: ใช้ราคาที่รับจริง (actualPrice) ถ้าไม่มีให้ใช้ราคาตั้งต้น (unitPrice)
+                            const price = item.actualPrice || item.unitPrice || 0;
+                            // จำนวน: ใช้จำนวนที่รับจริง (receivedTotal) หรือจำนวนเต็มถ้าจบงานแล้ว
+                            const qty = item.receivedTotal || item.qty || 0;
+                            const total = price * qty;
+                            
+                            grandTotal += total;
+
+                            tableRows.push({
+                                rawDate: displayDate,
+                                docNumber: req.docNumber || req.id,
+                                reqId: req.id,
+                                name: item.name,
+                                price: price,
+                                qty: qty,
+                                unit: item.unit,
+                                total: total
+                            });
+                        });
                     });
-                    
+
+                    // เรียงลำดับตามวันที่ (ล่าสุดขึ้นก่อน)
+                    // (ฟังก์ชัน parseThaiDate มีอยู่ใน scope ของ App อยู่แล้ว)
+                    tableRows.sort((a, b) => {
+                        const timeA = parseThaiDate(a.rawDate)?.getTime() || 0;
+                        const timeB = parseThaiDate(b.rawDate)?.getTime() || 0;
+                        return timeB - timeA;
+                    });
+
                     return (
-                        <div className="w-full">
-                             <table className="w-full text-sm text-left border-collapse">
-                                <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs sticky top-0 z-20 shadow-sm">
-                                    <tr>
-                                        <th className="p-4 w-32 bg-gray-100">วันที่รับของ</th>
-                                        <th className="p-4 w-40 bg-gray-100">เลขที่เอกสาร</th>
-                                        <th className="p-4 min-w-[200px] bg-gray-100">รายการสินค้า</th>
-                                        <th className="p-4 text-right bg-gray-100">ราคา/หน่วย</th>
-                                        <th className="p-4 text-right bg-gray-100">จำนวน</th>
-                                        <th className="p-4 text-right w-32 bg-gray-100">รวม (บาท)</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y bg-white">
-                                    {purchaseHistory.length > 0 ? purchaseHistory.map(req => (
-                                        req.items.map((item, idx) => {
-                                            const itemTotal = parseFloat(item.qty || 0) * parseFloat(item.price || 0);
-                                            const rxDate = req.history?.find(h => h.action === 'Receive Items')?.timestamp?.split(' ')[0] || req.date;
-                                            return (
-                                                <tr key={`${req.id}-${idx}`} className="hover:bg-green-50/30 transition-colors">
-                                                    {idx === 0 ? (
-                                                        <>
-                                                            <td rowSpan={req.items.length} className="p-4 text-gray-500 whitespace-nowrap align-top border-r">{rxDate}</td>
-                                                            <td rowSpan={req.items.length} className="p-4 align-top border-r">
-                                                                <button onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="font-medium text-blue-600 hover:underline bg-blue-50 px-2 py-0.5 rounded border border-blue-100 text-xs">{req.docNumber}</button>
-                                                            </td>
-                                                        </>
-                                                    ) : null}
-                                                    <td className="p-4 text-gray-700">{item.name}</td>
-                                                    <td className="p-4 text-right text-gray-600 font-mono">{parseFloat(item.price || 0).toLocaleString()}</td>
-                                                    <td className="p-4 text-right text-gray-600">{parseFloat(item.qty || 0).toLocaleString()} {item.unit}</td>
-                                                    <td className="p-4 text-right font-bold text-gray-800 bg-gray-50/50">{itemTotal.toLocaleString()}</td>
-                                                </tr>
-                                            );
-                                        })
-                                    )) : <tr><td colSpan="6" className="p-10 text-center text-gray-400">ไม่พบรายการที่ปิดงานแล้ว</td></tr>}
-                                </tbody>
-                             </table>
+                        <div className="p-6 space-y-4">
+                            {/* การ์ดแสดงยอดรวมทั้งหมด */}
+                            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex justify-between items-center shadow-sm">
+                                <div className="flex items-center gap-2 text-blue-800 font-bold">
+                                    <div className="bg-white p-2 rounded-lg text-blue-600"><ShoppingCart className="w-5 h-5"/></div>
+                                    สรุปยอดซื้อที่รับของแล้ว (Grand Total)
+                                </div>
+                                <div className="text-2xl font-bold text-blue-700">
+                                    {grandTotal.toLocaleString()} <span className="text-sm font-normal text-gray-500">บาท</span>
+                                </div>
+                            </div>
+
+                            {/* ตารางรายการ */}
+                            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+                                <table className="w-full text-sm text-left border-collapse">
+                                    <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs sticky top-0 z-20 shadow-sm">
+                                        <tr>
+                                            <th className="p-4 w-32 bg-gray-100">วันที่รับของ</th>
+                                            <th className="p-4 w-32 bg-gray-100">เลขที่เอกสาร</th>
+                                            <th className="p-4 min-w-[200px] bg-gray-100">รายการสินค้า</th>
+                                            <th className="p-4 text-right bg-gray-100">ราคา/หน่วย</th>
+                                            <th className="p-4 text-center bg-gray-100">จำนวน</th>
+                                            <th className="p-4 text-right w-32 bg-gray-100">รวม (บาท)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y bg-white">
+                                        {tableRows.length > 0 ? tableRows.map((row, idx) => (
+                                            <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                                                <td className="p-4 text-gray-500 whitespace-nowrap align-top text-xs font-mono">{row.rawDate}</td>
+                                                <td className="p-4 align-top">
+                                                    <button 
+                                                        onClick={() => {
+                                                            const targetReq = requests.find(r => r.id === row.reqId);
+                                                            if(targetReq) { setSelectedRequest(targetReq); setShowDetailModal(true); }
+                                                        }}
+                                                        className="font-bold text-blue-600 hover:underline bg-blue-50 px-2 py-0.5 rounded border border-blue-100 text-xs font-mono"
+                                                    >
+                                                        {row.docNumber}
+                                                    </button>
+                                                </td>
+                                                <td className="p-4 text-gray-800 font-medium">{row.name}</td>
+                                                <td className="p-4 text-right text-gray-600 font-mono">{row.price.toLocaleString()}</td>
+                                                <td className="p-4 text-center">
+                                                    <span className="bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded font-bold text-xs">
+                                                        {row.qty.toLocaleString()} {row.unit}
+                                                    </span>
+                                                </td>
+                                                <td className="p-4 text-right font-bold text-blue-700 font-mono bg-gray-50/50">{row.total.toLocaleString()}</td>
+                                            </tr>
+                                        )) : (
+                                            <tr><td colSpan="6" className="p-12 text-center text-gray-400">ไม่พบรายการที่จบงานแล้ว</td></tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                    )
+                    );
                 })()}
 
                 {/* ---------------- Tab 4: ประวัติการเบิก (เหมือนเดิม) ---------------- */}
