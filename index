@@ -5073,7 +5073,7 @@ filteredRequests.map(req => {
         {/* ปุ่มพิมพ์ (Print) - Updated Logic */}
         {/* แสดงเมื่อ: (Local) หรือ (HO Full Flow) หรือ (Withdraw) และสถานะผ่านการอนุมัติแล้ว */}
         {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed'].includes(req.status) && 
-         (req.type === 'Local' || req.type === 'Withdraw' || (req.type === 'HO' && req.isFullApprovalFlow)) && (
+         (req.type === 'Local' || req.type === 'Withdraw' || req.type === 'Borrow' || (req.type === 'HO' && req.isFullApprovalFlow)) && (
           <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
               <Printer className="w-4 h-4"/> พิมพ์
           </button>
@@ -6594,7 +6594,7 @@ filteredRequests.map(req => {
                      <div className="flex items-center gap-2">
                         {/* ⭐ เพิ่มปุ่มพิมพ์ใน Modal ตรงนี้ ⭐ */}
                         {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed'].includes(selectedRequest.status) && 
-                         (selectedRequest.type === 'Local' || selectedRequest.type === 'Withdraw' || (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)) && (
+                         (selectedRequest.type === 'Local' || selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' || (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)) && (
                             <button 
                                 onClick={() => handleOpenPrintPreview(selectedRequest)}
                                 className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
@@ -8995,170 +8995,333 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                         const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
                         const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
 
-                        return (
+return (
                             <>
-                            {/* --- ส่วนที่ 1: Header คงที่ (แสดงเฉพาะหน้าแรก) --- */}
-                            <div className="w-full text-center mb-4">
-                                <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
-                            </div>
-
-                            <div className="w-full text-left font-normal mb-4">
-                                <span className="font-bold text-base">โครงการ (Project):</span> 
-                                <span className="border-b border-dotted border-black px-2 ml-2 min-w-[200px] inline-block font-bold">
-                                    {selectedRequest.job}
-                                </span>
-                            </div>
-
-                            {/* กล่อง Checkbox (หน้าแรกเท่านั้น) */}
-                            <div className="header-box text-left font-normal">
-                                <div className="grid grid-cols-3 gap-2 mb-3">
-                                    {/* ซ้าย */}
-                                    <div className="flex justify-start">
-                                        <label className="flex items-center gap-2">
-                                            <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
-                                                {(selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && <span className="text-lg font-bold leading-none mb-1">✓</span>}
-                                            </div> 
-                                            <span>เบิกวัสดุ (Withdraw)</span>
-                                        </label>
+                            {/* ================================================================================== */}
+                            {/* ⭐ เงื่อนไขที่ 1: กรณีเป็น "ใบยืม (Borrow)" -> แสดงแบบฟอร์มใหม่ (ตามรูป) */}
+                            {/* ================================================================================== */}
+                            {selectedRequest.type === 'Borrow' ? (
+                                <div className="font-sans text-black p-4">
+                                    
+                                    {/* 1. ส่วนหัว (Header) - ตัดโลโก้ออก */}
+                                    <div className="text-center mb-6">
+                                        <h1 className="text-2xl font-bold uppercase tracking-widest mb-1">BORROW TOOL SHEET</h1>
+                                        <h2 className="text-lg font-bold">ใบยืมเครื่องมือ</h2>
                                     </div>
-                                    {/* กลาง: จัดกึ่งกลาง */}
-                                    <div className="flex justify-center">
-                                        <label className="flex items-center gap-2">
-                                            <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
-                                                {selectedRequest.type === 'Local' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
-                                            </div> 
-                                            <span>สั่งซื้อวัสดุ หน่วยงาน (Local)</span>
-                                        </label>
-                                    </div>
-                                    {/* ขวา */}
-                                    <div className="flex justify-end">
-                                        <label className="flex items-center gap-2">
-                                            <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
-                                                {selectedRequest.type === 'HO' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
-                                            </div> 
-                                            <span>{selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent' ? 'สั่งซื้อวัสดุ HO (เช่า)' : 'สั่งซื้อวัสดุ HO (ซื้อขาด)'}</span>
-                                        </label>
-                                    </div>
-                                </div>
-                                <div className="border-t border-black pt-3 flex gap-8">
-                                    <span className="font-bold">ความสำคัญ:</span>
-                                    {['Normal', 'Urgent', 'Critical'].map(p => (
-                                        <label key={p} className="flex items-center gap-2">
-                                            <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
-                                                {selectedRequest.priority === p && <span className="text-lg font-bold leading-none mb-1">✓</span>}
-                                            </div> 
-                                            <span>{p === 'Normal' ? 'ปกติ' : p === 'Urgent' ? 'ด่วน' : 'ด่วนมาก'}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
 
-                            {/* --- ส่วนที่ 2: ตาราง (Header จะซ้ำทุกหน้า) --- */}
-                            <table className="w-full border-collapse preview-table">
-                                <thead>
-                                    {/* Row 1: Document Info (ซ้ำทุกหน้า) */}
-                                    <tr>
-                                        <th colSpan="4" className="border-0 p-0">
-                                            <div className="flex justify-end items-center pb-2 pt-2 bg-white" style={{borderBottom: '1px solid black'}}>
-                                                <div className="text-right">
-                                                    <div className="text-sm">
-                                                        <span className="font-bold">เลขที่เอกสาร:</span> {selectedRequest.docNumber || selectedRequest.id}
-                                                    </div>
-                                                    <div className="text-sm">
-                                                        <span className="font-bold">วันที่:</span> {formatDateTh(selectedRequest.history?.[0]?.date || selectedRequest.created)}
-                                                    </div>
+                                    {/* 2. ข้อมูลผู้ยืมและเอกสาร (Info Grid) */}
+                                    <div className="mb-6 border-b-2 border-black pb-4">
+                                        {/* แถวที่ 1 */}
+                                        <div className="flex justify-between items-end mb-1 text-sm">
+                                            <div className="flex items-end w-1/2">
+                                                <span className="font-bold w-16">Name:</span>
+                                                <div className="border-b border-dotted border-black flex-1 text-center font-bold text-blue-900 px-2">
+                                                    {nameReq}
                                                 </div>
                                             </div>
-                                        </th>
-                                    </tr>
-
-                                    {/* Row 2: Column Headers (ซ้ำทุกหน้า) */}
-                                    <tr className="bg-gray-100 text-center font-bold">
-                                        <th className="w-12 border border-black">NO.</th>
-                                        <th className="border border-black">รายการวัสดุ (Description) / จำนวน / หน่วย</th>
-                                        <th className="w-32 border border-black">SUBJOB / EP CODE</th>
-                                        <th className="w-48 border border-black">วันที่ต้องการ / หมายเหตุ</th>
-                                    </tr>
-                                </thead>
-
-                                <tbody>
-                                    {selectedRequest.items.map((item, i) => (
-                                        <tr key={i}>
-                                            <td className="text-center font-bold border border-black">{i + 1}</td>
-                                            <td className="border border-black">
-                                                <div className="font-bold text-black">{item.name}</div>
-                                                <div className="mt-1 pl-2 text-sm text-gray-700">
-                                                    จำนวน: <span className="font-bold">{item.qty}</span> {item.unit}
+                                            <div className="flex items-end w-1/4 pl-2">
+                                                <span className="font-bold whitespace-nowrap mr-2">Employee No.</span>
+                                                <div className="border-b border-dotted border-black flex-1 text-center font-mono">
+                                                    {userReq?.empId || '-'}
                                                 </div>
-                                            </td>
-                                            <td className="text-center align-middle border border-black">
-                                                {item.subJob || item.epCode ? (
-                                                    <div className="flex flex-col gap-1 text-xs font-bold">
-                                                        {item.subJob && <span>Sub: {item.subJob}</span>}
-                                                        {item.epCode && <span>EP: {item.epCode}</span>}
+                                            </div>
+                                            <div className="flex items-end w-1/4 pl-2">
+                                                <span className="font-bold mr-2">Date:</span>
+                                                <div className="border-b border-dotted border-black flex-1 text-center">
+                                                    {dateReq}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex justify-between text-[10px] text-gray-500 mb-4 font-normal">
+                                            <div className="w-1/2 pl-16">ชื่อผู้ยืม</div>
+                                            <div className="w-1/4 text-center">เลขประจำตัว</div>
+                                            <div className="w-1/4 text-center">วันที่</div>
+                                        </div>
+
+                                        {/* แถวที่ 2 (เพิ่มตามที่ขอ: โครงการ & เลขที่เอกสาร) */}
+                                        <div className="flex justify-between items-end mb-1 text-sm">
+                                            <div className="flex items-end w-2/3">
+                                                <span className="font-bold w-16">Project:</span>
+                                                <div className="border-b border-dotted border-black flex-1 text-left pl-2 font-bold text-black">
+                                                    {selectedRequest.job}
+                                                </div>
+                                            </div>
+                                            <div className="flex items-end w-1/3 pl-4">
+                                                <span className="font-bold whitespace-nowrap mr-2">Doc No:</span>
+                                                <div className="border-b border-dotted border-black flex-1 text-center font-bold">
+                                                    {selectedRequest.docNumber || selectedRequest.id}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex justify-between text-[10px] text-gray-500 font-normal">
+                                            <div className="w-2/3 pl-16">โครงการ</div>
+                                            <div className="w-1/3 text-center">เลขที่เอกสาร</div>
+                                        </div>
+                                    </div>
+
+                                    {/* 3. ตารางรายการ (Table) - เลียนแบบในรูป */}
+                                    <table className="w-full border-collapse border border-black mb-8">
+                                        <thead>
+                                            <tr className="bg-gray-100 text-center text-sm">
+                                                <th className="border border-black py-2 w-20">
+                                                    Quantity<br/><span className="text-[10px] font-normal">จำนวน</span>
+                                                </th>
+                                                <th className="border border-black py-2">
+                                                    Description<br/><span className="text-[10px] font-normal">รายการ</span>
+                                                </th>
+                                                <th className="border border-black py-2 w-28">
+                                                    Unit Price<br/><span className="text-[10px] font-normal">ราคา</span>
+                                                </th>
+                                                <th className="border border-black py-2 w-28">
+                                                    Amount<br/><span className="text-[10px] font-normal">จำนวนเงิน</span>
+                                                </th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {selectedRequest.items.map((item, idx) => (
+                                                <tr key={idx} className="text-sm">
+                                                    <td className="border border-black py-3 text-center align-top h-12 font-bold">
+                                                        {item.qty} {item.unit}
+                                                    </td>
+                                                    <td className="border border-black py-3 px-3 align-top">
+                                                        <div className="font-bold">{item.name}</div>
+                                                        <div className="text-xs mt-1 text-gray-600">
+                                                            {item.serial && <span>S/N: {item.serial} </span>}
+                                                            {item.assetId && <span>ID: {item.assetId}</span>}
+                                                        </div>
+                                                        {item.note && <div className="text-xs text-gray-500 italic mt-1">Note: {item.note}</div>}
+                                                    </td>
+                                                    <td className="border border-black py-3 text-right px-2 align-top text-gray-400">-</td>
+                                                    <td className="border border-black py-3 text-right px-2 align-top text-gray-400">-</td>
+                                                </tr>
+                                            ))}
+                                            {/* เติมแถวว่างให้ดูเต็ม (Optional) */}
+                                            {Array.from({ length: Math.max(0, 5 - selectedRequest.items.length) }).map((_, i) => (
+                                                <tr key={`empty-${i}`}>
+                                                    <td className="border border-black py-4"></td><td className="border border-black py-4"></td><td className="border border-black py-4"></td><td className="border border-black py-4"></td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+
+                                    {/* 4. ส่วนลายเซ็น (Signatures) - จัดวางตามรูป */}
+                                    <div className="grid grid-cols-2 gap-10 mt-4 signature-section">
+                                        
+                                        {/* ซ้าย: ผู้อนุมัติ + ผู้จ่าย */}
+                                        <div className="flex flex-col gap-6">
+                                            {/* Approved By */}
+                                            <div className="relative">
+                                                <div className="flex items-end mb-1">
+                                                    <span className="font-bold w-20">Approved</span>
+                                                    <div className="border-b border-dotted border-black flex-1 relative h-8">
+                                                        {/* ดึงลายเซ็นผู้อนุมัติ (L1 หรือ L2) */}
+                                                        {(sigL1 || sigL2) && (
+                                                            <img src={sigL1 || sigL2} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-12 object-contain"/>
+                                                        )}
                                                     </div>
-                                                ) : '-'}
-                                            </td>
-                                            <td className="text-left align-top border border-black">
-                                                <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
-                                                    {formatDateTh(selectedRequest.dateRequired)}
                                                 </div>
-                                                {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
-                                            </td>
+                                                <div className="text-[10px] ml-20">อนุมัติ</div>
+                                            </div>
+
+                                            {/* Issued By (ผู้จ่าย) */}
+                                            <div className="relative">
+                                                <div className="flex items-end mb-1">
+                                                    <span className="font-bold w-20">Issued</span>
+                                                    <div className="border-b border-dotted border-black flex-1 text-center text-sm pb-1">
+                                                        {/* ถ้ามีคนเซ็น L1 แล้ว ให้ L2 เป็นคนจ่าย หรือเว้นว่างไว้เซ็นมือ */}
+                                                        &nbsp;
+                                                    </div>
+                                                </div>
+                                                <div className="text-[10px] ml-20">ผู้จ่าย</div>
+                                            </div>
+                                        </div>
+
+                                        {/* ขวา: วันกำหนดคืน + ผู้ยืม */}
+                                        <div className="flex flex-col gap-6">
+                                            {/* Date of Return */}
+                                            <div className="relative">
+                                                <div className="flex items-end mb-1">
+                                                    <span className="font-bold w-28 whitespace-nowrap">Date of Return</span>
+                                                    <div className="border-b border-dotted border-black flex-1 text-center text-sm pb-1">
+                                                        .............................
+                                                    </div>
+                                                </div>
+                                                <div className="text-[10px] ml-28">วันกำหนดส่งคืน</div>
+                                            </div>
+
+                                            {/* Borrowed By (ผู้ยืม) */}
+                                            <div className="relative">
+                                                <div className="flex items-end mb-1">
+                                                    <span className="font-bold w-20">Borrowed</span>
+                                                    <div className="border-b border-dotted border-black flex-1 relative h-8">
+                                                        {/* ดึงลายเซ็นผู้ขอ */}
+                                                        {sigReq && (
+                                                            <img src={sigReq} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-12 object-contain"/>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="text-[10px] ml-20">ผู้ยืม <span className="font-bold ml-2">({nameReq})</span></div>
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                </div>
+                            ) : (
+                                
+                            /* ================================================================================== */
+                            /* ⭐ เงื่อนไขที่ 2 (ELSE): กรณีอื่นๆ (ซื้อ/เบิกทั่วไป) -> ใช้แบบฟอร์มเดิม */
+                            /* ================================================================================== */
+                            <> 
+                                {/* --- ส่วนที่ 1: Header คงที่ --- */}
+                                <div className="w-full text-center mb-4">
+                                    <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
+                                </div>
+
+                                <div className="w-full text-left font-normal mb-4">
+                                    <span className="font-bold text-base">โครงการ (Project):</span> 
+                                    <span className="border-b border-dotted border-black px-2 ml-2 min-w-[200px] inline-block font-bold">
+                                        {selectedRequest.job}
+                                    </span>
+                                </div>
+
+                                {/* กล่อง Checkbox */}
+                                <div className="header-box text-left font-normal">
+                                    <div className="grid grid-cols-3 gap-2 mb-3">
+                                        <div className="flex justify-start">
+                                            <label className="flex items-center gap-2">
+                                                <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
+                                                    {(selectedRequest.type === 'Withdraw') && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                                </div> 
+                                                <span>เบิกวัสดุ (Withdraw)</span>
+                                            </label>
+                                        </div>
+                                        <div className="flex justify-center">
+                                            <label className="flex items-center gap-2">
+                                                <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
+                                                    {selectedRequest.type === 'Local' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                                </div> 
+                                                <span>สั่งซื้อวัสดุ หน่วยงาน (Local)</span>
+                                            </label>
+                                        </div>
+                                        <div className="flex justify-end">
+                                            <label className="flex items-center gap-2">
+                                                <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
+                                                    {selectedRequest.type === 'HO' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                                </div> 
+                                                <span>{selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent' ? 'สั่งซื้อวัสดุ HO (เช่า)' : 'สั่งซื้อวัสดุ HO (ซื้อขาด)'}</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div className="border-t border-black pt-3 flex gap-8">
+                                        <span className="font-bold">ความสำคัญ:</span>
+                                        {['Normal', 'Urgent', 'Critical'].map(p => (
+                                            <label key={p} className="flex items-center gap-2">
+                                                <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
+                                                    {selectedRequest.priority === p && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                                </div> 
+                                                <span>{p === 'Normal' ? 'ปกติ' : p === 'Urgent' ? 'ด่วน' : 'ด่วนมาก'}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* --- ส่วนที่ 2: ตาราง --- */}
+                                <table className="w-full border-collapse preview-table">
+                                    <thead>
+                                        <tr>
+                                            <th colSpan="4" className="border-0 p-0">
+                                                <div className="flex justify-end items-center pb-2 pt-2 bg-white" style={{borderBottom: '1px solid black'}}>
+                                                    <div className="text-right">
+                                                        <div className="text-sm">
+                                                            <span className="font-bold">เลขที่เอกสาร:</span> {selectedRequest.docNumber || selectedRequest.id}
+                                                        </div>
+                                                        <div className="text-sm">
+                                                            <span className="font-bold">วันที่:</span> {formatDateTh(selectedRequest.history?.[0]?.date || selectedRequest.created)}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </th>
                                         </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                                        <tr className="bg-gray-100 text-center font-bold">
+                                            <th className="w-12 border border-black">NO.</th>
+                                            <th className="border border-black">รายการวัสดุ (Description) / จำนวน / หน่วย</th>
+                                            <th className="w-32 border border-black">SUBJOB / EP CODE</th>
+                                            <th className="w-48 border border-black">วันที่ต้องการ / หมายเหตุ</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {selectedRequest.items.map((item, i) => (
+                                            <tr key={i}>
+                                                <td className="text-center font-bold border border-black">{i + 1}</td>
+                                                <td className="border border-black">
+                                                    <div className="font-bold text-black">{item.name}</div>
+                                                    <div className="mt-1 pl-2 text-sm text-gray-700">
+                                                        จำนวน: <span className="font-bold">{item.qty}</span> {item.unit}
+                                                    </div>
+                                                </td>
+                                                <td className="text-center align-middle border border-black">
+                                                    {item.subJob || item.epCode ? (
+                                                        <div className="flex flex-col gap-1 text-xs font-bold">
+                                                            {item.subJob && <span>Sub: {item.subJob}</span>}
+                                                            {item.epCode && <span>EP: {item.epCode}</span>}
+                                                        </div>
+                                                    ) : '-'}
+                                                </td>
+                                                <td className="text-left align-top border border-black">
+                                                    <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
+                                                        {formatDateTh(selectedRequest.dateRequired)}
+                                                    </div>
+                                                    {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
 
-                            {/* --- ส่วนที่ 3: ลายเซ็น (ท้ายเอกสาร) --- */}
-                            <div className="mt-8 signature-section break-inside-avoid">
-                                <div className={`grid ${selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
-                                    {/* 1. Requester */}
-                                    <div className="border border-black p-2 h-36 flex flex-col justify-between relative bg-white">
-                                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
-                                        <div className="flex-1 flex items-center justify-center">
-                                            {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
-                                        </div>
-                                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                                            <div className="font-bold">{nameReq}</div>
-                                            <div>วันที่: {dateReq}</div>
-                                        </div>
-                                    </div>
-
-                                    {/* 2. Store */}
-                                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">สโตร์ผู้รับของ</div>
-                                        <div className="flex-1 flex items-center justify-center"><span className="text-gray-300 text-xs">..........................</span></div>
-                                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">ลงชื่อ..........................<br/>วันที่....../....../......</div>
-                                    </div>
-
-                                    {/* 3. Level 1 */}
-                                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 1)</div>
-                                        <div className="flex-1 flex items-center justify-center">
-                                            {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
-                                        </div>
-                                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                                            <div className="font-bold">{nameL1}</div>
-                                            <div>วันที่: {dateL1}</div>
-                                        </div>
-                                    </div>
-
-                                    {/* 4. Level 2 (Buy Only) */}
-                                    {selectedRequest.type !== 'Withdraw' && selectedRequest.type !== 'Borrow' && (
-                                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 2)</div>
+                                {/* --- ส่วนที่ 3: ลายเซ็นเดิม --- */}
+                                <div className="mt-8 signature-section break-inside-avoid">
+                                    <div className={`grid ${selectedRequest.type === 'Withdraw' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
+                                        <div className="border border-black p-2 h-36 flex flex-col justify-between relative bg-white">
+                                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
                                             <div className="flex-1 flex items-center justify-center">
-                                                {sigL2 ? <img src={sigL2} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                                {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
                                             </div>
                                             <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                                                <div className="font-bold">{nameL2}</div>
-                                                <div>วันที่: {dateL2}</div>
+                                                <div className="font-bold">{nameReq}</div>
+                                                <div>วันที่: {dateReq}</div>
                                             </div>
                                         </div>
-                                    )}
+                                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">สโตร์ผู้รับของ</div>
+                                            <div className="flex-1 flex items-center justify-center"><span className="text-gray-300 text-xs">..........................</span></div>
+                                            <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">ลงชื่อ..........................<br/>วันที่....../....../......</div>
+                                        </div>
+                                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 1)</div>
+                                            <div className="flex-1 flex items-center justify-center">
+                                                {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                            </div>
+                                            <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                                <div className="font-bold">{nameL1}</div>
+                                                <div>วันที่: {dateL1}</div>
+                                            </div>
+                                        </div>
+                                        {selectedRequest.type !== 'Withdraw' && (
+                                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                                <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 2)</div>
+                                                <div className="flex-1 flex items-center justify-center">
+                                                    {sigL2 ? <img src={sigL2} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                                </div>
+                                                <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                                    <div className="font-bold">{nameL2}</div>
+                                                    <div>วันที่: {dateL2}</div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
-                            </div>
+                            </>
+                            )}
                             </>
                         );
                     })()}
