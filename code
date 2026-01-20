@@ -1188,25 +1188,52 @@ function updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName
   };
 }
 
-function saveSystemAnnouncement(data) {
-  const sheet = getOrCreateSheet('Settings');
-  // เก็บข้อมูลบรรทัดที่ 2 (Row 2) คอลัมน์ A (ID = ANNOUNCEMENT)
-  // Format: { title, detail, date, active: true/false }
+// [เพิ่ม/แก้ไข ฟังก์ชันใน Code.gs]
+
+// 1. ฟังก์ชันดึงประกาศ "ทั้งหมด" (สำหรับหน้าจัดการของ Admin)
+function getAllAnnouncements() {
+  const settings = getSheetData('Settings');
+  // กรองเอาเฉพาะ Row ที่ ID ขึ้นต้นด้วย ANN-
+  return settings.filter(s => s.id && s.id.toString().startsWith('ANN-'));
+}
+
+// 2. ฟังก์ชันดึงประกาศ "เฉพาะที่ Active" (สำหรับหน้า Login / Public)
+function getPublicAnnouncements() {
+  const settings = getSheetData('Settings');
+  // กรองเฉพาะ Active = true
+  return settings.filter(s => s.id && s.id.toString().startsWith('ANN-') && s.active === true);
+}
+
+// 3. บันทึกประกาศ (สร้างใหม่ หรือ แก้ไข)
+function saveAnnouncementItem(data) {
+  // ถ้าไม่มี ID ให้สร้างใหม่
+  const id = data.id || `ANN-${new Date().getTime()}`;
   
   const payload = {
     ...data,
+    id: id,
     updatedBy: data.updatedBy,
     timestamp: new Date().toLocaleString('th-TH')
   };
   
-  saveDataToSheet('Settings', 'ANNOUNCEMENT', payload);
-  return { success: true, message: 'บันทึกประกาศเรียบร้อย' };
+  saveDataToSheet('Settings', id, payload);
+  return { success: true, message: 'บันทึกประกาศเรียบร้อย', data: payload };
 }
 
-// 2. ยกเลิกประกาศ
-function clearSystemAnnouncement() {
-  const sheet = getOrCreateSheet('Settings');
-  const emptyPayload = { active: false, title: '', detail: '', date: '' };
-  saveDataToSheet('Settings', 'ANNOUNCEMENT', emptyPayload);
-  return { success: true, message: 'ยกเลิกประกาศแล้ว' };
+// 4. ลบประกาศ
+function deleteAnnouncementItem(id) {
+  deleteDataFromSheet('Settings', id);
+  return { success: true, message: 'ลบประกาศแล้ว' };
+}
+
+// 5. เปลี่ยนสถานะ (เปิด/ปิด ประกาศ)
+function toggleAnnouncementStatus(id, isActive) {
+  const settings = getSheetData('Settings');
+  const target = settings.find(s => s.id === id);
+  if (target) {
+    target.active = isActive;
+    saveDataToSheet('Settings', id, target);
+    return { success: true, message: isActive ? 'เผยแพร่ประกาศแล้ว' : 'หยุดประกาศแล้ว' };
+  }
+  return { success: false, message: 'ไม่พบข้อมูล' };
 }
