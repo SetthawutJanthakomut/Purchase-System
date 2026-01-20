@@ -8903,34 +8903,48 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                         </tbody>
                     </table>
 
-                    {/* 4. Signature Section (NEW LOGIC) */}
+                  {/* 4. Signature Section (FIXED LOGIC) */}
                     {(() => {
                         // กลับด้าน History เพื่อหา Log ล่าสุดก่อน (Newest -> Oldest)
                         const historyDesc = [...(selectedRequest.history || [])].reverse();
                         
-                        // --- 4.1 หา Log ของ Requester ---
-                        // หาคำว่า "สร้างคำขอ" หรือ "Create" หรือ Log ตัวสุดท้ายใน Array (ตัวแรกสุดของเวลา)
-                        const reqLog = historyDesc.find(h => h.action.includes('สร้าง') || h.action.includes('Create') || h.action.includes('Draft')) || historyDesc[historyDesc.length - 1];
+                        // --- Helper: ฟังก์ชันเช็คว่า Action นี้ตรงกับสถานะที่เราหาหรือไม่ (รองรับทั้งไทย/อังกฤษ) ---
+                        const isActionMatch = (logAction, statusKey) => {
+                            if (!logAction) return false;
+                            const label = STATUS_LABELS[statusKey] || '';
+                            // เช็คว่าตรงกับ Key (อังกฤษ) หรือ Label (ไทย) หรือไม่
+                            return logAction === statusKey || logAction === label || logAction.includes(label);
+                        };
+
+                        // --- 4.1 หา Log ของ Requester (ผู้ขอ) ---
+                        // หา Log แรกสุด (Draft/Create) หรือถ้าหาไม่เจอให้เอาตัวแรกของเวลา (ตัวท้ายของ Array)
+                        const reqLog = historyDesc.find(h => 
+                            h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')
+                        ) || historyDesc[historyDesc.length - 1];
 
                         // --- 4.2 หา Log ของ Level 1 (Head) ---
-                        // "คนที่เป็นคนกดส่งไป Level 2" -> Action: "รออนุมัติ Level 2"
-                        let l1Log = historyDesc.find(h => h.action.includes('รออนุมัติ Level 2') || h.action.includes('Pending PM'));
-                        
-                        // กรณีพิเศษ: ถ้าเป็น Withdraw (เบิก) จะไม่มี Level 2 -> Level 1 คือคนที่กด "รอจ่ายของ" หรือ "อนุมัติแล้ว"
-                        if ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && !l1Log) {
-                            l1Log = historyDesc.find(h => h.action.includes('รอจ่ายของ') || h.action.includes('Ready to Disburse') || h.action.includes('อนุมัติแล้ว'));
-                        }
+                        // คือคนที่เปลี่ยนสถานะเป็น "Pending PM" (งานซื้อ) หรือ "Ready to Disburse" (งานเบิก/ยืม)
+                        let l1Log = historyDesc.find(h => 
+                            isActionMatch(h.action, 'Pending PM') || // กรณีซื้อ (รอ Level 2)
+                            ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')) // กรณีเบิก/ยืม (จบที่ L1)
+                        );
 
                         // --- 4.3 หา Log ของ Level 2 (PM) ---
-                        // "คนที่เป็นคนกดอนุมัติจบ" -> Action: "อนุมัติแล้ว (รอดำเนินการ)"
-                        const l2Log = historyDesc.find(h => h.action.includes('อนุมัติแล้ว') || h.action.includes('Approved') || h.action.includes('PR Issued'));
+                        // คือคนที่เปลี่ยนสถานะเป็น "Approved" (เฉพาะงานซื้อ)
+                        // ต้องไม่ใช่คนเดียวกับ L1 (เผื่อกรณีข้อมูลซ้ำ) หรือถ้าใช่ต้องเป็น Log คนละเวลา
+                        const l2Log = historyDesc.find(h => 
+                            (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) &&
+                            h !== l1Log // ป้องกันการดึง Log ซ้ำกับ L1
+                        );
 
-
-                        // --- Helper: ดึง User Object จาก Log Text ---
+                        // --- Helper: ดึง User Object จาก Log Text (รองรับแบบมี Email ต่อท้าย) ---
                         const getUser = (log) => {
                             if(!log || !log.user) return null;
-                            const txt = log.user;
-                            // พยายามหาจาก EmpID ก่อน (ตัวอักษรแรกๆ)
+                            
+                            // ตัดส่วนที่เป็น (Email) ออก ถ้ามี เช่น "Admin (Email)" -> "Admin"
+                            let txt = log.user.replace(' (Email)', '').trim();
+                            
+                            // 1. ลองหาจาก EmpID (ตัวอักษรกลุ่มแรก)
                             const firstPart = txt.split(' ')[0];
                             
                             // ค้นหาใน allUsers
@@ -8938,7 +8952,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                 (u.empId && u.empId === firstPart) || 
                                 (u.username === txt) ||
                                 (u.email && txt.includes(u.email)) ||
-                                (u.firstName && txt.includes(u.firstName))
+                                (`${u.firstName} ${u.lastName}` === txt)
                             );
                         };
 
@@ -8947,10 +8961,10 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                         const userL2 = getUser(l2Log);
 
                         // --- Data for Rendering ---
-                        // ชื่อ: ถ้าเจอ User ให้ใช้ชื่อจริง / ถ้าไม่เจอให้ใช้จาก Log
-                        const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user : selectedRequest.requester);
-                        const nameL1 = userL1 ? `${userL1.firstName} ${userL1.lastName}` : (l1Log ? l1Log.user : '..........................');
-                        const nameL2 = userL2 ? `${userL2.firstName} ${userL2.lastName}` : (l2Log ? l2Log.user : '..........................');
+                        // ชื่อ: ถ้าเจอ User ในระบบให้ใช้ชื่อจริง / ถ้าไม่เจอให้ใช้ชื่อจาก Log
+                        const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user.replace(' (Email)', '') : selectedRequest.requester);
+                        const nameL1 = userL1 ? `${userL1.firstName} ${userL1.lastName}` : (l1Log ? l1Log.user.replace(' (Email)', '') : '..........................');
+                        const nameL2 = userL2 ? `${userL2.firstName} ${userL2.lastName}` : (l2Log ? l2Log.user.replace(' (Email)', '') : '..........................');
 
                         // วันที่
                         const dateReq = formatDateTh(reqLog ? reqLog.date : selectedRequest.created);
