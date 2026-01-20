@@ -1237,3 +1237,28 @@ function toggleAnnouncementStatus(id, isActive) {
   }
   return { success: false, message: 'ไม่พบข้อมูล' };
 }
+
+// --- เพิ่มต่อท้ายไฟล์ code.gs ---
+
+function uploadUserSignature(base64Data, fileName) {
+  try {
+    const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // ใช้ ID โฟลเดอร์หลักเดิม
+    const SUB_FOLDER_NAME = "User_Signatures"; // ชื่อโฟลเดอร์เก็บลายเซ็น
+    const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
+    
+    const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+    const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+    const blob = Utilities.newBlob(bytes, contentType, fileName);
+    
+    const file = targetFolder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    return {
+      name: fileName,
+      url: file.getUrl(),
+      id: file.getId()
+    };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
