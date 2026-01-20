@@ -52,7 +52,7 @@
       'Settings',
       'Lock',
        EyeOff,
-      'BellOff'// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
+      'BellOff', 'Megaphone'// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
     ];
     const lucideReact = {};
     // --- PERMISSION CONSTANTS ---
@@ -83,7 +83,8 @@
         24: 'จ่ายของ/ยืม (Disburse)',
         25: 'รับคืนทรัพย์สิน (Return Asset)',
         26: 'จัดการโครงการ (Project Settings)',
-        27: 'กู้คืนข้อมูล (Restore)'
+        27: 'กู้คืนข้อมูล (Restore)',
+        28: 'จัดการประกาศ (Manage Announcement)'
     };
 
     // Helper: แปลง PascalCase -> kebab-case
@@ -147,7 +148,7 @@ const {
       Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
       Upload,
       Settings,Lock,EyeOff, 
-      BellOff // ⭐ เพิ่มตรงนี้ครับ
+      BellOff, Megaphone // ⭐ เพิ่มตรงนี้ครับ
     } = lucideReact;
 
     // Manual Aliasing for missing/renamed icons
@@ -376,7 +377,9 @@ const [viewingUser, setViewingUser] = useState(null); // เก็บ User ท�
 const [userDetailTab, setUserDetailTab] = useState('info'); // info, purchase, withdraw, borrow
 const [detailSearch, setDetailSearch] = useState(''); // ช่องค้นหาในหน้า Detail
 const [userSearch, setUserSearch] = useState(''); // ⭐ เพิ่ม State สำหรับค้นหา User
-
+const [announcement, setAnnouncement] = useState(null); // ข้อมูลประกาศ
+const [showPublicAnnounce, setShowPublicAnnounce] = useState(false); // ควบคุมการโชว์ Popup หน้าแรก
+const [announceForm, setAnnounceForm] = useState({ title: '', detail: '' }); // ฟอร์มสำหรับ Admin
 
 const hasPermission = (permId, project = globalProjectFilter) => {
           // 1. ถ้าเป็น Super Admin ให้ผ่านตลอด
@@ -1513,6 +1516,32 @@ const newUsersCount = useMemo(() => {
       }, [requests, user, globalProjectFilter]);
 
       
+      useEffect(() => {
+        setIsLoading(true);
+        google.script.run.withSuccessHandler((data) => {
+           if(data.requests) setRequests(data.requests);
+           if(data.inventory) setInventory(data.inventory);
+           if(data.assets) setAssets(data.assets);
+           if(data.logs) setInvLogs(data.logs);
+           if(data.projects) setProjects(data.projects);
+           if(data.users) setAllUsers(data.users);
+           
+           // ⭐ Logic แสดงประกาศ (ถ้ามี และ Active)
+           if (data.announcement && data.announcement.active) {
+               setAnnouncement(data.announcement);
+               setShowPublicAnnounce(true); // เปิด Popup ทันที
+               setAnnounceForm({ title: data.announcement.title, detail: data.announcement.detail });
+           } else {
+               setAnnouncement(null);
+               setShowPublicAnnounce(false);
+               setAnnounceForm({ title: '', detail: '' });
+           }
+
+           setIsLoading(false);
+        }).loadInitialData();
+      }, []);
+
+
 // --- EFFECT: Load Data from Backend ---
       useEffect(() => {
         setIsLoading(true);
@@ -1640,6 +1669,38 @@ const [historySort, setHistorySort] = useState({ key: 'date', direction: 'desc' 
       };
 
 
+const handleSaveAnnouncement = () => {
+          if(!announceForm.title || !announceForm.detail) { showToast('กรุณาระบุหัวข้อและรายละเอียด', 'error'); return; }
+          setIsLoading(true);
+          
+          const payload = {
+              id: 'ANNOUNCEMENT',
+              active: true,
+              title: announceForm.title,
+              detail: announceForm.detail,
+              date: new Date().toLocaleString('th-TH'),
+              updatedBy: user ? `${user.firstName} ${user.lastName}` : 'System'
+          };
+
+          google.script.run.withSuccessHandler((res) => {
+              setIsLoading(false);
+              setAnnouncement(payload);
+              showToast(res.message);
+          }).saveSystemAnnouncement(payload);
+      };
+
+      // ⭐ ฟังก์ชันยกเลิกประกาศ (Admin)
+      const handleClearAnnouncement = () => {
+          if(!confirm('ต้องการยกเลิกประกาศใช่หรือไม่?')) return;
+          setIsLoading(true);
+          google.script.run.withSuccessHandler((res) => {
+              setIsLoading(false);
+              setAnnouncement(null);
+              setAnnounceForm({ title: '', detail: '' });
+              showToast(res.message);
+          }).clearSystemAnnouncement();
+      };
+
 
 // --- LOGIC: IMPORT ASSETS (CSV) - SMART PARSER ---
 const handleFileImport = (e) => {
@@ -1746,6 +1807,8 @@ const confirmImportAssets = async () => {
             note: item.note,
             project: item.project // ⭐ บันทึกโครงการ
         };
+
+
         newAssets.push(newAsset);
         saveAssetToSheet(newAsset); 
         
@@ -2906,45 +2969,55 @@ const getSelectionItems = () => {
       };
     
       
-// --- HELPER: คำนวณงบประมาณ (Budget Calculation) ---
+// --- HELPER: คำนวณงบประมาณ (Budget Calculation - UPDATED LOGIC) ---
       const getBudgetStats = (req, code, type) => {
           if (!req || !req.job) return { budget: 0, used: 0, pending: 0, current: 0 };
-
           const projectData = projects.find(p => p.name === req.job);
           if (!projectData) return { budget: 0, used: 0, pending: 0, current: 0 };
-
           const list = type === 'SubJob' ? projectData.subJobs : projectData.epCodes;
           const target = list?.find(x => x.code === code);
           const budget = target?.budget || 0;
 
-          // Helper: คำนวณยอดเงิน (ใช้ Actual Price ถ้ามี)
-const calculateRequestTotal = (r) => {
+          // Helper: คำนวณยอดเงินแบบละเอียด (Assets > Logs > Estimate)
+          const calculateRequestTotal = (r) => {
               const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code);
               const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
-
-              return items.reduce((sum, i) => {
-                  // ⭐ กรณี 1: ถ้ามีประวัติการรับของ (receivedLog) ให้คำนวณจากยอดจริงที่รับไป
-                  if (i.receivedLog && i.receivedLog.length > 0) {
-                      const receivedSum = i.receivedLog.reduce((logSum, log) => {
-                          const logDuration = isRent ? (log.duration || 1) : 1;
-                          return logSum + (log.qty * log.price * logDuration);
-                      }, 0);
-
-                      // ถ้ายังรับไม่ครบ ส่วนที่เหลือให้คำนวณจากราคาตั้งต้น (Estimate)
-                      const remainingQty = Math.max(0, i.qty - (i.receivedTotal || 0));
-                      const estimateDuration = isRent ? (i.duration || 1) : 1; // Duration ล่าสุดหรือตั้งต้น
-                      const estimatePrice = i.unitPrice; // ราคาตั้งต้น
-                      const remainingSum = remainingQty * estimatePrice * estimateDuration;
-
-                      return sum + receivedSum + remainingSum;
-                  } 
+              
+              return items.reduce((sum, item) => {
+                  // 1. ข้อมูล Assets
+                  const relatedAssets = assets.filter(a => a.currentRequestId === r.id && a.name === item.name);
+                  // 2. ข้อมูล Logs
+                  const receivedLogs = item.receivedLog || [];
                   
-                  // ⭐ กรณี 2: ยังไม่เคยรับของเลย ใช้สูตรเดิม (Qty * UnitPrice)
-                  else {
-                      const duration = isRent ? (i.duration || 1) : 1;
-                      const price = i.unitPrice || 0;
-                      return sum + (i.qty * price * duration);
+                  let itemTotal = 0;
+                  let receivedCount = 0;
+
+                  // Priority A: Assets
+                  if (relatedAssets.length > 0) {
+                        itemTotal += relatedAssets.reduce((s, asset) => {
+                             const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                             const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                             return s + (price * duration);
+                        }, 0);
+                        receivedCount = relatedAssets.length;
+                  } 
+                  // Priority B: Logs
+                  else if (receivedLogs.length > 0) {
+                        itemTotal += receivedLogs.reduce((s, log) => {
+                             const duration = isRent ? (log.duration || 1) : 1;
+                             return s + (log.qty * log.price * duration);
+                        }, 0);
+                        receivedCount = item.receivedTotal || 0;
                   }
+
+                  // Priority C: Estimate Remainder
+                  const remainingQty = Math.max(0, item.qty - receivedCount);
+                  const estimateDuration = isRent ? (item.duration || 1) : 1;
+                  const estimatePrice = item.unitPrice || 0;
+                  
+                  itemTotal += (remainingQty * estimatePrice * estimateDuration);
+
+                  return sum + itemTotal;
               }, 0);
           };
 
@@ -2957,22 +3030,16 @@ const calculateRequestTotal = (r) => {
 
               const total = calculateRequestTotal(r);
 
-              // ⭐ เงื่อนไข Used: Completed เท่านั้น
+              // Completed = Used, Others = Pending
               if (r.status === 'Completed') {
                   used += total;
-              } 
-              // ⭐ เงื่อนไข Pending: สถานะอื่นๆ ที่ยังไม่จบ (รวม Partially Received)
-              else if (!['Draft', 'Rejected', 'Returned', 'Completed'].includes(r.status)) {
+              } else if (!['Draft', 'Rejected', 'Returned'].includes(r.status)) {
                   pending += total;
               }
           });
 
           // ยอดใบปัจจุบัน (Current)
-          const current = req.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code)
-            .reduce((sum, i) => {
-                const duration = (req.type === 'HO' && req.purchaseType === 'Rent') ? (i.duration || 1) : 1;
-                return sum + (i.qty * (i.unitPrice || 0) * duration);
-            }, 0);
+          const current = calculateRequestTotal(req);
 
           return { budget, used, pending, current };
       };
@@ -3360,7 +3427,7 @@ const handleConfirmReceive = async () => {
                         status: 'Available',
                         condition: 'Good',
                         holder: '-',
-                        currentRequestId: null,
+                        currentRequestId: selectedRequest.id,
                         price: item.isRent ? 0 : assetReg.price,
                         image: mainImageName,
                         lastUpdated: date,
@@ -3369,6 +3436,7 @@ const handleConfirmReceive = async () => {
                         rentalEnd: assetReg.rentalEnd || null,
                         rentalPrice: assetReg.rentalPrice || 0,
                         rentalUnit: assetReg.rentalUnit || 'Month',
+                        duration: item.isRent ? (assetReg.duration || 1) : 1,
                         note: assetReg.note,
                         project: project // ⭐ ระบุโครงการ
                     };
@@ -3852,39 +3920,73 @@ const handleSubmitContract = async () => {
         return data;
       }, [requests, dashboardView, dashboardSearch, dashboardStatusFilter]);
 
-// --- LOGIC: BUDGET CHART DATA PREPARATION (UPDATED) ---
+// --- LOGIC: BUDGET CHART DATA PREPARATION (FIXED: PROJECT SCOPE) ---
       const budgetChartData = useMemo(() => {
           let targetProjects = projects;
           if (globalProjectFilter !== 'All') {
               targetProjects = projects.filter(p => p.name === globalProjectFilter);
           }
 
-          // ฟังก์ชันคำนวณยอดใช้จริง (Used)
-          const calculateUsed = (code, type) => {
+          // ฟังก์ชันคำนวณยอดใช้จริง (Used) แบบละเอียด โดยระบุ Project
+          const calculateUsedForProject = (projectName, code, type) => {
               return requests.reduce((sum, req) => {
-                  if (!['Local', 'HO'].includes(req.type)) return sum;
-                  if (globalProjectFilter !== 'All' && req.job !== globalProjectFilter) return sum;
+                  // ⭐ 1. กรองเฉพาะ Request ของโครงการนี้เท่านั้น (แก้ปัญหา Double Count)
+                  if (req.job !== projectName) return sum;
                   
-                  // ⭐ แก้ไข Logic: คิดงบเฉพาะที่ "Completed" เท่านั้น (ตัด Partial ออกตามโจทย์)
+                  if (!['Local', 'HO'].includes(req.type)) return sum;
+                  
+                  // คิดงบเฉพาะที่ "Completed" เท่านั้น
                   if (req.status !== 'Completed') return sum; 
 
-                  const itemTotal = req.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code)
-                      .reduce((s, i) => {
-                          // ⭐ ใช้ราคาจริง (actualPrice) ถ้ามี
-                          const price = i.actualPrice || i.unitPrice || 0;
-                          const duration = (req.type === 'HO' && req.purchaseType === 'Rent') ? (i.duration || 1) : 1;
-                          return s + (i.qty * price * duration);
-                      }, 0);
-                  return sum + itemTotal;
+                  const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
+                  const items = req.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code);
+
+                  const reqTotal = items.reduce((iSum, item) => {
+                      // Logic คำนวณราคาแบบละเอียด (Assets > Logs > Estimate)
+                      const relatedAssets = assets.filter(a => a.currentRequestId === req.id && a.name === item.name);
+                      const receivedLogs = item.receivedLog || [];
+                      
+                      let itemVal = 0;
+                      let cnt = 0;
+
+                      // A. Assets
+                      if (relatedAssets.length > 0) {
+                          itemVal += relatedAssets.reduce((s, asset) => {
+                               const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                               const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                               return s + (price * duration);
+                          }, 0);
+                          cnt = relatedAssets.length;
+                      } 
+                      // B. Logs
+                      else if (receivedLogs.length > 0) {
+                          itemVal += receivedLogs.reduce((s, log) => {
+                               const duration = isRent ? (log.duration || 1) : 1;
+                               return s + (log.qty * log.price * duration);
+                          }, 0);
+                          cnt = item.receivedTotal || 0;
+                      }
+
+                      // C. Estimate
+                      const rem = Math.max(0, item.qty - cnt);
+                      const dur = isRent ? (item.duration || 1) : 1;
+                      itemVal += (rem * (item.unitPrice || 0) * dur);
+
+                      return iSum + itemVal;
+                  }, 0);
+
+                  return sum + reqTotal;
               }, 0);
           };
 
-          // ... (ส่วน map subJobData และ epCodeData เหมือนเดิม) ...
+          // 1. SubJob Data
           const subJobData = [];
           targetProjects.forEach(p => {
               (p.subJobs || []).forEach(sj => {
                   const existing = subJobData.find(x => x.code === sj.code);
-                  const used = calculateUsed(sj.code, 'SubJob');
+                  // ⭐ ส่งชื่อโครงการ (p.name) เข้าไปคำนวณด้วย
+                  const used = calculateUsedForProject(p.name, sj.code, 'SubJob'); 
+                  
                   if (existing) {
                       existing.budget += (sj.budget || 0);
                       existing.used += used; 
@@ -3894,11 +3996,14 @@ const handleSubmitContract = async () => {
               });
           });
 
+          // 2. EP Code Data
           const epCodeData = [];
           targetProjects.forEach(p => {
               (p.epCodes || []).forEach(ep => {
                   const existing = epCodeData.find(x => x.code === ep.code);
-                  const used = calculateUsed(ep.code, 'EPCode');
+                  // ⭐ ส่งชื่อโครงการ (p.name) เข้าไปคำนวณด้วย
+                  const used = calculateUsedForProject(p.name, ep.code, 'EPCode');
+                  
                   if (existing) {
                       existing.budget += (ep.budget || 0);
                       existing.used += used;
@@ -3912,7 +4017,7 @@ const handleSubmitContract = async () => {
           epCodeData.sort((a,b) => a.code.localeCompare(b.code));
 
           return { subJobData, epCodeData };
-      }, [projects, requests, globalProjectFilter]);
+      }, [projects, requests, globalProjectFilter, assets]);
 
 // --- HELPER: แปลง Google Drive URL เป็น Image Link ---
       const getDriveImageUrl = (src) => {
@@ -3992,6 +4097,33 @@ const handleSubmitContract = async () => {
                <p className="text-sm font-medium">{notification.message}</p>
             </div>
           )}
+
+          {showPublicAnnounce && announcement && (
+            <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-300">
+                <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border-t-8 border-indigo-600 animate-in zoom-in-95">
+                    <div className="p-8 text-center">
+                        <div className="w-20 h-20 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                            <Megaphone className="w-10 h-10 animate-bounce" />
+                        </div>
+                        <h2 className="text-2xl font-extrabold text-gray-800 mb-2">{announcement.title}</h2>
+                        <p className="text-xs text-gray-400 mb-6 font-mono bg-gray-50 inline-block px-3 py-1 rounded-full border">
+                            ประกาศเมื่อ: {announcement.date}
+                        </p>
+                        
+                        <div className="text-left bg-gray-50 p-5 rounded-xl border border-gray-200 text-gray-600 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto">
+                            {announcement.detail}
+                        </div>
+
+                        <button 
+                            onClick={() => setShowPublicAnnounce(false)}
+                            className="mt-8 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg transform transition-all active:scale-95 flex items-center justify-center gap-2"
+                        >
+                            รับทราบ / เข้าสู่ระบบ <ArrowRight className="w-5 h-5"/>
+                        </button>
+                    </div>
+                </div>
+            </div>
+          )}
     
           {/* Sidebar */}
           <aside className="w-64 bg-white border-r border-gray-200 hidden md:flex flex-col shadow-lg z-20 no-print">
@@ -4028,6 +4160,12 @@ const handleSubmitContract = async () => {
               <button onClick={() => setActiveTab('assets')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'assets' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Monitor className="w-5 h-5" /> ทะเบียนทรัพย์สิน</button>
               {hasPermission(26) && (
               <button onClick={() => setActiveTab('projects')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'projects' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}><Settings className="w-5 h-5" /> ตั้งค่าโครงการ (Projects)</button>
+              )}
+
+              {hasPermission(28) && (
+              <button onClick={() => setActiveTab('announcement')} className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg transition-colors font-medium ${activeTab === 'announcement' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>
+                  <Megaphone className="w-5 h-5" /> จัดการประกาศ (Announce)
+              </button>
               )}
                
                 
@@ -4473,7 +4611,71 @@ const handleSubmitContract = async () => {
                       </div>
                   </div>
               )}
-    
+    {/* --- ANNOUNCEMENT MANAGEMENT TAB --- */}
+{activeTab === 'announcement' && hasPermission(28) && (
+    <div className="space-y-6 max-w-4xl mx-auto">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
+                <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
+                    <Megaphone className="w-5 h-5 text-indigo-600"/> จัดการประกาศข่าวสาร (System Announcement)
+                </h3>
+            </div>
+            
+            <div className="p-8">
+                {/* Status Card */}
+                <div className={`p-4 rounded-xl border mb-6 flex items-center gap-4 ${announcement ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center ${announcement ? 'bg-green-100 text-green-600' : 'bg-gray-200 text-gray-400'}`}>
+                        <Bell className="w-6 h-6"/>
+                    </div>
+                    <div>
+                        <h4 className="font-bold text-gray-800">สถานะประกาศ: {announcement ? <span className="text-green-600">กำลังใช้งาน (Active)</span> : <span className="text-gray-500">ไม่มีประกาศ</span>}</h4>
+                        {announcement && <p className="text-xs text-gray-500 mt-1">ล่าสุดเมื่อ: {announcement.date} โดย {announcement.updatedBy}</p>}
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-1.5">หัวข้อประกาศ (Title)</label>
+                        <input 
+                            type="text" 
+                            className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                            placeholder="ระบุหัวข้อเรื่อง..."
+                            value={announceForm.title}
+                            onChange={e => setAnnounceForm({...announceForm, title: e.target.value})}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-1.5">รายละเอียด (Details)</label>
+                        <textarea 
+                            rows="5"
+                            className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                            placeholder="ระบุรายละเอียดข้อความ..."
+                            value={announceForm.detail}
+                            onChange={e => setAnnounceForm({...announceForm, detail: e.target.value})}
+                        ></textarea>
+                    </div>
+                </div>
+
+                <div className="mt-8 flex gap-3 pt-6 border-t border-gray-100">
+                    {announcement && (
+                        <button 
+                            onClick={handleClearAnnouncement}
+                            className="flex-1 bg-white border-2 border-red-100 text-red-600 font-bold py-3 rounded-xl hover:bg-red-50 hover:border-red-200 transition-colors flex items-center justify-center gap-2"
+                        >
+                            <Trash2 className="w-5 h-5"/> ยกเลิกประกาศ
+                        </button>
+                    )}
+                    <button 
+                        onClick={handleSaveAnnouncement}
+                        className="flex-[2] bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 shadow-md transition-all flex items-center justify-center gap-2"
+                    >
+                        <Megaphone className="w-5 h-5"/> {announcement ? 'อัปเดตประกาศ' : 'เริ่มประกาศ (Publish)'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+)}
               {activeTab === 'orders' && (
   <div className="space-y-6 max-w-7xl mx-auto">
     <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
@@ -6273,38 +6475,39 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
         const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
         
         // ---------------------------------------------------------
-        // ⭐ 1. เตรียมข้อมูล (Priority Logic)
+        // ⭐ 1. เตรียมข้อมูล (Priority & Stock Check Logic)
         // ---------------------------------------------------------
         
-        // A. ค้นหาทรัพย์สิน (Assets) ที่ผูกกับ Request นี้ และชื่อตรงกัน
+        // A. ข้อมูลสำหรับการคำนวณราคา
         const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
-        
-        // B. ดึงประวัติการรับของ (Inventory Logs)
         const receivedLogs = item.receivedLog || [];
-        
-        // เช็คว่ามีรายละเอียดให้ขยายดูหรือไม่
         const hasAssets = relatedAssets.length > 0;
         const hasLogs = receivedLogs.length > 0;
         const hasDetails = hasAssets || hasLogs;
         const isExpanded = expandedItems.has(idx);
 
+        // B. ⭐ [เพิ่มใหม่] Logic เช็คสต็อกคงเหลือ (เพื่อแสดงในหมายเหตุ)
+        // เช็ค Inventory (วัสดุ)
+        const stockItem = inventory.find(i => i.name === item.name && i.project === selectedRequest.job);
+        const currentStockQty = stockItem ? stockItem.qty : 0;
+        // เช็ค Assets (ทรัพย์สิน) ที่สถานะ Available
+        const availableAssetCount = assets.filter(a => a.name === item.name && a.project === selectedRequest.job && a.status === 'Available').length;
+
+
         // ---------------------------------------------------------
-        // ⭐ 2. คำนวณยอดเงินรวม (Line Total Calculation)
+        // 2. คำนวณยอดเงินรวม (Line Total)
         // ---------------------------------------------------------
         let lineTotal = 0;
         let lineReceivedCount = 0;
 
-        // กรณี A: มี Asset (คิดราคาจาก Asset รายตัว) -> แม่นยำที่สุดสำหรับงานทรัพย์สิน
         if (hasAssets) {
              lineTotal += relatedAssets.reduce((sum, asset) => {
                  const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                 // ถ้า Asset ไม่มี duration เฉพาะตัว ให้ใช้ของ Item หลัก
                  const duration = isRent ? (asset.duration || item.duration || 1) : 1;
                  return sum + (price * duration);
              }, 0);
              lineReceivedCount = relatedAssets.length;
         } 
-        // กรณี B: ไม่มี Asset แต่มี Log การรับของ (คิดราคาจาก Log) -> สำหรับวัสดุสิ้นเปลือง
         else if (hasLogs) {
              lineTotal += receivedLogs.reduce((sum, log) => {
                  const duration = isRent ? (log.duration || 1) : 1;
@@ -6313,13 +6516,10 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
              lineReceivedCount = item.receivedTotal || 0;
         }
 
-        // กรณี C: ส่วนที่เหลือที่ยังไม่ได้รับ (Estimate) -> คิดจากราคาตั้งต้น
         const remainingQty = Math.max(0, item.qty - lineReceivedCount);
         const estimateDuration = isRent ? (item.duration || 1) : 1;
-        
         lineTotal += (remainingQty * item.unitPrice * estimateDuration);
 
-        // --- เช็คระยะเวลาคละกัน (Mixed Duration) สำหรับงานเช่า ---
         let isDurationMixed = false;
         let displayDuration = item.duration || 1;
         
@@ -6327,7 +6527,6 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
             const allDurations = new Set();
             if (hasAssets) relatedAssets.forEach(a => allDurations.add(a.duration || item.duration || 1));
             else receivedLogs.forEach(l => allDurations.add(l.duration || item.duration || 1));
-            
             if (allDurations.size > 1) isDurationMixed = true;
             else if (allDurations.size === 1) displayDuration = [...allDurations][0];
         }
@@ -6339,7 +6538,6 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                 {/* 1. รายการ + ปุ่มขยาย */}
                 <td className="p-3 align-top">
                     <div className="flex items-start gap-2">
-                        {/* ปุ่มขยาย แสดงเมื่อมี Asset หรือ Log */}
                         {hasDetails && (
                             <button 
                                 onClick={() => toggleExpandItem(idx)}
@@ -6366,9 +6564,8 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     </div>
                 </td>
 
-                {/* 2. ราคา/หน่วย */}
+                {/* 2. ราคา/หน่วย (แก้ undefined) */}
                 <td className="p-3 text-right text-gray-700 align-top">
-                    {/* ถ้ามีรายละเอียดราคา (รับแล้ว) ให้แสดงลิงก์ดูรายละเอียดแทน */}
                     {(hasDetails && lineReceivedCount > 0) ? (
                         <div 
                             className="text-xs text-blue-600 italic mt-1 cursor-pointer hover:underline" 
@@ -6381,7 +6578,8 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                             <div className="flex flex-col items-end">
                                 <span className="font-mono font-bold text-gray-900">{item.unitPrice.toLocaleString()}</span>
                                 <span className="text-[10px] text-gray-500">
-                                    {isRent ? `บาท/${item.rentalUnit}` : `บาท`}
+                                    {/* ⭐ แก้ไข: ใส่ Default 'เดือน' ถ้า rentalUnit เป็น undefined */}
+                                    {isRent ? `บาท/${item.rentalUnit || 'เดือน'}` : `บาท`}
                                 </span>
                             </div>
                         ) : '-'
@@ -6406,14 +6604,29 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     )}
                 </td>
 
-                {/* 4. รวมเงิน (แสดงยอดคำนวณจริง) */}
+                {/* 4. รวมเงิน */}
                 <td className="p-3 text-right font-bold text-gray-900 align-top bg-gray-50/50">
                     {lineTotal.toLocaleString()}
                 </td>
 
-                {/* 5. หมายเหตุ & รูป */}
+                {/* 5. หมายเหตุ & รูป (เพิ่มเช็คสต็อกกลับคืนมา) */}
                 <td className="p-3 text-xs text-gray-500 align-top break-words max-w-[150px]">
                     <div className="mb-1">{item.note || '-'}</div>
+                    
+                    {/* ⭐ เพิ่มส่วนแสดงสถานะคงเหลือ (Stock Check) */}
+                    <div className="flex flex-col gap-1 mt-1">
+                        {currentStockQty > 0 && (
+                            <span className="text-[9px] bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-100 w-fit flex items-center gap-1">
+                                วัสดุมี: <b>{currentStockQty}</b>
+                            </span>
+                        )}
+                        {availableAssetCount > 0 && (
+                            <span className="text-[9px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100 w-fit flex items-center gap-1">
+                                ว่าง: <b>{availableAssetCount}</b>
+                            </span>
+                        )}
+                    </div>
+
                     {item.images && item.images.length > 0 && (
                         <button
                             onClick={(e) => { e.stopPropagation(); setViewingAttachments({ attachments: item.images }); }}
@@ -6425,15 +6638,11 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                 </td>
             </tr>
 
-            {/* ---------------------------------------------------------
-                ⭐ 3. EXPANDED ROW: รายละเอียดรายชิ้น
-               --------------------------------------------------------- */}
+            {/* 3. EXPANDED ROW (เหมือนเดิม) */}
             {isExpanded && hasDetails && (
                 <tr className="bg-gray-50/50 animate-in fade-in">
                     <td colSpan="5" className="p-4 border-t border-gray-200 shadow-inner">
                         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden max-w-4xl mx-auto">
-                            
-                            {/* Header ตารางย่อย */}
                             <div className="px-4 py-2 bg-gray-100/80 border-b flex justify-between items-center">
                                 <h5 className="font-bold text-gray-700 text-xs flex items-center gap-2">
                                     <List className="w-3 h-3 text-gray-500"/> 
@@ -6442,104 +6651,119 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                 <span className="text-[10px] text-gray-400 italic">* แสดงข้อมูลตามจริงที่บันทึกรับของ</span>
                             </div>
                             
-                            {/* ตารางย่อย */}
-                            <table className="w-full text-xs text-left">
-                                <thead className="bg-gray-50 text-gray-500 font-semibold">
-                                    <tr>
-                                        <th className="px-4 py-2 w-10 text-center">#</th>
-                                        {/* ⭐ ปรับหัวตารางตามประเภทข้อมูล */}
-                                        {hasAssets ? (
-                                            <>
-                                                <th className="px-4 py-2 w-40">Asset ID</th>
-                                                <th className="px-4 py-2 w-40">Serial No.</th>
-                                            </>
-                                        ) : (
-                                            <th className="px-4 py-2" colSpan="2">รายละเอียดการรับ (Batch Info)</th>
-                                        )}
-                                        
-                                        <th className="px-4 py-2 text-right">ราคาจริง (Price)</th>
-                                        {isRent && <th className="px-4 py-2 text-center w-24">ระยะเวลา</th>}
-                                        <th className="px-4 py-2 text-right w-32">รวมเงิน (Total)</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100">
-                                    {(() => {
-                                        // 🟢 กรณี A: มี Assets -> แสดงรายการแยกเป็นรายชิ้น (1 Row = 1 Asset)
-                                        if (hasAssets) {
-                                            return relatedAssets.map((asset, aIdx) => {
-                                                const assetPrice = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                                                const assetDuration = isRent ? (asset.duration || item.duration || 1) : 1;
-                                                const totalRow = assetPrice * assetDuration;
+{/* ตารางย่อย (Expanded Table) */}
+<table className="w-full text-xs text-left">
+    <thead className="bg-gray-50 text-gray-500 font-semibold">
+        <tr>
+            <th className="px-4 py-2 w-10 text-center">#</th>
+            
+            {/* ⭐ เพิ่ม: วันที่รับของ */}
+            <th className="px-4 py-2 w-28">วันที่รับ</th> 
 
-                                                return (
-                                                    <tr key={`ast-${aIdx}`} className="hover:bg-blue-50/50">
-                                                        <td className="px-4 py-2.5 text-center text-gray-400">{aIdx + 1}</td>
-                                                        
-                                                        {/* Asset ID */}
-                                                        <td className="px-4 py-2.5">
-                                                            <span className="font-mono text-blue-600 font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
-                                                                {asset.id}
-                                                            </span>
-                                                        </td>
-                                                        
-                                                        {/* Serial */}
-                                                        <td className="px-4 py-2.5 font-mono text-gray-600">
-                                                            {asset.serial || '-'}
-                                                        </td>
-                                                        
-                                                        {/* Price */}
-                                                        <td className="px-4 py-2.5 text-right font-mono">
-                                                            {assetPrice.toLocaleString()}
-                                                        </td>
-                                                        
-                                                        {/* Duration (Rent only) */}
-                                                        {isRent && (
-                                                            <td className="px-4 py-2.5 text-center text-indigo-600 font-bold bg-indigo-50/30">
-                                                                {assetDuration}
-                                                            </td>
-                                                        )}
-                                                        
-                                                        {/* Row Total */}
-                                                        <td className="px-4 py-2.5 text-right font-bold text-gray-800">
-                                                            {totalRow.toLocaleString()}
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            });
-                                        } 
-                                        
-                                        // 🟠 กรณี B: ไม่มี Assets (Inventory) -> แสดงจาก Log แต่ละ Batch
-                                        else if (hasLogs) {
-                                            return receivedLogs.map((log, lIdx) => {
-                                                const logDuration = isRent ? (log.duration || 1) : 1;
-                                                const totalRow = log.qty * log.price * logDuration;
+            {hasAssets ? (
+                <>
+                    <th className="px-4 py-2 w-32">Asset ID</th>
+                    <th className="px-4 py-2 w-32">Serial No.</th>
+                </>
+            ) : (
+                <th className="px-4 py-2" colSpan="2">รายละเอียดการรับ (Batch Info)</th>
+            )}
+            
+            <th className="px-4 py-2 text-right">ราคาจริง (Price)</th>
+            {isRent && <th className="px-4 py-2 text-center w-28">ระยะเวลา</th>}
+            <th className="px-4 py-2 text-right w-32">รวมเงิน (Total)</th>
+        </tr>
+    </thead>
+    <tbody className="divide-y divide-gray-100">
+        {(() => {
+            // 🟢 กรณี A: มี Assets (แสดงรายชิ้น)
+            if (hasAssets) {
+                return relatedAssets.map((asset, aIdx) => {
+                    const assetPrice = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                    const assetDuration = isRent ? (asset.duration || item.duration || 1) : 1;
+                    const totalRow = assetPrice * assetDuration;
+                    
+                    // แปลงหน่วยเป็นไทย
+                    const unitMap = { 'Day': 'วัน', 'Month': 'เดือน', 'Year': 'ปี' };
+                    const unitLabel = unitMap[asset.rentalUnit] || 'เดือน';
 
-                                                return (
-                                                    <tr key={`log-${lIdx}`} className="hover:bg-gray-50">
-                                                        <td className="px-4 py-2.5 text-center text-gray-400">{lIdx + 1}</td>
-                                                        <td className="px-4 py-2.5 text-gray-500" colSpan="2">
-                                                            <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">รับเมื่อ: {log.date.split(' ')[0]}</span>
-                                                            <span className="ml-2 text-gray-400 italic">(Lot/Batch Inventory)</span>
-                                                        </td>
-                                                        <td className="px-4 py-2.5 text-right font-mono text-gray-600">
-                                                            {log.price.toLocaleString()} <span className="text-[10px] text-gray-400">x {log.qty}</span>
-                                                        </td>
-                                                        {isRent && (
-                                                            <td className="px-4 py-2.5 text-center text-indigo-600 font-bold">
-                                                                {logDuration}
-                                                            </td>
-                                                        )}
-                                                        <td className="px-4 py-2.5 text-right font-bold text-gray-800">
-                                                            {totalRow.toLocaleString()}
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            });
-                                        }
-                                        return <tr><td colSpan="6" className="p-4 text-center text-gray-400 italic">ไม่มีข้อมูลรายละเอียด</td></tr>;
-                                    })()}
-                                </tbody>
-                            </table>
+                    return (
+                        <tr key={`ast-${aIdx}`} className="hover:bg-blue-50/50">
+                            <td className="px-4 py-2.5 text-center text-gray-400">{aIdx + 1}</td>
+                            
+                            {/* ⭐ แสดงวันที่รับ (ตัดเอาแค่วันที่ ไม่เอาเวลา) */}
+                            <td className="px-4 py-2.5 text-gray-500 font-mono">
+                                {asset.lastUpdated ? asset.lastUpdated.split(' ')[0] : '-'}
+                            </td>
+
+                            <td className="px-4 py-2.5">
+                                <span className="font-mono text-blue-600 font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
+                                    {asset.id}
+                                </span>
+                            </td>
+                            
+                            <td className="px-4 py-2.5 font-mono text-gray-600">
+                                {asset.serial || '-'}
+                            </td>
+                            
+                            <td className="px-4 py-2.5 text-right font-mono">
+                                {assetPrice.toLocaleString()}
+                            </td>
+                            
+                            {/* ⭐ แสดงระยะเวลาพร้อมหน่วย */}
+                            {isRent && (
+                                <td className="px-4 py-2.5 text-center text-indigo-600 font-bold bg-indigo-50/30">
+                                    {assetDuration} {unitLabel}
+                                </td>
+                            )}
+                            
+                            <td className="px-4 py-2.5 text-right font-bold text-gray-800">
+                                {totalRow.toLocaleString()}
+                            </td>
+                        </tr>
+                    );
+                });
+            } 
+            
+            // 🟠 กรณี B: ไม่มี Assets (Inventory)
+            else if (hasLogs) {
+                return receivedLogs.map((log, lIdx) => {
+                    const logDuration = isRent ? (log.duration || 1) : 1;
+                    const totalRow = log.qty * log.price * logDuration;
+
+                    return (
+                        <tr key={`log-${lIdx}`} className="hover:bg-gray-50">
+                            <td className="px-4 py-2.5 text-center text-gray-400">{lIdx + 1}</td>
+                            
+                            {/* ⭐ แสดงวันที่รับ (Log) */}
+                            <td className="px-4 py-2.5 text-gray-500 font-mono">
+                                {log.date.split(' ')[0]}
+                            </td>
+
+                            <td className="px-4 py-2.5 text-gray-500" colSpan="2">
+                                <span className="ml-2 text-gray-400 italic">(Lot/Batch Inventory)</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-right font-mono text-gray-600">
+                                {log.price.toLocaleString()} <span className="text-[10px] text-gray-400">x {log.qty}</span>
+                            </td>
+                            
+                            {/* แสดงระยะเวลา (Inventory มักไม่มีหน่วยเก็บไว้ ใช้ Default) */}
+                            {isRent && (
+                                <td className="px-4 py-2.5 text-center text-indigo-600 font-bold">
+                                    {logDuration}
+                                </td>
+                            )}
+                            <td className="px-4 py-2.5 text-right font-bold text-gray-800">
+                                {totalRow.toLocaleString()}
+                            </td>
+                        </tr>
+                    );
+                });
+            }
+            return <tr><td colSpan="7" className="p-4 text-center text-gray-400 italic">ไม่มีข้อมูลรายละเอียด</td></tr>;
+        })()}
+    </tbody>
+</table>
                         </div>
                     </td>
                 </tr>
@@ -9314,9 +9538,9 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     );
                 })()}
 
-               {/* ⭐ Tab 3: Purchase (ปรับปรุง: แสดงเฉพาะ Local/HO ที่จบงานแล้ว + คำนวณราคาจริง) */}
+               {/* ⭐ Tab 3: Purchase (UPDATED: Precise Calculation Logic) */}
                 {userDetailTab === 'purchase' && (() => {
-                    // 1. กรองข้อมูล: เป็นของ User นี้ + เป็น Local/HO + จบงานแล้ว (Completed)
+                    // 1. กรองข้อมูล: เป็นของ User นี้ + เป็น Local/HO + จบงานแล้ว
                     const purchaseRequests = requests.filter(r => 
                         (r.requester === viewingUser.empId || r.requester.includes(viewingUser.firstName)) && 
                         ['Local', 'HO'].includes(r.type) &&
@@ -9324,46 +9548,89 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                         (r.docNumber?.toLowerCase().includes(detailSearch.toLowerCase()) || r.items.some(i => i.name.toLowerCase().includes(detailSearch.toLowerCase())))
                     );
 
-                    // 2. แตกรายการสินค้า (Flatten) & คำนวณยอด
+                    // 2. แตกรายการสินค้า & คำนวณยอดละเอียด
                     let grandTotal = 0;
                     const tableRows = [];
 
                     purchaseRequests.forEach(req => {
-                        // หาวันที่รับของล่าสุดจากประวัติ (Completed/Receive)
+                        // หาวันที่รับของล่าสุด
                         const lastLog = req.history?.slice().reverse().find(h => 
                             h.action === 'Completed' || h.action.includes('Receive')
                         );
-                        // ถ้าไม่มีให้ใช้วันที่สร้างเอกสารแทน
                         const displayDate = lastLog ? (lastLog.timestamp || lastLog.date) : req.created;
+                        const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
 
                         req.items.forEach(item => {
-                            // ⭐ ราคา: ใช้ราคาที่รับจริง (actualPrice) ถ้าไม่มีให้ใช้ราคาตั้งต้น (unitPrice)
-                            const price = item.actualPrice || item.unitPrice || 0;
-                            // จำนวน: ใช้จำนวนที่รับจริง (receivedTotal) หรือจำนวนเต็มถ้าจบงานแล้ว
-                            const qty = item.receivedTotal || item.qty || 0;
-                            const total = price * qty;
+                            // --- เริ่มต้น Logic การคำนวณ ---
+                            const relatedAssets = assets.filter(a => a.currentRequestId === req.id && a.name === item.name);
+                            const receivedLogs = item.receivedLog || [];
                             
-                            grandTotal += total;
+                            let itemTotal = 0;
+                            let receivedCount = 0;
+                            let pricesList = []; // เก็บรายการราคาเพื่อเช็คว่าราคาเดียวหรือคละ
+
+                            // Priority A: Assets (แม่นยำสุด)
+                            if (relatedAssets.length > 0) {
+                                itemTotal += relatedAssets.reduce((s, asset) => {
+                                    const p = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                                    const d = isRent ? (asset.duration || item.duration || 1) : 1;
+                                    pricesList.push(p);
+                                    return s + (p * d);
+                                }, 0);
+                                receivedCount = relatedAssets.length;
+                            } 
+                            // Priority B: Logs (สำหรับวัสดุ)
+                            else if (receivedLogs.length > 0) {
+                                itemTotal += receivedLogs.reduce((s, log) => {
+                                    const p = log.price;
+                                    const d = isRent ? (log.duration || 1) : 1;
+                                    pricesList.push(p);
+                                    return s + (log.qty * p * d);
+                                }, 0);
+                                receivedCount = item.receivedTotal || 0;
+                            }
+
+                            // Priority C: Estimate (ส่วนที่เหลือ)
+                            const remaining = Math.max(0, item.qty - receivedCount);
+                            if (remaining > 0) {
+                                const p = item.unitPrice || 0;
+                                const d = isRent ? (item.duration || 1) : 1;
+                                itemTotal += (remaining * p * d);
+                                pricesList.push(p);
+                            }
+
+                            // ตรวจสอบว่าราคาคละกันหรือไม่
+                            const uniquePrices = [...new Set(pricesList)];
+                            const displayPrice = uniquePrices.length === 1 ? uniquePrices[0] : 'Mixed'; 
+
+                            grandTotal += itemTotal;
 
                             tableRows.push({
                                 rawDate: displayDate,
                                 docNumber: req.docNumber || req.id,
                                 reqId: req.id,
                                 name: item.name,
-                                price: price,
-                                qty: qty,
+                                price: displayPrice, // ส่งค่าไปเช็คตอน Render
+                                qty: item.qty,
                                 unit: item.unit,
-                                total: total
+                                total: itemTotal
                             });
                         });
                     });
 
-                    // เรียงลำดับตามวันที่ (ล่าสุดขึ้นก่อน)
-                    // (ฟังก์ชัน parseThaiDate มีอยู่ใน scope ของ App อยู่แล้ว)
+                    // เรียงลำดับตามวันที่
                     tableRows.sort((a, b) => {
-                        const timeA = parseThaiDate(a.rawDate)?.getTime() || 0;
-                        const timeB = parseThaiDate(b.rawDate)?.getTime() || 0;
-                        return timeB - timeA;
+                        const parse = (d) => { try { 
+                            if(d.includes('/')) {
+                                const parts = d.split(' ');
+                                const dp = parts[0].split('/');
+                                let y = parseInt(dp[2]);
+                                if(y > 2400) y -= 543;
+                                return new Date(y, parseInt(dp[1])-1, parseInt(dp[0])).getTime();
+                            }
+                            return new Date(d).getTime(); 
+                        } catch(e) { return 0; } };
+                        return parse(b.rawDate) - parse(a.rawDate);
                     });
 
                     return (
@@ -9408,7 +9675,12 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                                     </button>
                                                 </td>
                                                 <td className="p-4 text-gray-800 font-medium">{row.name}</td>
-                                                <td className="p-4 text-right text-gray-600 font-mono">{row.price.toLocaleString()}</td>
+                                                <td className="p-4 text-right text-gray-600 font-mono">
+                                                    {row.price === 'Mixed' ? 
+                                                        <span className="text-xs italic text-orange-600">(คละราคา)</span> : 
+                                                        row.price.toLocaleString()
+                                                    }
+                                                </td>
                                                 <td className="p-4 text-center">
                                                     <span className="bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded font-bold text-xs">
                                                         {row.qty.toLocaleString()} {row.unit}
@@ -9465,31 +9737,69 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     );
                 })()}
 
-                {/* ---------------- Tab 5: ทรัพย์สินที่ยืม (เหมือนเดิม) ---------------- */}
+                {/* ---------------- Tab 5: ทรัพย์สินที่ยืม (UPDATED: Clickable Asset ID) ---------------- */}
                 {userDetailTab === 'borrow' && (() => {
+                    // Logic การกรอง (เหมือนเดิม)
                     const activeBorrows = assets.filter(a => 
-                        a.status === 'Borrowed' && a.borrowedBy && a.borrowedBy.includes(viewingUser.firstName) &&
+                        a.status === 'Borrowed' && 
+                        a.holder && 
+                        (
+                            a.holder.includes(viewingUser.firstName) || 
+                            a.holder.includes(viewingUser.empId) ||
+                            (viewingUser.username && a.holder.includes(viewingUser.username))
+                        ) &&
                         (a.name.toLowerCase().includes(detailSearch.toLowerCase()) || a.id.toLowerCase().includes(detailSearch.toLowerCase()))
                     );
+
                     return (
-                        <div className="space-y-4">
-                             <div className="flex justify-between items-center">
-                                <input type="text" placeholder="ค้นหา..." className="p-2 border rounded text-sm w-64" value={detailSearch} onChange={e => setDetailSearch(e.target.value)}/>
-                                <span className="text-xs font-bold text-orange-600 bg-orange-100 px-2 py-1 rounded">กำลังยืม: {activeBorrows.length}</span>
+                        <div className="space-y-4 p-6">
+                            <div className="flex justify-between items-center mb-4">
+                                <div className="relative">
+                                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
+                                    <input type="text" placeholder="ค้นหา..." className="pl-9 pr-4 py-2 border rounded-lg text-sm w-64 outline-none focus:ring-2 focus:ring-blue-500" value={detailSearch} onChange={e => setDetailSearch(e.target.value)}/>
+                                </div>
+                                <span className="text-xs font-bold text-orange-700 bg-orange-100 px-3 py-1.5 rounded-full border border-orange-200">
+                                    กำลังยืม: {activeBorrows.length} รายการ
+                                </span>
                             </div>
-                            <div className="bg-white rounded-lg border overflow-hidden shadow-sm">
+
+                            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                                 <table className="w-full text-sm text-left">
                                     <thead className="bg-gray-100 text-gray-600 font-bold uppercase text-xs">
-                                        <tr><th className="p-3">รหัส</th><th className="p-3">ชื่อ</th><th className="p-3">วันที่ยืม</th></tr>
+                                        <tr>
+                                            <th className="p-4 w-32">รหัสทรัพย์สิน</th>
+                                            <th className="p-4">ชื่อรายการ</th>
+                                            <th className="p-4 w-40">Serial No.</th>
+                                            <th className="p-4 w-40 text-center">วันที่ยืม/อัปเดต</th>
+                                        </tr>
                                     </thead>
-                                    <tbody className="divide-y">
-                                        {activeBorrows.length > 0 ? activeBorrows.map(asset => (
-                                            <tr key={asset.id} className="hover:bg-gray-50">
-                                                <td className="p-3 font-mono text-gray-500">{asset.id}</td>
-                                                <td className="p-3 font-medium">{asset.name}</td>
-                                                <td className="p-3 text-gray-500">{asset.lastUpdated?.split(' ')[0]}</td>
+                                    <tbody className="divide-y divide-gray-100">
+                                        {activeBorrows.length > 0 ? activeBorrows.map((asset, idx) => (
+                                            <tr key={asset.id} className="hover:bg-orange-50/50 transition-colors">
+                                                <td className="p-4">
+                                                    {/* ⭐ แก้ไขตรงนี้: เปลี่ยนเป็นปุ่มกดเรียก openViewItem */}
+                                                    <button 
+                                                        onClick={() => openViewItem(asset)}
+                                                        className="font-mono text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded border border-blue-100 text-xs hover:bg-blue-100 hover:underline cursor-pointer transition-colors"
+                                                        title="คลิกเพื่อดูรายละเอียดและประวัติ"
+                                                    >
+                                                        {asset.id}
+                                                    </button>
+                                                </td>
+                                                <td className="p-4 font-bold text-gray-800">{asset.name}</td>
+                                                <td className="p-4 font-mono text-gray-500 text-xs">{asset.serial || '-'}</td>
+                                                <td className="p-4 text-center text-gray-500 text-xs">
+                                                    {asset.lastUpdated ? asset.lastUpdated.split(' ')[0] : '-'}
+                                                </td>
                                             </tr>
-                                        )) : <tr><td colSpan="3" className="p-8 text-center text-gray-400">ไม่พบทรัพย์สินที่ยืม</td></tr>}
+                                        )) : (
+                                            <tr>
+                                                <td colSpan="4" className="p-12 text-center text-gray-400 flex flex-col items-center justify-center">
+                                                    <Briefcase className="w-10 h-10 mb-2 opacity-20"/>
+                                                    ไม่พบทรัพย์สินที่ยืมอยู่
+                                                </td>
+                                            </tr>
+                                        )}
                                     </tbody>
                                 </table>
                             </div>
