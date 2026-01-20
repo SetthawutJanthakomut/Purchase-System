@@ -162,11 +162,11 @@ const {
     };
 
     // --- Configuration & Constants ---
-    const ROLES = {
+const ROLES = {
       ADMIN: 'Admin (ผู้ดูแลระบบ)',
       USER: 'User (ผู้ขอซื้อ)',
-      DEPT_HEAD: 'หัวหน้าแผนกฝ่ายจัดซื้อ (Level 1)',
-      PM: 'ผู้จัดการโครงการ (Level 2)',
+      DEPT_HEAD: 'ผู้อนุมัติ Level 1 (Head)', // เปลี่ยนชื่อ
+      PM: 'ผู้อนุมัติ Level 2 (PM)',         // เปลี่ยนชื่อ
       PURCHASING: 'ฝ่ายจัดซื้อ (HO & Local Buyer)',
       STORE: 'Store Keeper (ผู้ดูแลคลัง)'
     };
@@ -187,12 +187,12 @@ const {
         'Critical': { label: 'ด่วนมาก', color: 'bg-red-100 text-red-700 border-red-200' }
     };
 
-    const STATUS_LABELS = {
+const STATUS_LABELS = {
       'Draft': 'แบบร่าง (Draft)',
       'Pending Check': 'รอฝ่ายจัดซื้อตรวจสอบ (Check)',
       'Revise Needed': 'รอแก้ไขข้อมูล (Revise)',
-      'Pending Head': 'รอหัวหน้าแผนกตรวจสอบ',
-      'Pending PM': 'รอ PM อนุมัติ',
+      'Pending Head': 'รออนุมัติ Level 1',      // ⭐ เปลี่ยนชื่อ
+      'Pending PM': 'รออนุมัติ Level 2',        // ⭐ เปลี่ยนชื่อ
       'Approved': 'อนุมัติแล้ว (รอดำเนินการ)',
       'Ordered': 'สั่งซื้อแล้ว (รอรับของ)',
       'PR Issued': 'ออกใบขอซื้อ (PR) แล้ว',
@@ -384,6 +384,86 @@ const [announcements, setAnnouncements] = useState([]);
 
     const [announceForm, setAnnounceForm] = useState({ id: '', title: '', detail: '', active: true }); 
     const [isAnnounceLoading, setIsAnnounceLoading] = useState(false);
+
+
+
+   // --- STATE: Signature (ชุดสมบูรณ์) ---
+    const [sigMode, setSigMode] = useState('Draw'); // 'Draw' หรือ 'Upload'
+    const sigCanvasRef = useRef(null);
+    const [isDrawing, setIsDrawing] = useState(false);
+    const [hasDrawn, setHasDrawn] = useState(false); // เช็คว่ามีการวาดหรือไม่
+    const [signatureFile, setSignatureFile] = useState(null); // สำหรับโหมด Upload
+    const [tempSignatureUrl, setTempSignatureUrl] = useState(null); // สำหรับ Preview
+
+    // 1. เริ่มวาด
+    const startDrawing = (e) => {
+        const canvas = sigCanvasRef.current;
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#000';
+        
+        const rect = canvas.getBoundingClientRect();
+        // รองรับทั้งเมาส์และนิ้วสัมผัส
+        const clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+        const clientY = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+        
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        setIsDrawing(true);
+    };
+
+    // 2. กำลังวาด (ขยับเมาส์/นิ้ว)
+    const draw = (e) => {
+        if (!isDrawing) return;
+        e.preventDefault(); // ป้องกันจอลื่นไหลตอนวาดบนมือถือ
+        
+        const canvas = sigCanvasRef.current;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext('2d');
+        const rect = canvas.getBoundingClientRect();
+        
+        const clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+        const clientY = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        
+        if (!hasDrawn) setHasDrawn(true); // บันทึกว่ามีการวาดเกิดขึ้นแล้ว
+    };
+
+    // 3. หยุดวาด (ยกเมาส์/นิ้วออก)
+    const stopDrawing = () => {
+        setIsDrawing(false);
+        const canvas = sigCanvasRef.current;
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.closePath();
+        }
+    };
+
+    // 4. ล้างลายเซ็น
+    const clearSignature = () => {
+        const canvas = sigCanvasRef.current;
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        setTempSignatureUrl(null);
+        setHasDrawn(false); // รีเซ็ตสถานะ
+    };
+
+
+
 
 const hasPermission = (permId, project = globalProjectFilter) => {
           // 1. ถ้าเป็น Super Admin ให้ผ่านตลอด
@@ -4098,7 +4178,7 @@ const PublicAnnouncementPopup = () => (
                                     {item.detail}
                                 </div>
                                 <div className="mt-3 pt-3 border-t border-slate-200 flex justify-between items-center text-[10px] text-gray-400">
-                                    <span>ประกาศเมื่อ: {item.date}</span>
+                                    <span>ประกาศเมื่อ: {item.timestamp}</span>
                                     <span>โดย: {item.updatedBy}</span>
                                 </div>
                             </div>
@@ -4695,8 +4775,8 @@ const PublicAnnouncementPopup = () => (
                             </div>
                             <p className="text-xs text-gray-500 line-clamp-2">{item.detail}</p>
                             <div className="mt-2 text-[10px] text-gray-400 flex justify-between">
-                                <span>{item.date}</span>
-                            </div>
+    <span>{item.timestamp}</span>
+</div>
                         </div>
                     ))}
                 </div>
@@ -8669,71 +8749,285 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
           </div>
       )}
 
+{/* --- PRINT PREVIEW MODAL (NEW METHOD: Strict Log Matching) --- */}
       {showPOPreviewModal && selectedRequest && (
         <div className="fixed inset-0 bg-white z-[200] overflow-auto">
-            <div className="max-w-[210mm] mx-auto p-10 print-container">
-                <div className="flex justify-between items-start mb-8 border-b pb-4 no-print">
-                    <h2 className="text-xl font-bold">ตัวอย่างเอกสาร (Preview)</h2>
+            <div className="max-w-[210mm] mx-auto p-8 print-container">
+                
+                {/* Toolbar (No Print) */}
+                <div className="flex justify-between items-center mb-6 border-b pb-4 no-print bg-gray-50 p-4 rounded-xl">
+                    <div>
+                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                            <Printer className="w-6 h-6 text-blue-600"/> ตัวอย่างก่อนพิมพ์ (Print Preview)
+                        </h2>
+                        <p className="text-sm text-gray-500">ตรวจสอบความถูกต้องก่อนสั่งพิมพ์</p>
+                    </div>
                     <div className="flex gap-2">
-                        <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"><Printer className="w-4 h-4"/> พิมพ์</button>
-                        <button onClick={() => setShowPOPreviewModal(false)} className="px-4 py-2 border rounded hover:bg-gray-50">ปิด</button>
+                        <button onClick={handlePrint} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold transition-all">
+                            <Printer className="w-4 h-4"/> สั่งพิมพ์ / บันทึก PDF
+                        </button>
+                        <button onClick={() => setShowPOPreviewModal(false)} className="px-6 py-2.5 border border-gray-300 rounded-lg hover:bg-white bg-white text-gray-700 font-bold transition-all">
+                            ปิด
+                        </button>
                     </div>
                 </div>
-                {/* Print Layout */}
-                <div className="p-8 border border-gray-200 shadow-sm print:border-0 print:shadow-none bg-white min-h-[297mm]">
-                    <div className="flex justify-between items-start mb-8">
-                        <div>
-                            <h1 className="text-2xl font-bold text-gray-800">ใบสั่งซื้อ (PURCHASE ORDER)</h1>
-                            <p className="text-sm text-gray-500">บริษัท ตัวอย่าง จำกัด (สำนักงานใหญ่)</p>
-                            <p className="text-xs text-gray-400">123 ถ.สุขุมวิท แขวงคลองเตย เขตคลองเตย กทม. 10110</p>
-                        </div>
-                        <div className="text-right">
-                            <div className="mb-2"><span className="text-gray-500 text-xs block">เลขที่เอกสาร</span><span className="font-bold text-lg">{selectedRequest.docNumber || 'DRAFT'}</span></div>
-                            <div><span className="text-gray-500 text-xs block">วันที่</span><span className="font-medium">{new Date().toLocaleDateString('th-TH')}</span></div>
+
+                {/* --- DOCUMENT PAPER START --- */}
+                <div className="p-8 border border-gray-200 shadow-lg print:border-0 print:shadow-none bg-white min-h-[297mm] text-black font-sans relative">
+                    
+                    {/* Helper: Strict Date Formatter (DD/MM/YYYY พ.ศ.) */}
+                    {(() => {
+                        const formatDateTh = (d) => {
+                            if(!d) return '';
+                            let dateObj;
+                            // 1. กรณีเป็น String แบบ '20/01/2569 ...'
+                            if (typeof d === 'string') {
+                                const cleanDate = d.split(' ')[0]; // ตัดเวลาออก
+                                if (cleanDate.includes('/')) {
+                                    const parts = cleanDate.split('/');
+                                    if (parts.length === 3) {
+                                        let d = parts[0].padStart(2, '0');
+                                        let m = parts[1].padStart(2, '0');
+                                        let y = parseInt(parts[2]);
+                                        if (y < 2400) y += 543; // แปลงให้เป็น พ.ศ. แน่นอน
+                                        return `${d}/${m}/${y}`;
+                                    }
+                                }
+                                dateObj = new Date(d); // ลองแปลงมาตรฐาน
+                            } else {
+                                dateObj = d;
+                            }
+                            
+                            // 2. กรณีเป็น Date Object หรือ ISO String
+                            if (!dateObj || isNaN(dateObj.getTime())) return d; // แปลงไม่ได้คืนค่าเดิม
+                            
+                            const day = dateObj.getDate().toString().padStart(2, '0');
+                            const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
+                            const year = dateObj.getFullYear() < 2400 ? dateObj.getFullYear() + 543 : dateObj.getFullYear();
+                            return `${day}/${month}/${year}`;
+                        };
+
+                    return (
+                    <>
+                    {/* 1. Header Section */}
+                    <div className="text-center mb-6 relative">
+                        <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
+                        <div className="absolute top-0 right-0 text-right">
+                            <div className="text-xs text-gray-500">เลขที่เอกสาร</div>
+                            <div className="text-lg font-bold">{selectedRequest.docNumber || selectedRequest.id}</div>
+                            {/* วันที่เอกสาร: ใช้วันที่สร้าง (Log แรก) หรือ created */}
+                            <div className="text-xs">
+                                {formatDateTh(selectedRequest.history?.[0]?.date || selectedRequest.created)}
+                            </div>
                         </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-8 mb-8 text-sm">
-                        <div className="p-4 bg-gray-50 rounded border border-gray-100">
-                            <h3 className="font-bold border-b border-gray-200 pb-2 mb-2 text-gray-700">ผู้ขาย (Vendor)</h3>
-                            <p className="text-gray-400 italic">-- ระบุชื่อร้านค้า --</p>
-                            <p>..................................................................</p>
+
+                    <div className="mb-4">
+                        <span className="font-bold">โครงการ (Project):</span> <span className="border-b border-dotted border-gray-400 px-2 min-w-[200px] inline-block">{selectedRequest.job}</span>
+                    </div>
+
+                    {/* 2. Checkboxes Section (NEW LAYOUT) */}
+                    <div className="border border-black p-4 mb-4">
+                        <div className="flex items-center justify-between mb-4">
+                            {/* กลุ่มซ้าย: เบิก + Local (ชิดซ้าย ติดกัน) */}
+                            <div className="flex items-center gap-6">
+                                <label className="flex items-center gap-2">
+                                    <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
+                                        {(selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && <span className="text-lg font-bold">✓</span>}
+                                    </div> 
+                                    เบิกวัสดุ (Withdraw)
+                                </label>
+                                
+                                <label className="flex items-center gap-2">
+                                    <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
+                                        {selectedRequest.type === 'Local' && <span className="text-lg font-bold">✓</span>}
+                                    </div> 
+                                    สั่งซื้อวัสดุ หน่วยงาน (Local)
+                                </label>
+                            </div>
+
+                            {/* กลุ่มขวา: HO (ชิดขวาสุด) */}
+                            <label className="flex items-center gap-2">
+                                <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
+                                    {selectedRequest.type === 'HO' && <span className="text-lg font-bold">✓</span>}
+                                    {/* หมายเหตุ: ถ้าข้อมูลเก่าเป็น Local/HO ระบบอาจจะติ๊ก Local ให้ ถ้าอยากให้ HO ชัดเจนต้องดู Data */}
+                                </div> 
+                                สั่งซื้อวัสดุ HO
+                            </label>
                         </div>
-                        <div className="p-4 bg-gray-50 rounded border border-gray-100">
-                             <h3 className="font-bold border-b border-gray-200 pb-2 mb-2 text-gray-700">รายละเอียดการจัดส่ง</h3>
-                             <p><span className="font-bold text-gray-500">โครงการ:</span> {selectedRequest.job}</p>
-                             <p><span className="font-bold text-gray-500">ผู้ขอซื้อ:</span> {selectedRequest.requester}</p>
-                             <p><span className="font-bold text-gray-500">วันที่ต้องการ:</span> {selectedRequest.dateRequired}</p>
+                        
+                        <div className="border-t border-black pt-3 flex gap-8">
+                            <span className="font-bold">ความสำคัญ:</span>
+                            {['Normal', 'Urgent', 'Critical'].map(p => (
+                                <label key={p} className="flex items-center gap-2">
+                                    <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
+                                        {selectedRequest.priority === p && <span className="text-lg font-bold">✓</span>}
+                                    </div> 
+                                    {p === 'Normal' ? 'ปกติ' : p === 'Urgent' ? 'ด่วน' : 'ด่วนมาก'}
+                                </label>
+                            ))}
                         </div>
                     </div>
-                    <table className="w-full text-sm mb-8">
-                        <thead><tr className="bg-gray-100 text-gray-700 border-y border-gray-300"><th className="py-2 px-3 text-left w-10">#</th><th className="py-2 px-3 text-left">รายการ (Description)</th><th className="py-2 px-3 text-center w-20">จำนวน</th><th className="py-2 px-3 text-right w-24">หน่วยละ</th><th className="py-2 px-3 text-right w-24">รวมเงิน</th></tr></thead>
-                        <tbody className="divide-y">
+
+                    {/* 3. Table Section */}
+                    <table className="w-full text-sm border-collapse border border-black mb-6">
+                        <thead>
+                            <tr className="bg-gray-100 text-center">
+                                <th className="border border-black py-2 w-10">NO.</th>
+                                <th className="border border-black py-2">รายการวัสดุ (Description)</th>
+                                <th className="border border-black py-2 w-20">จำนวน</th>
+                                <th className="border border-black py-2 w-16">หน่วย</th>
+                                <th className="border border-black py-2 w-24">SUBJOB</th>
+                                <th className="border border-black py-2 w-24">EP CODE</th>
+                                <th className="border border-black py-2 w-28">วันที่ต้องการ</th>
+                                <th className="border border-black py-2 w-32">หมายเหตุ</th>
+                            </tr>
+                        </thead>
+                        <tbody>
                             {selectedRequest.items.map((item, i) => (
-                                <tr key={i}>
-                                    <td className="py-3 px-3 text-center">{i+1}</td>
-                                    <td className="py-3 px-3">
-                                        <p className="font-bold">{item.name}</p>
-                                        <p className="text-xs text-gray-500">{item.subJob ? `Job: ${item.subJob}` : ''} {item.epCode ? `EP: ${item.epCode}` : ''}</p>
-                                    </td>
-                                    <td className="py-3 px-3 text-center">{item.qty} {item.unit}</td>
-                                    <td className="py-3 px-3 text-right">{item.unitPrice?.toLocaleString()}</td>
-                                    <td className="py-3 px-3 text-right">{(item.qty * item.unitPrice)?.toLocaleString()}</td>
+                                <tr key={i} className="text-center align-top">
+                                    <td className="border border-black py-2">{i + 1}</td>
+                                    <td className="border border-black py-2 px-2 text-left">{item.name}</td>
+                                    <td className="border border-black py-2">{item.qty}</td>
+                                    <td className="border border-black py-2">{item.unit}</td>
+                                    <td className="border border-black py-2">{item.subJob || '-'}</td>
+                                    <td className="border border-black py-2">{item.epCode || '-'}</td>
+                                    <td className="border border-black py-2">{formatDateTh(selectedRequest.dateRequired)}</td>
+                                    <td className="border border-black py-2 px-1 text-xs text-left">{item.note}</td>
                                 </tr>
                             ))}
+                            {/* Fill empty rows */}
+                            {Array.from({ length: Math.max(0, 10 - selectedRequest.items.length) }).map((_, i) => (
+                                <tr key={`empty-${i}`}><td className="border border-black py-4">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td></tr>
+                            ))}
                         </tbody>
-                        <tfoot>
-                            <tr className="border-t-2 border-gray-300">
-                                <td colSpan="4" className="py-3 px-3 text-right font-bold">รวมเป็นเงิน (Total)</td>
-                                <td className="py-3 px-3 text-right font-bold text-lg">{selectedRequest.items.reduce((sum, i) => sum + (i.qty * i.unitPrice), 0).toLocaleString()}</td>
-                            </tr>
-                        </tfoot>
                     </table>
-                    <div className="grid grid-cols-3 gap-4 mt-16 text-center text-sm">
-                        <div><p className="border-b border-black mb-2 pb-8"> </p><p>ผู้จัดทำ</p></div>
-                        <div><p className="border-b border-black mb-2 pb-8"> </p><p>ผู้อนุมัติ (PM)</p></div>
-                        <div><p className="border-b border-black mb-2 pb-8"> </p><p>ผู้มีอำนาจลงนาม</p></div>
-                    </div>
+
+                    {/* 4. Signature Section (NEW LOGIC) */}
+                    {(() => {
+                        // กลับด้าน History เพื่อหา Log ล่าสุดก่อน (Newest -> Oldest)
+                        const historyDesc = [...(selectedRequest.history || [])].reverse();
+                        
+                        // --- 4.1 หา Log ของ Requester ---
+                        // หาคำว่า "สร้างคำขอ" หรือ "Create" หรือ Log ตัวสุดท้ายใน Array (ตัวแรกสุดของเวลา)
+                        const reqLog = historyDesc.find(h => h.action.includes('สร้าง') || h.action.includes('Create') || h.action.includes('Draft')) || historyDesc[historyDesc.length - 1];
+
+                        // --- 4.2 หา Log ของ Level 1 (Head) ---
+                        // "คนที่เป็นคนกดส่งไป Level 2" -> Action: "รออนุมัติ Level 2"
+                        let l1Log = historyDesc.find(h => h.action.includes('รออนุมัติ Level 2') || h.action.includes('Pending PM'));
+                        
+                        // กรณีพิเศษ: ถ้าเป็น Withdraw (เบิก) จะไม่มี Level 2 -> Level 1 คือคนที่กด "รอจ่ายของ" หรือ "อนุมัติแล้ว"
+                        if ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && !l1Log) {
+                            l1Log = historyDesc.find(h => h.action.includes('รอจ่ายของ') || h.action.includes('Ready to Disburse') || h.action.includes('อนุมัติแล้ว'));
+                        }
+
+                        // --- 4.3 หา Log ของ Level 2 (PM) ---
+                        // "คนที่เป็นคนกดอนุมัติจบ" -> Action: "อนุมัติแล้ว (รอดำเนินการ)"
+                        const l2Log = historyDesc.find(h => h.action.includes('อนุมัติแล้ว') || h.action.includes('Approved') || h.action.includes('PR Issued'));
+
+
+                        // --- Helper: ดึง User Object จาก Log Text ---
+                        const getUser = (log) => {
+                            if(!log || !log.user) return null;
+                            const txt = log.user;
+                            // พยายามหาจาก EmpID ก่อน (ตัวอักษรแรกๆ)
+                            const firstPart = txt.split(' ')[0];
+                            
+                            // ค้นหาใน allUsers
+                            return allUsers.find(u => 
+                                (u.empId && u.empId === firstPart) || 
+                                (u.username === txt) ||
+                                (u.email && txt.includes(u.email)) ||
+                                (u.firstName && txt.includes(u.firstName))
+                            );
+                        };
+
+                        const userReq = getUser(reqLog);
+                        const userL1 = getUser(l1Log);
+                        const userL2 = getUser(l2Log);
+
+                        // --- Data for Rendering ---
+                        // ชื่อ: ถ้าเจอ User ให้ใช้ชื่อจริง / ถ้าไม่เจอให้ใช้จาก Log
+                        const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user : selectedRequest.requester);
+                        const nameL1 = userL1 ? `${userL1.firstName} ${userL1.lastName}` : (l1Log ? l1Log.user : '..........................');
+                        const nameL2 = userL2 ? `${userL2.firstName} ${userL2.lastName}` : (l2Log ? l2Log.user : '..........................');
+
+                        // วันที่
+                        const dateReq = formatDateTh(reqLog ? reqLog.date : selectedRequest.created);
+                        const dateL1 = l1Log ? formatDateTh(l1Log.date) : '....../....../......';
+                        const dateL2 = l2Log ? formatDateTh(l2Log.date) : '....../....../......';
+
+                        // ลายเซ็น (รูปภาพ)
+                        const sigReq = userReq?.signature ? getDriveImageUrl(userReq.signature) : null;
+                        const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
+                        const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
+
+                        return (
+                            <div className="mt-auto">
+                                <div className={`grid ${selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
+                                    
+                                    {/* 1. ผู้ขอ (Requester) */}
+                                    <div className="border border-black p-2 h-36 flex flex-col justify-between relative">
+                                        <div className="text-sm font-bold">ผู้ขอ (Requester)</div>
+                                        <div className="flex-1 flex items-center justify-center">
+                                            {sigReq ? <img src={sigReq} className="max-h-20 max-w-full"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
+                                        </div>
+                                        <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
+                                            {nameReq}<br/>
+                                            วันที่: {dateReq}
+                                        </div>
+                                    </div>
+
+                                    {/* 2. สโตร์รับของ */}
+                                    <div className="border border-black p-2 h-36 flex flex-col justify-between">
+                                        <div className="text-sm font-bold">สโตร์ผู้รับของ</div>
+                                        <div className="flex-1 flex items-center justify-center">
+                                            <span className="text-gray-300 text-xs">..........................</span>
+                                        </div>
+                                        <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
+                                            ลงชื่อ..........................<br/>
+                                            วันที่....../....../......
+                                        </div>
+                                    </div>
+
+                                    {/* 3. ผู้อนุมัติ (Level 1) */}
+                                    <div className="border border-black p-2 h-36 flex flex-col justify-between">
+                                        <div className="text-sm font-bold">ผู้อนุมัติ (Level 1)</div>
+                                        <div className="flex-1 flex items-center justify-center">
+                                            {sigL1 ? <img src={sigL1} className="max-h-20 max-w-full"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                        </div>
+                                        <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
+                                            {nameL1}<br/>
+                                            วันที่: {dateL1}
+                                        </div>
+                                    </div>
+
+                                    {/* 4. ผู้อนุมัติ (Level 2) - เฉพาะงานซื้อ */}
+                                    {selectedRequest.type !== 'Withdraw' && selectedRequest.type !== 'Borrow' && (
+                                        <div className="border border-black p-2 h-36 flex flex-col justify-between">
+                                            <div className="text-sm font-bold">ผู้อนุมัติ (Level 2)</div>
+                                            <div className="flex-1 flex items-center justify-center">
+                                                {sigL2 ? <img src={sigL2} className="max-h-20 max-w-full"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                            </div>
+                                            <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
+                                                {nameL2}<br/>
+                                                วันที่: {dateL2}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                </div>
+                            </div>
+                        );
+                    })()}
+
+                    </>
+                    );
+                    })()}
+
                 </div>
+                {/* --- DOCUMENT END --- */}
+
             </div>
         </div>
       )}
@@ -9380,65 +9674,118 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                 <h4 className="font-bold text-gray-800 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
                                 {/* ปุ่มบันทึก */}
                                 {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2)) && (
-                                    <button 
-                                        onClick={async () => {
-                                            const originalUser = allUsers.find(u => u.id === viewingUser.id);
-                                            if (!originalUser) return;
+// ค้นหาปุ่มที่มี onClick={async () => { ...saveUserData... }} ในหน้า info
+// แทนที่ Logic เดิมด้วยโค้ดด้านล่างนี้:
 
-                                            // 1. เตรียมข้อมูลเปรียบเทียบ (Log Changes)
-                                            const changeDetails = [];
-                                            if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
-                                            if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
-                                            if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
-                                            // อีเมลแก้ไขไม่ได้แล้ว จึงไม่ต้องเช็ค
+<button 
+    onClick={async () => {
+        // ดึงข้อมูลเดิมจาก Master List เพื่อเปรียบเทียบ
+        const originalUser = allUsers.find(u => u.id === viewingUser.id);
+        if (!originalUser) return;
 
-                                            if (changeDetails.length === 0) {
-                                                showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
-                                                return;
-                                            }
+        // 1. ตรวจสอบการเปลี่ยนแปลงข้อมูลทั่วไป (Text Fields)
+        const changeDetails = [];
+        if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
+        if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
+        if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
+        
+        setIsLoading(true);
+        try {
+            // ⭐ 2. จัดการลายเซ็น (ปรับปรุง Logic ใหม่)
+            let newSignatureUrl = viewingUser.signature; 
+            let sigChanged = false;
 
-                                            // 2. เตรียมข้อมูลสำหรับ Global Update
-                                            const oldFullSig = `${originalUser.empId} ${originalUser.firstName} ${originalUser.lastName}`;
-                                            const newFullSig = `${viewingUser.empId} ${viewingUser.firstName} ${viewingUser.lastName}`;
-                                            const oldShortName = `${originalUser.firstName} ${originalUser.lastName}`;
-                                            const newShortName = `${viewingUser.firstName} ${viewingUser.lastName}`;
-                                            const hasNameChange = (oldFullSig !== newFullSig) || (oldShortName !== newShortName);
+            // กรณี 2.1: วาดลายเซ็น (เช็คจาก hasDrawn แม่นยำกว่าเช็คขนาดไฟล์)
+            if (sigMode === 'Draw' && hasDrawn) {
+                const canvas = sigCanvasRef.current;
+                const dataUrl = canvas.toDataURL('image/png');
+                
+                // อัปโหลดรูปลายเซ็น
+                const res = await new Promise((resolve, reject) => {
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                        .uploadUserSignature(dataUrl, `SIG_${viewingUser.empId}_${Date.now()}.png`);
+                });
+                
+                if (res.url) {
+                    newSignatureUrl = res.url;
+                    changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
+                    sigChanged = true;
+                }
+            } 
+            // กรณี 2.2: อัปโหลดไฟล์ (Upload)
+            else if (sigMode === 'Upload' && signatureFile) {
+                const base64 = await fileToBase64(signatureFile);
+                const res = await new Promise((resolve, reject) => {
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                        .uploadUserSignature(base64, `SIG_${viewingUser.empId}_${Date.now()}_${signatureFile.name}`);
+                });
+                
+                if (res.url) {
+                    newSignatureUrl = res.url;
+                    changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
+                    sigChanged = true;
+                }
+            }
 
-                                            setIsLoading(true);
-                                            try {
-                                                await new Promise(r => google.script.run.withSuccessHandler(r).saveUserData(viewingUser));
-                                                
-                                                await addInvLog(
-                                                    'Edit Profile', 
-                                                    `${viewingUser.empId} ${viewingUser.firstName}`, 
-                                                    `Updated ${changeDetails.length} fields`, 
-                                                    `รายการแก้ไข:\n- ${changeDetails.join('\n- ')}`, 
-                                                    [], null, null
-                                                );
+            // ถ้าไม่มีการแก้ไขอะไรเลย ให้แจ้งเตือนและจบ
+            if (changeDetails.length === 0 && !sigChanged) {
+                setIsLoading(false);
+                showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
+                return;
+            }
 
-                                                if (hasNameChange) {
-                                                    const res = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName));
-                                                    console.log("Global Update Result:", res);
-                                                    showToast(`บันทึกและอัปเดตชื่อในประวัติเก่า ${res.message}`);
-                                                } else {
-                                                    showToast('บันทึกการแก้ไขเรียบร้อย');
-                                                }
+            // 3. รวมข้อมูลเพื่อบันทึก
+            const userToSave = { ...viewingUser, signature: newSignatureUrl };
 
-                                                setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? viewingUser : u));
-                                                if (user.id === viewingUser.id) setUser(viewingUser);
-                                                handleRefresh(); 
+            // 4. บันทึกข้อมูลลงฐานข้อมูล (Users Sheet)
+            await new Promise(r => google.script.run.withSuccessHandler(r).saveUserData(userToSave));
+            
+            // 5. บันทึก Log
+            await addInvLog(
+                'Edit Profile', 
+                `${viewingUser.empId} ${viewingUser.firstName}`, 
+                `Updated profile`, 
+                `รายการแก้ไข:\n- ${changeDetails.join('\n- ')}`, 
+                [], null, null
+            );
 
-                                            } catch (err) {
-                                                console.error(err);
-                                                showToast('เกิดข้อผิดพลาดในการบันทึก', 'error');
-                                            } finally {
-                                                setIsLoading(false);
-                                            }
-                                        }}
-                                        className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
-                                    >
-                                        <Save size={14}/> บันทึกการแก้ไข
-                                    </button>
+            // ⭐ 6. อัปเดตข้อมูล Global (Requests, Assets, Logs) -- คืนชีพส่วนนี้ให้แล้วครับ
+            const oldFullSig = `${originalUser.empId} ${originalUser.firstName} ${originalUser.lastName}`;
+            const newFullSig = `${viewingUser.empId} ${viewingUser.firstName} ${viewingUser.lastName}`;
+            const oldShortName = `${originalUser.firstName} ${originalUser.lastName}`;
+            const newShortName = `${viewingUser.firstName} ${viewingUser.lastName}`;
+            
+            // เช็คว่าชื่อมีการเปลี่ยนแปลงหรือไม่
+            const hasNameChange = (oldFullSig !== newFullSig) || (oldShortName !== newShortName);
+
+            if (hasNameChange) {
+                 const updateRes = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName));
+                 showToast(`บันทึกและอัปเดตชื่อในประวัติเก่า ${updateRes.message || 'เรียบร้อย'}`);
+            } else {
+                 showToast('บันทึกข้อมูลและลายเซ็นเรียบร้อย');
+            }
+            
+            // 7. อัปเดต State หน้าจอ
+            setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
+            setViewingUser(userToSave); 
+            if (user.id === viewingUser.id) setUser(userToSave);
+            
+            // รีเซ็ตค่าชั่วคราว
+            if(sigCanvasRef.current) clearSignature();
+            setSignatureFile(null);
+            setHasDrawn(false); // รีเซ็ตสถานะวาด
+
+        } catch (err) {
+            console.error(err);
+            showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+        } finally {
+            setIsLoading(false);
+        }
+    }}
+    className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
+>
+    <Save size={14}/> บันทึกการแก้ไข
+</button>
                                 )}
                              </div>
 
@@ -9516,6 +9863,105 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                     </div>
                                 </div>
                             </div>
+
+{/* --- ส่วนลายเซ็น (Signature) --- */}
+<div className="col-span-1 md:col-span-2 border-t pt-4 mt-2">
+    <label className="text-sm font-bold text-gray-800 mb-2 flex items-center gap-2">
+        <PenTool size={16}/> ลายเซ็นดิจิทัล (Digital Signature)
+    </label>
+    
+    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+        
+        {viewingUser.signature && (
+            <div className="mb-4 flex flex-col items-center animate-in fade-in">
+                
+                {/* ⭐ [แก้ไข] เพิ่มเงื่อนไข: ถ้าเป็นเจ้าของบัญชี (หรือ Super Admin) ให้เห็นปุ่มกดดูไฟล์ได้ */}
+                {(user.id === viewingUser.id || user.isSuperAdmin) ? (
+                    <div className="text-center">
+                        <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-2 rounded-lg flex items-center gap-2 mb-3 shadow-sm mx-auto w-fit">
+                            <CheckCircle size={16} className="text-blue-600"/> 
+                            <span className="text-xs font-bold">มีลายเซ็นในระบบแล้ว</span>
+                        </div>
+                        
+                        <button 
+                            type="button"
+                            onClick={() => handleViewFile(viewingUser.signature, 'Signature')}
+                            className="flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-100 hover:text-blue-600 transition-colors shadow-sm text-xs font-bold mx-auto"
+                        >
+                            <Eye size={14}/> คลิกเพื่อตรวจสอบไฟล์ลายเซ็น
+                        </button>
+                    </div>
+                ) : (
+                    /* ⭐ ถ้าเป็นคนอื่นดู ให้เห็นแค่สถานะ (เพื่อความปลอดภัย) */
+                    <>
+                        <div className="bg-green-50 border border-green-200 text-green-700 px-6 py-3 rounded-xl flex items-center gap-3 shadow-sm">
+                            <div className="bg-white p-1.5 rounded-full border border-green-100">
+                                <ShieldCheck size={20} className="text-green-600"/>
+                            </div>
+                            <div>
+                                <p className="text-sm font-bold">บันทึกลายเซ็นแล้ว</p>
+                                <p className="text-[10px] opacity-80">พร้อมใช้งานสำหรับเอกสาร</p>
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-gray-400 mt-2 text-center">
+                            * ไม่แสดงตัวอย่างลายเซ็นของผู้อื่นเพื่อความปลอดภัย
+                        </p>
+                    </>
+                )}
+            </div>
+        )}
+
+        {/* ตัวเลือก Draw / Upload (ส่วนนี้เหมือนเดิม) */}
+        {(user.id === viewingUser.id || user.isSuperAdmin) && (
+            <>
+                <div className="flex bg-white rounded-lg border border-gray-200 p-1 mb-3 w-fit mx-auto">
+                    <button onClick={() => setSigMode('Draw')} className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${sigMode === 'Draw' ? 'bg-blue-50 text-blue-600' : 'text-gray-500'}`}>วาดลายเซ็น</button>
+                    <button onClick={() => setSigMode('Upload')} className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${sigMode === 'Upload' ? 'bg-blue-50 text-blue-600' : 'text-gray-500'}`}>อัปโหลดไฟล์</button>
+                </div>
+
+                <div className="flex flex-col items-center">
+                    {sigMode === 'Draw' ? (
+                        <div className="relative">
+                            <canvas 
+                                ref={sigCanvasRef}
+                                width={300} height={150}
+                                className="bg-white border border-dashed border-gray-400 rounded cursor-crosshair touch-none"
+                                onMouseDown={startDrawing}
+                                onMouseMove={draw}
+                                onMouseUp={stopDrawing}
+                                onMouseLeave={stopDrawing}
+                                onTouchStart={startDrawing}
+                                onTouchMove={draw}
+                                onTouchEnd={stopDrawing}
+                            />
+                            <button onClick={clearSignature} type="button" className="absolute top-1 right-1 text-xs text-red-500 bg-white border border-red-200 px-2 py-0.5 rounded hover:bg-red-50">ล้าง</button>
+                            <p className="text-[10px] text-gray-400 mt-1 text-center">* วาดลายเซ็นในกรอบ (รองรับเมาส์และนิ้วสัมผัส)</p>
+                        </div>
+                    ) : (
+                        <div className="w-full max-w-xs text-center">
+                            <input 
+                                type="file" 
+                                accept="image/*"
+                                onChange={(e) => {
+                                    if(e.target.files[0]) {
+                                        const file = e.target.files[0];
+                                        const reader = new FileReader();
+                                        reader.onload = (ev) => setTempSignatureUrl(ev.target.result); 
+                                        reader.readAsDataURL(file);
+                                        setSignatureFile(file); 
+                                    }
+                                }}
+                                className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                            />
+                            {/* แสดง Preview เฉพาะตอนเลือกไฟล์ใหม่เท่านั้น */}
+                            {tempSignatureUrl && <img src={tempSignatureUrl} className="h-20 mt-2 mx-auto border bg-white rounded"/>}
+                        </div>
+                    )}
+                </div>
+            </>
+        )}
+    </div>
+</div>
 
                              {/* Permissions Section */}
                             <div className="mt-6 pt-6 border-t">
