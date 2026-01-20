@@ -263,11 +263,11 @@ function findApproverEmails(projectName, permId) {
   return result;
 }
 
-// --- HELPER: สร้าง HTML สำหรับ Budget Tracking (Full Detail & Responsive) ---
+// --- HELPER: สร้าง HTML สำหรับ Budget Tracking (UPDATED: Actual Price Logic) ---
 function getBudgetInfoForEmail_FullDetail(req) {
   // 1. กรองเฉพาะ HO / Local เท่านั้น
   if (!['Local', 'HO'].includes(req.type)) return '';
-
+  
   // 2. หา SubJob / EP Code ที่เกี่ยวข้องในใบนี้
   const uniqueSubJobs = [...new Set(req.items.map(i => i.subJob).filter(val => val))];
   const uniqueEPCodes = [...new Set(req.items.map(i => i.epCode).filter(val => val))];
@@ -279,8 +279,9 @@ function getBudgetInfoForEmail_FullDetail(req) {
   const projectData = projects.find(p => p.name === req.job);
   
   if (!projectData) return '';
-
+  
   const allRequests = getSheetData('Requests');
+  const allAssets = getSheetData('Assets'); // ⭐ โหลด Assets มาเพื่อคำนวณราคาจริง
   
   const budgetList = [
       ...uniqueSubJobs.map(c => ({code: c, type: 'SubJob'})),
@@ -295,6 +296,49 @@ function getBudgetInfoForEmail_FullDetail(req) {
       <div style="padding: 15px;">
   `;
 
+  // ฟังก์ชันคำนวณยอดเงิน (Logic เดียวกับหน้าเว็บ)
+  const calculateTotal = (r, code, type) => {
+      const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code);
+      const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
+
+      return items.reduce((sum, item) => {
+          // 1. หา Assets ที่เกี่ยวข้อง
+          const relatedAssets = allAssets.filter(a => a.currentRequestId === r.id && a.name === item.name);
+          // 2. หา Logs
+          const receivedLogs = item.receivedLog || [];
+          
+          let itemVal = 0;
+          let cnt = 0;
+
+          // Priority A: Assets
+          if (relatedAssets.length > 0) {
+              itemVal += relatedAssets.reduce((s, asset) => {
+                    const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                    const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                    return s + (price * duration);
+              }, 0);
+              cnt = relatedAssets.length;
+          } 
+          // Priority B: Logs
+          else if (receivedLogs.length > 0) {
+              itemVal += receivedLogs.reduce((s, log) => {
+                    const duration = isRent ? (log.duration || 1) : 1;
+                    return s + (log.qty * log.price * duration);
+              }, 0);
+              cnt = item.receivedTotal || 0;
+          }
+
+          // Priority C: Estimate Remainder
+          const rem = Math.max(0, item.qty - cnt);
+          const dur = isRent ? (item.duration || 1) : 1;
+          const estPrice = item.unitPrice || 0;
+          
+          itemVal += (rem * estPrice * dur);
+
+          return sum + itemVal;
+      }, 0);
+  };
+
   budgetList.forEach(item => {
       // ค้นหางบประมาณตั้งต้น
       const list = item.type === 'SubJob' ? projectData.subJobs : projectData.epCodes;
@@ -303,20 +347,18 @@ function getBudgetInfoForEmail_FullDetail(req) {
 
       if (budget === 0) return; // ข้ามถ้างบเป็น 0
 
-      // --- คำนวณยอด (Logic เดียวกับ getBudgetStats ใน React) ---
+      // --- คำนวณยอด ---
       let used = 0;    // Completed
       let pending = 0; // Waiting
       
       allRequests.forEach(r => {
-          if (r.id === req.id || r.job !== req.job) return; // ข้ามใบปัจจุบัน และใบต่างโครงการ
+          // กรองเฉพาะโครงการเดียวกัน (สำคัญ! ป้องกันยอดเบิ้ล)
+          if (r.job !== req.job) return; 
+          
+          if (r.id === req.id) return; // ข้ามใบปัจจุบัน (จะไปคิดในช่อง current)
           if (!['Local', 'HO'].includes(r.type)) return;
 
-          // คำนวณยอดรวมของ item ที่ตรงกับ code นี้
-          const rTotal = r.items.filter(i => (item.type === 'SubJob' ? i.subJob : i.epCode) === item.code)
-            .reduce((sum, i) => {
-               const duration = (r.type === 'HO' && r.purchaseType === 'Rent') ? (i.duration || 1) : 1;
-               return sum + (i.qty * (i.unitPrice || 0) * duration);
-            }, 0);
+          const rTotal = calculateTotal(r, item.code, item.type);
 
           if (r.status === 'Completed') {
               used += rTotal;
@@ -326,11 +368,7 @@ function getBudgetInfoForEmail_FullDetail(req) {
       });
 
       // ยอดใบปัจจุบัน (Current)
-      const current = req.items.filter(i => (item.type === 'SubJob' ? i.subJob : i.epCode) === item.code)
-        .reduce((sum, i) => {
-            const duration = (req.type === 'HO' && req.purchaseType === 'Rent') ? (i.duration || 1) : 1;
-            return sum + (i.qty * (i.unitPrice || 0) * duration);
-        }, 0);
+      const current = calculateTotal(req, item.code, item.type);
 
       const totalUsed = used + pending + current;
       const remaining = budget - totalUsed;
@@ -861,16 +899,20 @@ function saveUserData(user) {
 }
 
 function loadInitialData() {
+  // ดึงข้อมูลประกาศจาก Settings
+  const settings = getSheetData('Settings');
+  const announcement = settings.find(s => s.id === 'ANNOUNCEMENT') || null;
+
   return {
     requests: getSheetData('Requests'),
     inventory: getSheetData('Inventory'),
     assets: getSheetData('Assets'),
     logs: getSheetData('Logs'),
     projects: getSheetData('Projects'),
-    users: getSheetData('Users') 
+    users: getSheetData('Users'),
+    announcement: announcement // ⭐ ส่งข้อมูลประกาศกลับไป
   };
 }
-
 // --- แก้ไขฟังก์ชัน sendRegistrationOTP (เพิ่มเช็ค Username + Ref Code) ---
 function sendRegistrationOTP(email, username) {
   const users = getSheetData('Users');
@@ -1144,4 +1186,27 @@ function updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName
     success: true, 
     message: `อัปเดตข้อมูลสำเร็จ: ประวัติ(${logCount}), เอกสาร(${reqCount}), ทรัพย์สิน(${assetCount})` 
   };
+}
+
+function saveSystemAnnouncement(data) {
+  const sheet = getOrCreateSheet('Settings');
+  // เก็บข้อมูลบรรทัดที่ 2 (Row 2) คอลัมน์ A (ID = ANNOUNCEMENT)
+  // Format: { title, detail, date, active: true/false }
+  
+  const payload = {
+    ...data,
+    updatedBy: data.updatedBy,
+    timestamp: new Date().toLocaleString('th-TH')
+  };
+  
+  saveDataToSheet('Settings', 'ANNOUNCEMENT', payload);
+  return { success: true, message: 'บันทึกประกาศเรียบร้อย' };
+}
+
+// 2. ยกเลิกประกาศ
+function clearSystemAnnouncement() {
+  const sheet = getOrCreateSheet('Settings');
+  const emptyPayload = { active: false, title: '', detail: '', date: '' };
+  saveDataToSheet('Settings', 'ANNOUNCEMENT', emptyPayload);
+  return { success: true, message: 'ยกเลิกประกาศแล้ว' };
 }
