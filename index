@@ -377,9 +377,13 @@ const [viewingUser, setViewingUser] = useState(null); // เก็บ User ท�
 const [userDetailTab, setUserDetailTab] = useState('info'); // info, purchase, withdraw, borrow
 const [detailSearch, setDetailSearch] = useState(''); // ช่องค้นหาในหน้า Detail
 const [userSearch, setUserSearch] = useState(''); // ⭐ เพิ่ม State สำหรับค้นหา User
-const [announcement, setAnnouncement] = useState(null); // ข้อมูลประกาศ
-const [showPublicAnnounce, setShowPublicAnnounce] = useState(false); // ควบคุมการโชว์ Popup หน้าแรก
-const [announceForm, setAnnounceForm] = useState({ title: '', detail: '' }); // ฟอร์มสำหรับ Admin
+
+const [announcements, setAnnouncements] = useState([]); 
+    const [publicAnnounces, setPublicAnnounces] = useState([]); // สำหรับแสดงผลหน้าแรก
+    const [showPublicAnnounce, setShowPublicAnnounce] = useState(false);
+
+    const [announceForm, setAnnounceForm] = useState({ id: '', title: '', detail: '', active: true }); 
+    const [isAnnounceLoading, setIsAnnounceLoading] = useState(false);
 
 const hasPermission = (permId, project = globalProjectFilter) => {
           // 1. ถ้าเป็น Super Admin ให้ผ่านตลอด
@@ -1515,6 +1519,15 @@ const newUsersCount = useMemo(() => {
           }).length;
       }, [requests, user, globalProjectFilter]);
 
+
+useEffect(() => {
+        google.script.run.withSuccessHandler((data) => {
+            if (data && data.length > 0) {
+                setPublicAnnounces(data);
+                setShowPublicAnnounce(true); // เปิด Popup ทันทีถ้ามีประกาศ Active
+            }
+        }).getPublicAnnouncements();
+    }, []);
       
       useEffect(() => {
         setIsLoading(true);
@@ -4061,6 +4074,69 @@ const handleSubmitContract = async () => {
 
       // --- RENDER ---
 // ⭐ 2. เพิ่มการตรวจสอบ Login (แก้ตรงนี้เพื่อส่ง requests ไปแสดงผลตัวเลข)
+
+const PublicAnnouncementPopup = () => (
+        showPublicAnnounce && publicAnnounces.length > 0 && (
+            <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-300">
+                <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border-t-8 border-indigo-600 animate-in zoom-in-95 flex flex-col max-h-[90vh]">
+                    
+                    {/* Header */}
+                    <div className="p-6 pb-2 text-center shrink-0">
+                        <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
+                            <Megaphone className="w-8 h-8 animate-bounce" />
+                        </div>
+                        <h2 className="text-2xl font-extrabold text-gray-800">ประกาศข่าวสาร</h2>
+                        <p className="text-gray-500 text-xs mt-1">อัปเดตข้อมูลล่าสุดจากระบบ</p>
+                    </div>
+
+                    {/* Scrollable Content Area */}
+                    <div className="px-6 py-2 overflow-y-auto space-y-4 custom-scrollbar">
+                        {publicAnnounces.map((item, idx) => (
+                            <div key={idx} className="bg-slate-50 border border-slate-200 rounded-xl p-4 shadow-sm">
+                                <h3 className="font-bold text-lg text-indigo-700 mb-2">{item.title}</h3>
+                                <div className="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">
+                                    {item.detail}
+                                </div>
+                                <div className="mt-3 pt-3 border-t border-slate-200 flex justify-between items-center text-[10px] text-gray-400">
+                                    <span>ประกาศเมื่อ: {item.date}</span>
+                                    <span>โดย: {item.updatedBy}</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Footer Close Button */}
+                    <div className="p-6 shrink-0">
+                        <button 
+                            onClick={() => setShowPublicAnnounce(false)}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg transform transition-all active:scale-95 flex items-center justify-center gap-2"
+                        >
+                            รับทราบ / เข้าสู่ระบบ <ArrowRight className="w-5 h-5"/>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )
+      );
+
+      // ⭐ 2. เพิ่มการตรวจสอบ Login (ปรับแก้ให้แสดง Popup ได้แม้ยังไม่ Login)
+      if (!user) {
+          return (
+            <>
+                <PublicAnnouncementPopup />
+                <AuthScreen 
+                    requests={requests} 
+                    onLoginSuccess={(userData) => {
+                        setUser(userData);
+                        setCurrentUserRole(userData.role || ROLES.USER); 
+                        // โหลดประกาศทั้งหมด (Admin view) เมื่อ Login สำเร็จ
+                        google.script.run.withSuccessHandler(setAnnouncements).getAllAnnouncements();
+                    }} 
+                />
+            </>
+          );
+      }
+
       if (!user) {
           return <AuthScreen 
             requests={requests} // ส่งข้อมูลไปคำนวณตัวเลข
@@ -4098,32 +4174,6 @@ const handleSubmitContract = async () => {
             </div>
           )}
 
-          {showPublicAnnounce && announcement && (
-            <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-300">
-                <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border-t-8 border-indigo-600 animate-in zoom-in-95">
-                    <div className="p-8 text-center">
-                        <div className="w-20 h-20 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-                            <Megaphone className="w-10 h-10 animate-bounce" />
-                        </div>
-                        <h2 className="text-2xl font-extrabold text-gray-800 mb-2">{announcement.title}</h2>
-                        <p className="text-xs text-gray-400 mb-6 font-mono bg-gray-50 inline-block px-3 py-1 rounded-full border">
-                            ประกาศเมื่อ: {announcement.date}
-                        </p>
-                        
-                        <div className="text-left bg-gray-50 p-5 rounded-xl border border-gray-200 text-gray-600 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto">
-                            {announcement.detail}
-                        </div>
-
-                        <button 
-                            onClick={() => setShowPublicAnnounce(false)}
-                            className="mt-8 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg transform transition-all active:scale-95 flex items-center justify-center gap-2"
-                        >
-                            รับทราบ / เข้าสู่ระบบ <ArrowRight className="w-5 h-5"/>
-                        </button>
-                    </div>
-                </div>
-            </div>
-          )}
     
           {/* Sidebar */}
           <aside className="w-64 bg-white border-r border-gray-200 hidden md:flex flex-col shadow-lg z-20 no-print">
@@ -4611,66 +4661,143 @@ const handleSubmitContract = async () => {
                       </div>
                   </div>
               )}
-    {/* --- ANNOUNCEMENT MANAGEMENT TAB --- */}
+   {/* --- ANNOUNCEMENT MANAGEMENT TAB (UPDATED: MULTI-TOPIC) --- */}
 {activeTab === 'announcement' && hasPermission(28) && (
-    <div className="space-y-6 max-w-4xl mx-auto">
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
+    <div className="space-y-6 max-w-5xl mx-auto">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[85vh]">
+            <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
                 <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
-                    <Megaphone className="w-5 h-5 text-indigo-600"/> จัดการประกาศข่าวสาร (System Announcement)
+                   <Megaphone className="w-5 h-5 text-indigo-600"/> จัดการประกาศข่าวสาร (System Announcement)
                 </h3>
+                <button 
+                    onClick={() => setAnnounceForm({ id: '', title: '', detail: '', active: true })}
+                    className="bg-indigo-600 text-white text-sm font-bold px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center gap-2"
+                >
+                    <Plus className="w-4 h-4"/> สร้างประกาศใหม่
+                </button>
             </div>
             
-            <div className="p-8">
-                {/* Status Card */}
-                <div className={`p-4 rounded-xl border mb-6 flex items-center gap-4 ${announcement ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center ${announcement ? 'bg-green-100 text-green-600' : 'bg-gray-200 text-gray-400'}`}>
-                        <Bell className="w-6 h-6"/>
-                    </div>
-                    <div>
-                        <h4 className="font-bold text-gray-800">สถานะประกาศ: {announcement ? <span className="text-green-600">กำลังใช้งาน (Active)</span> : <span className="text-gray-500">ไม่มีประกาศ</span>}</h4>
-                        {announcement && <p className="text-xs text-gray-500 mt-1">ล่าสุดเมื่อ: {announcement.date} โดย {announcement.updatedBy}</p>}
-                    </div>
-                </div>
-
-                <div className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1.5">หัวข้อประกาศ (Title)</label>
-                        <input 
-                            type="text" 
-                            className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                            placeholder="ระบุหัวข้อเรื่อง..."
-                            value={announceForm.title}
-                            onChange={e => setAnnounceForm({...announceForm, title: e.target.value})}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1.5">รายละเอียด (Details)</label>
-                        <textarea 
-                            rows="5"
-                            className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                            placeholder="ระบุรายละเอียดข้อความ..."
-                            value={announceForm.detail}
-                            onChange={e => setAnnounceForm({...announceForm, detail: e.target.value})}
-                        ></textarea>
-                    </div>
-                </div>
-
-                <div className="mt-8 flex gap-3 pt-6 border-t border-gray-100">
-                    {announcement && (
-                        <button 
-                            onClick={handleClearAnnouncement}
-                            className="flex-1 bg-white border-2 border-red-100 text-red-600 font-bold py-3 rounded-xl hover:bg-red-50 hover:border-red-200 transition-colors flex items-center justify-center gap-2"
+            <div className="flex flex-1 overflow-hidden">
+                {/* Left: List of Announcements */}
+                <div className="w-1/3 border-r border-gray-200 overflow-y-auto bg-gray-50">
+                    {announcements.length === 0 && <div className="p-8 text-center text-gray-400 text-sm">ยังไม่มีประกาศ</div>}
+                    {announcements.map((item) => (
+                        <div 
+                            key={item.id}
+                            onClick={() => setAnnounceForm(item)}
+                            className={`p-4 border-b cursor-pointer transition-colors hover:bg-white ${announceForm.id === item.id ? 'bg-white border-l-4 border-l-indigo-600 shadow-sm' : ''}`}
                         >
-                            <Trash2 className="w-5 h-5"/> ยกเลิกประกาศ
-                        </button>
-                    )}
-                    <button 
-                        onClick={handleSaveAnnouncement}
-                        className="flex-[2] bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 shadow-md transition-all flex items-center justify-center gap-2"
-                    >
-                        <Megaphone className="w-5 h-5"/> {announcement ? 'อัปเดตประกาศ' : 'เริ่มประกาศ (Publish)'}
-                    </button>
+                            <div className="flex justify-between items-start mb-1">
+                                <h4 className={`font-bold text-sm ${announceForm.id === item.id ? 'text-indigo-700' : 'text-gray-700'}`}>{item.title}</h4>
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${item.active ? 'bg-green-50 text-green-600 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                                    {item.active ? 'Active' : 'Inactive'}
+                                </span>
+                            </div>
+                            <p className="text-xs text-gray-500 line-clamp-2">{item.detail}</p>
+                            <div className="mt-2 text-[10px] text-gray-400 flex justify-between">
+                                <span>{item.date}</span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Right: Edit Form */}
+                <div className="w-2/3 p-6 overflow-y-auto bg-white">
+                    <div className="max-w-xl mx-auto space-y-4">
+                        <div className="flex justify-between items-center mb-4">
+                            <h4 className="font-bold text-gray-800 text-lg">
+                                {announceForm.id ? 'แก้ไขประกาศ' : 'สร้างประกาศใหม่'}
+                            </h4>
+                            {announceForm.id && (
+                                <span className="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">{announceForm.id}</span>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-1.5">หัวข้อ (Title)</label>
+                            <input 
+                                type="text" 
+                                className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                placeholder="ระบุหัวข้อเรื่อง..."
+                                value={announceForm.title}
+                                onChange={e => setAnnounceForm({...announceForm, title: e.target.value})}
+                            />
+                        </div>
+                        <div>
+                             <label className="block text-sm font-bold text-gray-700 mb-1.5">รายละเอียด (Details)</label>
+                            <textarea 
+                                rows="8"
+                                className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                placeholder="ระบุรายละเอียดข้อความ..."
+                                value={announceForm.detail}
+                                onChange={e => setAnnounceForm({...announceForm, detail: e.target.value})}
+                             ></textarea>
+                        </div>
+
+                        <div className="flex gap-3 pt-4 border-t border-gray-100 mt-6">
+                            {announceForm.id && (
+                                <>
+                                    <button 
+                                        onClick={() => {
+                                            if(!confirm('ยืนยันลบประกาศนี้?')) return;
+                                            setIsAnnounceLoading(true);
+                                            google.script.run.withSuccessHandler(() => {
+                                                setAnnouncements(prev => prev.filter(a => a.id !== announceForm.id));
+                                                setAnnounceForm({ id: '', title: '', detail: '', active: true });
+                                                setIsAnnounceLoading(false);
+                                                showToast('ลบประกาศเรียบร้อย');
+                                            }).deleteAnnouncementItem(announceForm.id);
+                                        }}
+                                        className="bg-white border border-red-200 text-red-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50"
+                                        disabled={isAnnounceLoading}
+                                    >
+                                        ลบ
+                                    </button>
+
+                                    <button 
+                                        onClick={() => {
+                                            const newStatus = !announceForm.active;
+                                            setIsAnnounceLoading(true);
+                                            google.script.run.withSuccessHandler((res) => {
+                                                setAnnouncements(prev => prev.map(a => a.id === announceForm.id ? {...a, active: newStatus} : a));
+                                                setAnnounceForm({...announceForm, active: newStatus});
+                                                setIsAnnounceLoading(false);
+                                                showToast(res.message);
+                                            }).toggleAnnouncementStatus(announceForm.id, newStatus);
+                                        }}
+                                        className={`px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${announceForm.active ? 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100' : 'bg-green-50 text-green-600 border-green-200 hover:bg-green-100'}`}
+                                        disabled={isAnnounceLoading}
+                                    >
+                                        {announceForm.active ? 'หยุดประกาศ (Unpublish)' : 'เริ่มประกาศ (Publish)'}
+                                    </button>
+                                </>
+                            )}
+                            
+                            <div className="flex-1"></div>
+
+                            <button 
+                                onClick={() => {
+                                    if(!announceForm.title || !announceForm.detail) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
+                                    setIsAnnounceLoading(true);
+                                    const payload = { ...announceForm, updatedBy: `${user.firstName} ${user.lastName}` };
+                                    google.script.run.withSuccessHandler((res) => {
+                                        if (announceForm.id) {
+                                            setAnnouncements(prev => prev.map(a => a.id === res.data.id ? res.data : a));
+                                        } else {
+                                            setAnnouncements(prev => [res.data, ...prev]);
+                                            setAnnounceForm(res.data); // Set current to saved one
+                                        }
+                                        setIsAnnounceLoading(false);
+                                        showToast(res.message);
+                                    }).saveAnnouncementItem(payload);
+                                }}
+                                className="bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 shadow-md flex items-center gap-2"
+                                disabled={isAnnounceLoading}
+                            >
+                                <Save className="w-4 h-4"/> บันทึกข้อมูล
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
