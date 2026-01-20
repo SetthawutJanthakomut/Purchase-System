@@ -202,13 +202,20 @@ function processEmailAction(e) {
   
   console.log(`[ProcessEmail] ===== END =====`);
   
+let displayStatus = newStatus;
+  if (newStatus === 'Pending PM') displayStatus = 'Pending Level 2';
+
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
       <h1 style="color: ${color};">${message}</h1>
       <p>เอกสาร: <strong>${reqId}</strong></p>
-      <p>สถานะ: ${newStatus}</p>
+      
+      <p>สถานะ: ${displayStatus}</p>
+      
       ${customNote ? `<p>เหตุผล: ${customNote}</p>` : ''}
-      ${newStatus === 'Pending PM' ? '<p style="color: blue;">✅ ส่งเมลต่อ PM แล้ว</p>' : ''}
+      
+      ${newStatus === 'Pending PM' ? '<p style="color: blue;">✅ ส่งเมลต่อ Level 2 แล้ว</p>' : ''}
+      
       <button onclick="window.close()" style="padding: 10px 20px; margin-top:20px; cursor: pointer;">ปิดหน้านี้</button>
     </div>
   `);
@@ -894,8 +901,24 @@ function registerUser(formData) {
   return { success: true, message: 'ลงทะเบียนเรียบร้อย รอแอดมินอนุมัติ' };
 }
 
+// [ค้นหาฟังก์ชัน saveUserData เดิม แล้วแทนที่ด้วยโค้ดนี้]
+
 function saveUserData(user) {
-   return saveDataToSheet('Users', user.id, user);
+  const users = getSheetData('Users');
+  
+  // ⭐ ป้องกันรหัสพนักงาน (Emp ID) ซ้ำ
+  // เช็คว่ามีคนอื่นที่ใช้ EmpID นี้ไหม (ที่ไม่ใช่ตัวเอง)
+  const duplicate = users.find(u => u.empId === user.empId && u.id !== user.id);
+  if (duplicate) {
+    return { 
+      success: false, 
+      message: `ไม่สามารถบันทึกได้: รหัสพนักงาน ${user.empId} ซ้ำกับคุณ ${duplicate.firstName} ${duplicate.lastName}` 
+    };
+  }
+
+  // ถ้าไม่ซ้ำ ให้บันทึก
+  saveDataToSheet('Users', user.id, user);
+  return { success: true, message: 'บันทึกข้อมูลเรียบร้อย' };
 }
 
 function loadInitialData() {
@@ -1088,84 +1111,112 @@ function updateHistoryLogSignature(oldSignature, newSignature) {
 }
 
 // ฟังก์ชันอัปเดตข้อมูลผู้ใช้ในทุก Sheet (Requests, Assets, Logs)
-function updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName) {
-  console.log(`[GlobalUpdate] Starting update...`);
-  console.log(`Full Sig: "${oldFullSig}" -> "${newFullSig}"`);
+// --- [Code.gs] ---
+
+// ฟังก์ชันอัปเดตข้อมูลย้อนหลังทั่วทั้งระบบ (Global Update) - ฉบับปรับปรุง
+function updateUserGlobalData(oldData, newData) {
+  console.log(`[GlobalUpdate] Starting... from ${oldData.empId} to ${newData.empId}`);
   
-  // เพิ่มการรองรับรูปแบบที่มี (Email) ต่อท้าย
-  const oldEmailSig = oldFullSig + " (Email)";
-  const newEmailSig = newFullSig + " (Email)";
+  // 1. เตรียมรูปแบบข้อมูลใหม่ (New Data)
+  const newFullSig = `${newData.empId} ${newData.firstName} ${newData.lastName}`;
+  const newShortName = `${newData.firstName} ${newData.lastName}`;
 
-  let logCount = 0;
-  let reqCount = 0;
-  let assetCount = 0;
+  // 2. สร้างรายการรูปแบบข้อมูลเก่าที่เป็นไปได้ทั้งหมด (Possible Old Patterns)
+  // เพื่อให้ดักจับข้อมูลได้ครอบคลุมที่สุด ไม่ว่าจะเก็บแบบไหน
+  const oldPatterns = [
+    // แบบเต็ม: "2EN-3000 Level No1"
+    `${oldData.empId} ${oldData.firstName} ${oldData.lastName}`,
+    // แบบมี Email ต่อท้าย
+    `${oldData.empId} ${oldData.firstName} ${oldData.lastName} (Email)`,
+    // แบบสั้น: "Level No1"
+    `${oldData.firstName} ${oldData.lastName}`,
+    // ⭐ แบบกึ่งเต็ม (ID + ชื่อหน้า): "2EN-3000 Level" (กรณี Approver บางทีเก็บไม่ครบ)
+    `${oldData.empId} ${oldData.firstName}`,
+    // ⭐ แบบ ID อย่างเดียว (เช็คแบบ StartWith): "2EN-3000"
+    oldData.empId 
+  ];
 
-  // 1. อัปเดต Sheet "Logs"
+  // Helper: ฟังก์ชันเช็คว่าค่าในเซลล์ตรงกับ Pattern เก่าหรือไม่
+  const isMatch = (value) => {
+    if (!value || typeof value !== 'string') return false;
+    const val = value.trim();
+    // วนลูปเช็คทุก Pattern
+    return oldPatterns.some(pattern => {
+      // ถ้า Pattern เป็น ID ล้วนๆ ให้เช็คว่า "ขึ้นต้นด้วย" (เพื่อความแม่นยำ)
+      if (pattern === oldData.empId) {
+        return val.startsWith(pattern); 
+      }
+      // กรณีอื่นเช็คแบบตรงตัว
+      return val === pattern || val.replace(/\s+/g, ' ') === pattern; 
+    });
+  };
+
+  let countReq = 0;
+  let countLog = 0;
+  let countAsset = 0;
+
+  // --- 1. อัปเดต Sheet "Requests" ---
+  const reqSheet = getOrCreateSheet('Requests');
+  const reqData = reqSheet.getDataRange().getValues();
+  
+  for (let i = 1; i < reqData.length; i++) {
+    if (!reqData[i][1]) continue;
+    try {
+      let req = JSON.parse(reqData[i][1]);
+      let changed = false;
+
+      // 1.1 แก้ชื่อผู้ขอ (Requester)
+      if (isMatch(req.requester)) {
+        req.requester = newShortName; // ปกติ requester ใช้ชื่อสั้น
+        changed = true;
+      }
+
+      // 1.2 แก้ผู้อนุมัติ (Approver L1, L2) -> จุดที่เคยมีปัญหา
+      if (isMatch(req.approverL1)) { 
+        req.approverL1 = newFullSig; 
+        changed = true; 
+      }
+      if (isMatch(req.approverL2)) { 
+        req.approverL2 = newFullSig; 
+        changed = true; 
+      }
+
+      // 1.3 แก้ใน History Array
+      if (req.history && Array.isArray(req.history)) {
+        req.history.forEach(h => {
+          if (isMatch(h.user)) {
+            h.user = newFullSig;
+            changed = true;
+          }
+        });
+      }
+
+      if (changed) {
+        reqSheet.getRange(i + 1, 2).setValue(JSON.stringify(req));
+        countReq++;
+      }
+    } catch (e) {
+      console.error(`Error parsing Request row ${i+1}: ${e.toString()}`);
+    }
+  }
+
+  // --- 2. อัปเดต Sheet "Logs" (ประวัติรวม) ---
   const logSheet = getOrCreateSheet('Logs');
   const logData = logSheet.getDataRange().getValues();
   for (let i = 1; i < logData.length; i++) {
     if (!logData[i][1]) continue;
     try {
       let log = JSON.parse(logData[i][1]);
-      let isLogChanged = false;
-
-      // เช็คแบบปกติ
-      if (log.by === oldFullSig) {
+      
+      if (isMatch(log.by)) {
         log.by = newFullSig;
-        isLogChanged = true;
-      } 
-      // ⭐ เช็คแบบที่มาจาก Email
-      else if (log.by === oldEmailSig) {
-        log.by = newEmailSig;
-        isLogChanged = true;
-      }
-
-      if (isLogChanged) {
         logSheet.getRange(i + 1, 2).setValue(JSON.stringify(log));
-        logCount++;
+        countLog++;
       }
     } catch (e) {}
   }
 
-  // 2. อัปเดต Sheet "Requests"
-  const reqSheet = getOrCreateSheet('Requests');
-  const reqData = reqSheet.getDataRange().getValues();
-  for (let i = 1; i < reqData.length; i++) {
-    if (!reqData[i][1]) continue;
-    try {
-      let req = JSON.parse(reqData[i][1]);
-      let isReqChanged = false;
-
-      // 2.1 แก้ชื่อผู้ขอ
-      if (req.requester === oldShortName) {
-        req.requester = newShortName;
-        isReqChanged = true;
-      }
-
-      // 2.2 แก้ประวัติในใบคำขอ (History)
-      if (req.history && req.history.length > 0) {
-        req.history.forEach(h => {
-          // เช็คแบบปกติ
-          if (h.user === oldFullSig) {
-            h.user = newFullSig;
-            isReqChanged = true;
-          }
-          // ⭐ เช็คแบบที่มาจาก Email
-          else if (h.user === oldEmailSig) {
-            h.user = newEmailSig;
-            isReqChanged = true;
-          }
-        });
-      }
-
-      if (isReqChanged) {
-        reqSheet.getRange(i + 1, 2).setValue(JSON.stringify(req));
-        reqCount++;
-      }
-    } catch (e) {}
-  }
-
-  // 3. อัปเดต Sheet "Assets" (แก้ที่ holder)
+  // --- 3. อัปเดต Sheet "Assets" (ผู้ถือครอง) ---
   const assetSheet = getOrCreateSheet('Assets');
   const assetData = assetSheet.getDataRange().getValues();
   for (let i = 1; i < assetData.length; i++) {
@@ -1173,18 +1224,17 @@ function updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName
     try {
       let asset = JSON.parse(assetData[i][1]);
       
-      // เช็คทั้งแบบสั้น แบบเต็ม และแบบมี (Email)
-      if (asset.holder === oldShortName || asset.holder === oldFullSig || asset.holder === oldEmailSig) {
-        asset.holder = newShortName; 
+      if (isMatch(asset.holder)) {
+        asset.holder = newShortName;
         assetSheet.getRange(i + 1, 2).setValue(JSON.stringify(asset));
-        assetCount++;
+        countAsset++;
       }
     } catch (e) {}
   }
 
   return { 
     success: true, 
-    message: `อัปเดตข้อมูลสำเร็จ: ประวัติ(${logCount}), เอกสาร(${reqCount}), ทรัพย์สิน(${assetCount})` 
+    message: `อัปเดตข้อมูลย้อนหลังสำเร็จ: เอกสาร(${countReq}), ประวัติ(${countLog}), ทรัพย์สิน(${countAsset})` 
   };
 }
 
