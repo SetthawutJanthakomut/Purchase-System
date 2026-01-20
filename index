@@ -251,9 +251,15 @@ const STATUS_LABELS = {
         }
     };
 
-    // --- Components ---
-    const StatusBadge = ({ status }) => {
+const StatusBadge = ({ status, type }) => {
       let color = 'bg-gray-100 text-gray-800';
+      let label = STATUS_LABELS[status] || status;
+
+      // ⭐ Logic ใหม่: ถ้าเป็น เบิก/ยืม และสถานะ Pending Head ให้เปลี่ยนชื่อ
+      if (status === 'Pending Head' && (type === 'Withdraw' || type === 'Borrow')) {
+          label = 'รออนุมัติ Level 1 / Level 2';
+      }
+
       if (status === 'Draft') color = 'bg-gray-200 text-gray-600 border border-gray-300';
       else if (status === 'Revise Needed') color = 'bg-red-50 text-red-600 border border-red-200 animate-pulse';
       else if (status.includes('Pending') || status === 'PR Issued') color = 'bg-amber-100 text-amber-800';
@@ -264,7 +270,8 @@ const STATUS_LABELS = {
       else if (status === 'Completed') color = 'bg-green-100 text-green-800';
       else if (status === 'Returned') color = 'bg-teal-100 text-teal-800';
       else if (status === 'Rejected') color = 'bg-red-100 text-red-800';
-      return <span className={`px-2 py-1 rounded-full text-xs font-semibold ${color}`}>{STATUS_LABELS[status] || status}</span>;
+      
+      return <span className={`px-2 py-1 rounded-full text-xs font-semibold ${color}`}>{label}</span>;
     };
 
     const DocIdBadge = ({ type, id }) => {
@@ -381,7 +388,7 @@ const [userSearch, setUserSearch] = useState(''); // ⭐ เพิ่ม State �
 const [announcements, setAnnouncements] = useState([]); 
     const [publicAnnounces, setPublicAnnounces] = useState([]); // สำหรับแสดงผลหน้าแรก
     const [showPublicAnnounce, setShowPublicAnnounce] = useState(false);
-
+    const [announcement, setAnnouncement] = useState(null);
     const [announceForm, setAnnounceForm] = useState({ id: '', title: '', detail: '', active: true }); 
     const [isAnnounceLoading, setIsAnnounceLoading] = useState(false);
 
@@ -1624,26 +1631,29 @@ const newUsersCount = useMemo(() => {
     return allUsers.filter(u => u.status === 'New').length;
 }, [allUsers]);
 
-
-// --- LOGIC: Sidebar Badge Count (นับงานค้างของฉัน/งานที่ต้องทำ) ---
-      const myPendingCount = useMemo(() => {
+const myPendingCount = useMemo(() => {
           if (!user || !requests) return 0;
           const myName = `${user.firstName} ${user.lastName}`;
 
           return requests.filter(req => {
-              // 1. กรองตาม Project (ถ้ามีการเลือก)
               if (globalProjectFilter !== 'All' && req.job !== globalProjectFilter) return false;
-
-              // 2. ตัดงานที่จบแล้วทิ้ง (Completed, Rejected, Returned)
               if (['Completed', 'Rejected', 'Returned'].includes(req.status)) return false;
 
-              // 3. เช็คว่าเป็นงานที่เกี่ยวข้องไหม (เจ้าของ หรือ มีสิทธิ์ทำ)
-              // 3.1 เป็นของฉัน (รวมถึง Draft)
               const isMine = req.requester === myName || req.requester === 'Current User';
               
-              // 3.2 ฉันมีสิทธิ์กระทำ (Copy Logic มาจาก filteredRequests)
               let canAct = false;
-              if (hasPermission(8) && req.status === 'Pending Head') canAct = true;
+              // ⭐ [แก้ไข] Logic เช็คสิทธิ์ Pending Head
+              if (req.status === 'Pending Head') {
+                  // ถ้าเป็น เบิก/ยืม -> ได้ทั้ง Level 1 (8) และ Level 2 (9)
+                  if ((req.type === 'Withdraw' || req.type === 'Borrow') && (hasPermission(8) || hasPermission(9))) {
+                      canAct = true;
+                  }
+                  // ถ้าเป็น ซื้อ -> เฉพาะ Level 1 (8) เหมือนเดิม
+                  else if (['Local', 'HO'].includes(req.type) && hasPermission(8)) {
+                      canAct = true;
+                  }
+              }
+
               if (hasPermission(9) && req.status === 'Pending PM') canAct = true;
               if (hasPermission(10) && req.status === 'Pending Check') canAct = true;
               if (hasPermission(11) && req.status === 'Approved' && req.purchaseType === 'Buy') canAct = true;
@@ -2168,14 +2178,16 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
 
         // ⭐ 4. กรองรายการ "ของฉัน" หรือ "ที่ฉันมีสิทธิ์"
         data = data.filter(req => {
-            // 4.1 เป็นรายการของฉันเอง
-            const isMine = req.requester === myName || req.requester === 'Current User'; // เผื่อข้อมูลเก่า
+            const isMine = req.requester === myName || req.requester === 'Current User';
             
-            // 4.2 เป็นรายการที่ฉันมีสิทธิ์กระทำ (Actionable)
             let canAct = false;
             
-            // Logic เช็คสิทธิ์ตามสถานะ (เหมือนที่ใช้แสดงปุ่ม)
-            if (hasPermission(8) && req.status === 'Pending Head') canAct = true;
+            // ⭐ [แก้ไข] Logic เดียวกับ myPendingCount
+            if (req.status === 'Pending Head') {
+                 if ((req.type === 'Withdraw' || req.type === 'Borrow') && (hasPermission(8) || hasPermission(9))) canAct = true;
+                 else if (['Local', 'HO'].includes(req.type) && hasPermission(8)) canAct = true;
+            }
+
             if (hasPermission(9) && req.status === 'Pending PM') canAct = true;
             if (hasPermission(10) && req.status === 'Pending Check') canAct = true;
             if (hasPermission(11) && req.status === 'Approved' && req.purchaseType === 'Buy') canAct = true; // PR
@@ -4695,7 +4707,7 @@ const PublicAnnouncementPopup = () => (
                                                           <div className="text-[10px] text-gray-400">{req._displayTime.split(' ')[1]}</div>
                                                           {req.dateRequired && <div className="text-[10px] text-orange-400 mt-1">Due: {req.dateRequired}</div>}
                                                       </td>
-                                                      <td className="px-6 py-4 text-center"><StatusBadge status={req.status} /></td>
+                                                      <td className="px-6 py-4 text-center"><StatusBadge status={req.status} type={req.type} /></td>
                                                   </tr>
                                               );
                                           })}
@@ -5036,7 +5048,7 @@ filteredRequests.map(req => {
               )}
           </h4>
         </div>
-        <StatusBadge status={req.status} />
+        <StatusBadge status={req.status} type={req.type} />
       </div>
       
       <ProgressBar request={req} />
@@ -5069,12 +5081,20 @@ filteredRequests.map(req => {
         
         <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
         
-        {req.status !== 'Draft' && (
+{req.status !== 'Draft' && (
           <>
-            {hasPermission(8) && req.status === 'Pending Head' && (
+            {/* ⭐ [แก้ไข] เงื่อนไขการแสดงปุ่มสำหรับ Pending Head */}
+            {req.status === 'Pending Head' && (
+              // แสดงเมื่อ: (เป็นงานซื้อและมีสิทธิ์ L1) หรือ (เป็นงานเบิกยืมและมีสิทธิ์ L1 หรือ L2)
+              ( (['Local', 'HO'].includes(req.type) && hasPermission(8)) || 
+                (['Withdraw', 'Borrow'].includes(req.type) && (hasPermission(8) || hasPermission(9))) )
+            ) && (
               <>
                 <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ Level 2'}</button>
+                <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">
+                    {/* เปลี่ยนข้อความปุ่มให้ชัดเจน */}
+                    {(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม (Approve)' : 'ส่งต่อ Level 2'}
+                </button>
               </>
             )}
             
@@ -6566,7 +6586,7 @@ filteredRequests.map(req => {
                      <div>
                          <div className="flex items-center gap-3">
                              <h3 className="font-bold text-xl text-gray-800">{selectedRequest.id}</h3>
-                             <StatusBadge status={selectedRequest.status} />
+                             <StatusBadge status={selectedRequest.status} type={selectedRequest.type} />
                          </div>
                          <p className="text-sm text-gray-500 mt-1">วันที่: {selectedRequest.created} | ผู้ขอ: {selectedRequest.requester}</p>
                      </div>
@@ -8836,12 +8856,69 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
           </div>
       )}
 
-{/* --- PRINT PREVIEW MODAL (NEW METHOD: Strict Log Matching) --- */}
+{/* --- PRINT PREVIEW MODAL (FIXED: No Extra Pages & Centered Layout) --- */}
       {showPOPreviewModal && selectedRequest && (
         <div className="fixed inset-0 bg-white z-[200] overflow-auto">
             <div className="max-w-[210mm] mx-auto p-8 print-container">
                 
-                {/* Toolbar (No Print) */}
+                {/* --- CSS สำหรับ Print --- */}
+                <style>{`
+                    @media print {
+                        /* กำหนดระยะขอบกระดาษ */
+                        @page { size: A4; margin: 15mm 10mm; }
+                        
+                        /* 1. รีเซ็ตความสูง: ให้ความสูงเท่ากับเนื้อหาจริง ไม่ฟิก A4 */
+                        html, body, .print-content-wrapper { 
+                            height: auto !important; 
+                            min-height: 0 !important;
+                            overflow: visible !important; 
+                            background: white !important;
+                        }
+                        
+                        /* 2. ปลดล็อก Modal */
+                        .fixed.inset-0 { 
+                            position: static !important; 
+                            display: block !important;
+                            overflow: visible !important;
+                        }
+                        .print-container { 
+                            width: 100% !important; 
+                            max-width: none !important; 
+                            padding: 0 !important; 
+                            margin: 0 !important; 
+                            box-shadow: none !important;
+                        }
+
+                        /* 3. บังคับหัวตารางให้ทำซ้ำทุกหน้า */
+                        table { width: 100% !important; }
+                        thead { display: table-header-group !important; }
+                        tfoot { display: table-footer-group !important; }
+                        tbody { display: table-row-group !important; }
+                        tr { page-break-inside: avoid !important; }
+
+                        /* ซ่อนปุ่มกด */
+                        .no-print { display: none !important; }
+                        
+                        /* ลายเซ็นห้ามถูกตัด */
+                        .signature-section { page-break-inside: avoid; break-inside: avoid; }
+                    }
+
+                    /* Style ตาราง */
+                    .preview-table th, .preview-table td { 
+                        border: 1px solid black; 
+                        padding: 6px 8px; 
+                        font-size: 12px; 
+                        vertical-align: top;
+                    }
+                    /* เส้นขอบของกล่อง Header */
+                    .header-box { 
+                        border: 1px solid black; 
+                        padding: 10px; 
+                        margin-bottom: 15px; 
+                    }
+                `}</style>
+
+                {/* Toolbar (ไม่แสดงตอนพิมพ์) */}
                 <div className="flex justify-between items-center mb-6 border-b pb-4 no-print bg-gray-50 p-4 rounded-xl">
                     <div>
                         <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
@@ -8851,7 +8928,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     </div>
                     <div className="flex gap-2">
                         <button onClick={handlePrint} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold transition-all">
-                            <Printer className="w-4 h-4"/> สั่งพิมพ์ / บันทึก PDF
+                            <Printer className="w-4 h-4"/> สั่งพิมพ์
                         </button>
                         <button onClick={() => setShowPOPreviewModal(false)} className="px-6 py-2.5 border border-gray-300 rounded-lg hover:bg-white bg-white text-gray-700 font-bold transition-all">
                             ปิด
@@ -8859,276 +8936,233 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     </div>
                 </div>
 
-                {/* --- DOCUMENT PAPER START --- */}
-                <div className="p-8 border border-gray-200 shadow-lg print:border-0 print:shadow-none bg-white min-h-[297mm] text-black font-sans relative">
+                {/* --- DOCUMENT CONTENT --- */}
+                {/* เพิ่ม class print-content-wrapper เพื่อใช้ target ใน CSS */}
+                <div className="print-content-wrapper bg-white min-h-[297mm] text-black font-sans relative text-sm">
                     
-                    {/* Helper: Strict Date Formatter (DD/MM/YYYY พ.ศ.) */}
                     {(() => {
                         const formatDateTh = (d) => {
                             if(!d) return '';
                             let dateObj;
-                            // 1. กรณีเป็น String แบบ '20/01/2569 ...'
                             if (typeof d === 'string') {
-                                const cleanDate = d.split(' ')[0]; // ตัดเวลาออก
+                                const cleanDate = d.split(' ')[0];
                                 if (cleanDate.includes('/')) {
                                     const parts = cleanDate.split('/');
                                     if (parts.length === 3) {
                                         let d = parts[0].padStart(2, '0');
                                         let m = parts[1].padStart(2, '0');
                                         let y = parseInt(parts[2]);
-                                        if (y < 2400) y += 543; // แปลงให้เป็น พ.ศ. แน่นอน
+                                        if (y < 2400) y += 543;
                                         return `${d}/${m}/${y}`;
                                     }
                                 }
-                                dateObj = new Date(d); // ลองแปลงมาตรฐาน
-                            } else {
-                                dateObj = d;
-                            }
+                                dateObj = new Date(d);
+                            } else { dateObj = d; }
                             
-                            // 2. กรณีเป็น Date Object หรือ ISO String
-                            if (!dateObj || isNaN(dateObj.getTime())) return d; // แปลงไม่ได้คืนค่าเดิม
-                            
+                            if (!dateObj || isNaN(dateObj.getTime())) return d;
                             const day = dateObj.getDate().toString().padStart(2, '0');
                             const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
                             const year = dateObj.getFullYear() < 2400 ? dateObj.getFullYear() + 543 : dateObj.getFullYear();
                             return `${day}/${month}/${year}`;
                         };
 
-                    return (
-                    <>
-                    {/* 1. Header Section */}
-                    <div className="text-center mb-6 relative">
-                        <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
-                        <div className="absolute top-0 right-0 text-right">
-                            <div className="text-xs text-gray-500">เลขที่เอกสาร</div>
-                            <div className="text-lg font-bold">{selectedRequest.docNumber || selectedRequest.id}</div>
-                            {/* วันที่เอกสาร: ใช้วันที่สร้าง (Log แรก) หรือ created */}
-                            <div className="text-xs">
-                                {formatDateTh(selectedRequest.history?.[0]?.date || selectedRequest.created)}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="mb-4">
-                        <span className="font-bold">โครงการ (Project):</span> <span className="border-b border-dotted border-gray-400 px-2 min-w-[200px] inline-block">{selectedRequest.job}</span>
-                    </div>
-
-                    {/* 2. Checkboxes Section (NEW LAYOUT) */}
-                    <div className="border border-black p-4 mb-4">
-                        <div className="flex items-center justify-between mb-4">
-                            {/* กลุ่มซ้าย: เบิก + Local (ชิดซ้าย ติดกัน) */}
-                            <div className="flex items-center gap-6">
-                                <label className="flex items-center gap-2">
-                                    <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
-                                        {(selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && <span className="text-lg font-bold">✓</span>}
-                                    </div> 
-                                    เบิกวัสดุ (Withdraw)
-                                </label>
-                                
-                                <label className="flex items-center gap-2">
-                                    <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
-                                        {selectedRequest.type === 'Local' && <span className="text-lg font-bold">✓</span>}
-                                    </div> 
-                                    สั่งซื้อวัสดุ หน่วยงาน (Local)
-                                </label>
-                            </div>
-
-                            {/* กลุ่มขวา: HO (ชิดขวาสุด) */}
-                            <label className="flex items-center gap-2">
-                                <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
-                                    {selectedRequest.type === 'HO' && <span className="text-lg font-bold">✓</span>}
-                                    {/* หมายเหตุ: ถ้าข้อมูลเก่าเป็น Local/HO ระบบอาจจะติ๊ก Local ให้ ถ้าอยากให้ HO ชัดเจนต้องดู Data */}
-                                </div> 
-                                สั่งซื้อวัสดุ HO
-                            </label>
-                        </div>
-                        
-                        <div className="border-t border-black pt-3 flex gap-8">
-                            <span className="font-bold">ความสำคัญ:</span>
-                            {['Normal', 'Urgent', 'Critical'].map(p => (
-                                <label key={p} className="flex items-center gap-2">
-                                    <div className={`w-5 h-5 border border-black flex items-center justify-center`}>
-                                        {selectedRequest.priority === p && <span className="text-lg font-bold">✓</span>}
-                                    </div> 
-                                    {p === 'Normal' ? 'ปกติ' : p === 'Urgent' ? 'ด่วน' : 'ด่วนมาก'}
-                                </label>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* 3. Table Section */}
-                    <table className="w-full text-sm border-collapse border border-black mb-6">
-                        <thead>
-                            <tr className="bg-gray-100 text-center">
-                                <th className="border border-black py-2 w-10">NO.</th>
-                                <th className="border border-black py-2">รายการวัสดุ (Description)</th>
-                                <th className="border border-black py-2 w-20">จำนวน</th>
-                                <th className="border border-black py-2 w-16">หน่วย</th>
-                                <th className="border border-black py-2 w-24">SUBJOB</th>
-                                <th className="border border-black py-2 w-24">EP CODE</th>
-                                <th className="border border-black py-2 w-28">วันที่ต้องการ</th>
-                                <th className="border border-black py-2 w-32">หมายเหตุ</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {selectedRequest.items.map((item, i) => (
-                                <tr key={i} className="text-center align-top">
-                                    <td className="border border-black py-2">{i + 1}</td>
-                                    <td className="border border-black py-2 px-2 text-left">{item.name}</td>
-                                    <td className="border border-black py-2">{item.qty}</td>
-                                    <td className="border border-black py-2">{item.unit}</td>
-                                    <td className="border border-black py-2">{item.subJob || '-'}</td>
-                                    <td className="border border-black py-2">{item.epCode || '-'}</td>
-                                    <td className="border border-black py-2">{formatDateTh(selectedRequest.dateRequired)}</td>
-                                    <td className="border border-black py-2 px-1 text-xs text-left">{item.note}</td>
-                                </tr>
-                            ))}
-                            {/* Fill empty rows */}
-                            {Array.from({ length: Math.max(0, 10 - selectedRequest.items.length) }).map((_, i) => (
-                                <tr key={`empty-${i}`}><td className="border border-black py-4">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td><td className="border border-black">&nbsp;</td></tr>
-                            ))}
-                        </tbody>
-                    </table>
-
-                  {/* 4. Signature Section (FIXED LOGIC) */}
-                    {(() => {
-                        // กลับด้าน History เพื่อหา Log ล่าสุดก่อน (Newest -> Oldest)
+                        // Data Preparation
                         const historyDesc = [...(selectedRequest.history || [])].reverse();
-                        
-                        // --- Helper: ฟังก์ชันเช็คว่า Action นี้ตรงกับสถานะที่เราหาหรือไม่ (รองรับทั้งไทย/อังกฤษ) ---
                         const isActionMatch = (logAction, statusKey) => {
                             if (!logAction) return false;
                             const label = STATUS_LABELS[statusKey] || '';
-                            // เช็คว่าตรงกับ Key (อังกฤษ) หรือ Label (ไทย) หรือไม่
                             return logAction === statusKey || logAction === label || logAction.includes(label);
                         };
-
-                        // --- 4.1 หา Log ของ Requester (ผู้ขอ) ---
-                        // หา Log แรกสุด (Draft/Create) หรือถ้าหาไม่เจอให้เอาตัวแรกของเวลา (ตัวท้ายของ Array)
-                        const reqLog = historyDesc.find(h => 
-                            h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')
-                        ) || historyDesc[historyDesc.length - 1];
-
-                        // --- 4.2 หา Log ของ Level 1 (Head) ---
-                        // คือคนที่เปลี่ยนสถานะเป็น "Pending PM" (งานซื้อ) หรือ "Ready to Disburse" (งานเบิก/ยืม)
-                        let l1Log = historyDesc.find(h => 
-                            isActionMatch(h.action, 'Pending PM') || // กรณีซื้อ (รอ Level 2)
-                            ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')) // กรณีเบิก/ยืม (จบที่ L1)
-                        );
-
-                        // --- 4.3 หา Log ของ Level 2 (PM) ---
-                        // คือคนที่เปลี่ยนสถานะเป็น "Approved" (เฉพาะงานซื้อ)
-                        // ต้องไม่ใช่คนเดียวกับ L1 (เผื่อกรณีข้อมูลซ้ำ) หรือถ้าใช่ต้องเป็น Log คนละเวลา
-                        const l2Log = historyDesc.find(h => 
-                            (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) &&
-                            h !== l1Log // ป้องกันการดึง Log ซ้ำกับ L1
-                        );
-
-                        // --- Helper: ดึง User Object จาก Log Text (รองรับแบบมี Email ต่อท้าย) ---
+                        const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
+                        let l1Log = historyDesc.find(h => isActionMatch(h.action, 'Pending PM') || ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')));
+                        const l2Log = historyDesc.find(h => (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) && h !== l1Log);
                         const getUser = (log) => {
                             if(!log || !log.user) return null;
-                            
-                            // ตัดส่วนที่เป็น (Email) ออก ถ้ามี เช่น "Admin (Email)" -> "Admin"
                             let txt = log.user.replace(' (Email)', '').trim();
-                            
-                            // 1. ลองหาจาก EmpID (ตัวอักษรกลุ่มแรก)
                             const firstPart = txt.split(' ')[0];
-                            
-                            // ค้นหาใน allUsers
-                            return allUsers.find(u => 
-                                (u.empId && u.empId === firstPart) || 
-                                (u.username === txt) ||
-                                (u.email && txt.includes(u.email)) ||
-                                (`${u.firstName} ${u.lastName}` === txt)
-                            );
+                            return allUsers.find(u => (u.empId && u.empId === firstPart) || (u.username === txt) || (u.email && txt.includes(u.email)) || (`${u.firstName} ${u.lastName}` === txt));
                         };
-
                         const userReq = getUser(reqLog);
                         const userL1 = getUser(l1Log);
                         const userL2 = getUser(l2Log);
-
-                        // --- Data for Rendering ---
-                        // ชื่อ: ถ้าเจอ User ในระบบให้ใช้ชื่อจริง / ถ้าไม่เจอให้ใช้ชื่อจาก Log
                         const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user.replace(' (Email)', '') : selectedRequest.requester);
                         const nameL1 = userL1 ? `${userL1.firstName} ${userL1.lastName}` : (l1Log ? l1Log.user.replace(' (Email)', '') : '..........................');
                         const nameL2 = userL2 ? `${userL2.firstName} ${userL2.lastName}` : (l2Log ? l2Log.user.replace(' (Email)', '') : '..........................');
-
-                        // วันที่
                         const dateReq = formatDateTh(reqLog ? reqLog.date : selectedRequest.created);
                         const dateL1 = l1Log ? formatDateTh(l1Log.date) : '....../....../......';
                         const dateL2 = l2Log ? formatDateTh(l2Log.date) : '....../....../......';
-
-                        // ลายเซ็น (รูปภาพ)
                         const sigReq = userReq?.signature ? getDriveImageUrl(userReq.signature) : null;
                         const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
                         const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
 
                         return (
-                            <div className="mt-auto">
-                                <div className={`grid ${selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
-                                    
-                                    {/* 1. ผู้ขอ (Requester) */}
-                                    <div className="border border-black p-2 h-36 flex flex-col justify-between relative">
-                                        <div className="text-sm font-bold">ผู้ขอ (Requester)</div>
-                                        <div className="flex-1 flex items-center justify-center">
-                                            {sigReq ? <img src={sigReq} className="max-h-20 max-w-full"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
-                                        </div>
-                                        <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
-                                            {nameReq}<br/>
-                                            วันที่: {dateReq}
-                                        </div>
-                                    </div>
+                            <>
+                            {/* --- ส่วนที่ 1: Header คงที่ (แสดงเฉพาะหน้าแรก) --- */}
+                            <div className="w-full text-center mb-4">
+                                <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
+                            </div>
 
-                                    {/* 2. สโตร์รับของ */}
-                                    <div className="border border-black p-2 h-36 flex flex-col justify-between">
-                                        <div className="text-sm font-bold">สโตร์ผู้รับของ</div>
-                                        <div className="flex-1 flex items-center justify-center">
-                                            <span className="text-gray-300 text-xs">..........................</span>
-                                        </div>
-                                        <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
-                                            ลงชื่อ..........................<br/>
-                                            วันที่....../....../......
-                                        </div>
-                                    </div>
+                            <div className="w-full text-left font-normal mb-4">
+                                <span className="font-bold text-base">โครงการ (Project):</span> 
+                                <span className="border-b border-dotted border-black px-2 ml-2 min-w-[200px] inline-block font-bold">
+                                    {selectedRequest.job}
+                                </span>
+                            </div>
 
-                                    {/* 3. ผู้อนุมัติ (Level 1) */}
-                                    <div className="border border-black p-2 h-36 flex flex-col justify-between">
-                                        <div className="text-sm font-bold">ผู้อนุมัติ (Level 1)</div>
-                                        <div className="flex-1 flex items-center justify-center">
-                                            {sigL1 ? <img src={sigL1} className="max-h-20 max-w-full"/> : <span className="text-gray-300 text-xs">..........................</span>}
-                                        </div>
-                                        <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
-                                            {nameL1}<br/>
-                                            วันที่: {dateL1}
-                                        </div>
+                            {/* กล่อง Checkbox (หน้าแรกเท่านั้น) */}
+                            <div className="header-box text-left font-normal">
+                                <div className="grid grid-cols-3 gap-2 mb-3">
+                                    {/* ซ้าย */}
+                                    <div className="flex justify-start">
+                                        <label className="flex items-center gap-2">
+                                            <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
+                                                {(selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                            </div> 
+                                            <span>เบิกวัสดุ (Withdraw)</span>
+                                        </label>
                                     </div>
+                                    {/* กลาง: จัดกึ่งกลาง */}
+                                    <div className="flex justify-center">
+                                        <label className="flex items-center gap-2">
+                                            <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
+                                                {selectedRequest.type === 'Local' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                            </div> 
+                                            <span>สั่งซื้อวัสดุ หน่วยงาน (Local)</span>
+                                        </label>
+                                    </div>
+                                    {/* ขวา */}
+                                    <div className="flex justify-end">
+                                        <label className="flex items-center gap-2">
+                                            <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
+                                                {selectedRequest.type === 'HO' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                            </div> 
+                                            <span>{selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent' ? 'สั่งซื้อวัสดุ HO (เช่า)' : 'สั่งซื้อวัสดุ HO (ซื้อขาด)'}</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div className="border-t border-black pt-3 flex gap-8">
+                                    <span className="font-bold">ความสำคัญ:</span>
+                                    {['Normal', 'Urgent', 'Critical'].map(p => (
+                                        <label key={p} className="flex items-center gap-2">
+                                            <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
+                                                {selectedRequest.priority === p && <span className="text-lg font-bold leading-none mb-1">✓</span>}
+                                            </div> 
+                                            <span>{p === 'Normal' ? 'ปกติ' : p === 'Urgent' ? 'ด่วน' : 'ด่วนมาก'}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
 
-                                    {/* 4. ผู้อนุมัติ (Level 2) - เฉพาะงานซื้อ */}
-                                    {selectedRequest.type !== 'Withdraw' && selectedRequest.type !== 'Borrow' && (
-                                        <div className="border border-black p-2 h-36 flex flex-col justify-between">
-                                            <div className="text-sm font-bold">ผู้อนุมัติ (Level 2)</div>
-                                            <div className="flex-1 flex items-center justify-center">
-                                                {sigL2 ? <img src={sigL2} className="max-h-20 max-w-full"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                            {/* --- ส่วนที่ 2: ตาราง (Header จะซ้ำทุกหน้า) --- */}
+                            <table className="w-full border-collapse preview-table">
+                                <thead>
+                                    {/* Row 1: Document Info (ซ้ำทุกหน้า) */}
+                                    <tr>
+                                        <th colSpan="4" className="border-0 p-0">
+                                            <div className="flex justify-end items-center pb-2 pt-2 bg-white" style={{borderBottom: '1px solid black'}}>
+                                                <div className="text-right">
+                                                    <div className="text-sm">
+                                                        <span className="font-bold">เลขที่เอกสาร:</span> {selectedRequest.docNumber || selectedRequest.id}
+                                                    </div>
+                                                    <div className="text-sm">
+                                                        <span className="font-bold">วันที่:</span> {formatDateTh(selectedRequest.history?.[0]?.date || selectedRequest.created)}
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <div className="border-t border-dotted border-black mt-2 pt-1 text-xs">
-                                                {nameL2}<br/>
-                                                วันที่: {dateL2}
+                                        </th>
+                                    </tr>
+
+                                    {/* Row 2: Column Headers (ซ้ำทุกหน้า) */}
+                                    <tr className="bg-gray-100 text-center font-bold">
+                                        <th className="w-12 border border-black">NO.</th>
+                                        <th className="border border-black">รายการวัสดุ (Description) / จำนวน / หน่วย</th>
+                                        <th className="w-32 border border-black">SUBJOB / EP CODE</th>
+                                        <th className="w-48 border border-black">วันที่ต้องการ / หมายเหตุ</th>
+                                    </tr>
+                                </thead>
+
+                                <tbody>
+                                    {selectedRequest.items.map((item, i) => (
+                                        <tr key={i}>
+                                            <td className="text-center font-bold border border-black">{i + 1}</td>
+                                            <td className="border border-black">
+                                                <div className="font-bold text-black">{item.name}</div>
+                                                <div className="mt-1 pl-2 text-sm text-gray-700">
+                                                    จำนวน: <span className="font-bold">{item.qty}</span> {item.unit}
+                                                </div>
+                                            </td>
+                                            <td className="text-center align-middle border border-black">
+                                                {item.subJob || item.epCode ? (
+                                                    <div className="flex flex-col gap-1 text-xs font-bold">
+                                                        {item.subJob && <span>Sub: {item.subJob}</span>}
+                                                        {item.epCode && <span>EP: {item.epCode}</span>}
+                                                    </div>
+                                                ) : '-'}
+                                            </td>
+                                            <td className="text-left align-top border border-black">
+                                                <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
+                                                    {formatDateTh(selectedRequest.dateRequired)}
+                                                </div>
+                                                {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+
+                            {/* --- ส่วนที่ 3: ลายเซ็น (ท้ายเอกสาร) --- */}
+                            <div className="mt-8 signature-section break-inside-avoid">
+                                <div className={`grid ${selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
+                                    {/* 1. Requester */}
+                                    <div className="border border-black p-2 h-36 flex flex-col justify-between relative bg-white">
+                                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
+                                        <div className="flex-1 flex items-center justify-center">
+                                            {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
+                                        </div>
+                                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                            <div className="font-bold">{nameReq}</div>
+                                            <div>วันที่: {dateReq}</div>
+                                        </div>
+                                    </div>
+
+                                    {/* 2. Store */}
+                                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">สโตร์ผู้รับของ</div>
+                                        <div className="flex-1 flex items-center justify-center"><span className="text-gray-300 text-xs">..........................</span></div>
+                                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">ลงชื่อ..........................<br/>วันที่....../....../......</div>
+                                    </div>
+
+                                    {/* 3. Level 1 */}
+                                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 1)</div>
+                                        <div className="flex-1 flex items-center justify-center">
+                                            {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                        </div>
+                                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                            <div className="font-bold">{nameL1}</div>
+                                            <div>วันที่: {dateL1}</div>
+                                        </div>
+                                    </div>
+
+                                    {/* 4. Level 2 (Buy Only) */}
+                                    {selectedRequest.type !== 'Withdraw' && selectedRequest.type !== 'Borrow' && (
+                                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 2)</div>
+                                            <div className="flex-1 flex items-center justify-center">
+                                                {sigL2 ? <img src={sigL2} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                            </div>
+                                            <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                                <div className="font-bold">{nameL2}</div>
+                                                <div>วันที่: {dateL2}</div>
                                             </div>
                                         </div>
                                     )}
-
                                 </div>
                             </div>
+                            </>
                         );
                     })()}
-
-                    </>
-                    );
-                    })()}
-
                 </div>
-                {/* --- DOCUMENT END --- */}
-
             </div>
         </div>
       )}
