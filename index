@@ -819,6 +819,69 @@ const hasPermission = (permId, project = globalProjectFilter) => {
         );
     };
 
+    // --- Helper: Print Check Logic ---
+      const handleOpenPrintPreview = (req) => {
+          // 1. จำลอง Logic การหา User เหมือนในหน้า Preview
+          const historyDesc = [...(req.history || [])].reverse();
+          const isActionMatch = (logAction, statusKey) => {
+              if (!logAction) return false;
+              const label = STATUS_LABELS[statusKey] || '';
+              return logAction === statusKey || logAction === label || logAction.includes(label);
+          };
+
+          // หา Log ของแต่ละระดับ
+          const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
+          
+          let l1Log = historyDesc.find(h => 
+              isActionMatch(h.action, 'Pending PM') || 
+              ((req.type === 'Withdraw' || req.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
+          );
+
+          const l2Log = historyDesc.find(h => 
+              (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) &&
+              h !== l1Log
+          );
+
+          // ฟังก์ชันดึง User Object
+          const getUser = (log) => {
+              if(!log || !log.user) return null;
+              let txt = log.user.replace(' (Email)', '').trim();
+              const firstPart = txt.split(' ')[0];
+              return allUsers.find(u => 
+                  (u.empId && u.empId === firstPart) || 
+                  (u.username === txt) ||
+                  (u.email && txt.includes(u.email)) ||
+                  (`${u.firstName} ${u.lastName}` === txt)
+              );
+          };
+
+          const userReq = getUser(reqLog);
+          const userL1 = getUser(l1Log);
+          const userL2 = getUser(l2Log);
+
+          // 2. ตรวจสอบว่าใครขาดลายเซ็น
+          const missingSigs = [];
+
+          // ผู้ขอ (จำเป็นเสมอ)
+          if (!userReq || !userReq.signature) missingSigs.push("ผู้ขอ (Requester)");
+
+          // Level 1 (จำเป็นสำหรับสถานะที่อนุมัติแล้ว)
+          if (!userL1 || !userL1.signature) missingSigs.push("ผู้อนุมัติ Level 1");
+
+          // Level 2 (จำเป็นเฉพาะงานซื้อ Local หรือ HO Full Flow)
+          const needsL2 = (req.type === 'Local' || (req.type === 'HO' && req.isFullApprovalFlow));
+          if (needsL2 && req.type !== 'Withdraw' && req.type !== 'Borrow') {
+               if (!userL2 || !userL2.signature) missingSigs.push("ผู้อนุมัติ Level 2");
+          }
+
+          // 3. แจ้งเตือนหรือเปิดหน้าพิมพ์
+          if (missingSigs.length > 0) {
+              showToast(`ไม่สามารถพิมพ์ได้: ขาดลายเซ็นของ ${missingSigs.join(', ')}`, 'error');
+          } else {
+              openPOPreview(req);
+          }
+      };
+
       // --- LOGIC: PROJECT MANAGEMENT ---
 const handleSaveProject = () => {
     if (!editingProject.id) { showToast('กรุณาระบุรหัสโครงการ', 'error'); return; }
@@ -4995,8 +5058,13 @@ filteredRequests.map(req => {
 
 
         {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
-        {(req.status === 'Approved' || req.status === 'Ordered') && req.type === 'Local' && (
-          <button type="button" onClick={() => openPOPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-4 h-4"/> พิมพ์</button>
+        {/* ปุ่มพิมพ์ (Print) - Updated Logic */}
+        {/* แสดงเมื่อ: (Local) หรือ (HO Full Flow) หรือ (Withdraw) และสถานะผ่านการอนุมัติแล้ว */}
+        {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed'].includes(req.status) && 
+         (req.type === 'Local' || req.type === 'Withdraw' || (req.type === 'HO' && req.isFullApprovalFlow)) && (
+          <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
+              <Printer className="w-4 h-4"/> พิมพ์
+          </button>
         )}
         
         <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
@@ -5006,7 +5074,7 @@ filteredRequests.map(req => {
             {hasPermission(8) && req.status === 'Pending Head' && (
               <>
                 <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ PM'}</button>
+                <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม' : 'ส่งต่อ Level 2'}</button>
               </>
             )}
             
@@ -6493,9 +6561,7 @@ filteredRequests.map(req => {
           
 {showDetailModal && selectedRequest && (
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in">
-             {/* ... เนื้อหาข้างในเหมือนเดิม ... */}
              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
-                 {/* Header & Body... (ใช้โค้ดเดิมได้เลย แค่แก้บรรทัดแรก z-[200]) */}
                  <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
                      <div>
                          <div className="flex items-center gap-3">
@@ -6504,9 +6570,24 @@ filteredRequests.map(req => {
                          </div>
                          <p className="text-sm text-gray-500 mt-1">วันที่: {selectedRequest.created} | ผู้ขอ: {selectedRequest.requester}</p>
                      </div>
-                     <button type="button" onClick={() => setShowDetailModal(false)} className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors" title="ปิดหน้าต่าง">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                     </button>
+                     
+                     <div className="flex items-center gap-2">
+                        {/* ⭐ เพิ่มปุ่มพิมพ์ใน Modal ตรงนี้ ⭐ */}
+                        {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed'].includes(selectedRequest.status) && 
+                         (selectedRequest.type === 'Local' || selectedRequest.type === 'Withdraw' || (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)) && (
+                            <button 
+                                onClick={() => handleOpenPrintPreview(selectedRequest)}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
+                                title="พิมพ์เอกสาร"
+                            >
+                                <Printer className="w-4 h-4"/> พิมพ์
+                            </button>
+                        )}
+
+                        <button type="button" onClick={() => setShowDetailModal(false)} className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors" title="ปิดหน้าต่าง">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        </button>
+                     </div>
                  </div>
                  {/* ... Body Content เดิม ... */}
                  <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
@@ -7037,7 +7118,13 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                     {selectedRequest.history.slice().reverse().map((log, idx) => (
                                         <div key={idx} className="ml-6 relative">
                                             <div className={`absolute -left-[31px] top-0 w-4 h-4 rounded-full border-2 border-white ${idx===0 ? 'bg-blue-500 ring-2 ring-blue-100' : 'bg-gray-300'}`}></div>
-                                            <div className="flex justify-between items-start"><span className="text-xs font-bold text-gray-900">{log.action}</span><span className="text-[10px] text-gray-400">{log.date}</span></div>
+                                            <div className="flex justify-between items-start">
+                                            <span className="text-xs font-bold text-gray-900">
+  {/* ⭐ ถ้าเจอคำว่า Pending PM ให้เปลี่ยนเป็น Pending Level 2 ทันที */}
+  {log.action === 'Pending PM' ? 'Pending Level 2' : log.action}
+</span>
+                                            
+                                            </div>
                                             <p className="text-xs text-gray-500 mt-0.5">โดย: {log.user}</p>
                                             {log.note && (<div className={`mt-2 text-xs p-3 rounded-lg border ${log.action === 'Return for Revision' || log.note.includes('ส่งคืนแก้ไข') ? 'bg-red-50 text-red-700 border-red-200 font-medium' : 'bg-gray-50 text-gray-600 border-gray-100'}`}>{log.action === 'Return for Revision' && <AlertCircle className="w-3 h-3 inline mr-1 mb-0.5"/>}{log.note}</div>)}
                                         </div>
@@ -7205,9 +7292,9 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                          </div>
                          <div>
                              <p className="text-sm font-bold text-gray-800 group-hover:text-blue-700 transition-colors">
-                                 ต้องขออนุมัติจาก Head/PM เพิ่มเติม (Full Flow)
+                                 ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)
                              </p>
-                             <p className="text-xs text-gray-500">สำหรับเคสยอดเงินสูง หรือนอกเหนือ Budget</p>
+                             <p className="text-xs text-gray-500">สำหรับเคสต้องการหลักฐานเพิ่มเติม</p>
                          </div>
                      </label>
 
@@ -8217,7 +8304,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                                 log.action.includes('Borrow') ? 'bg-blue-100 text-blue-700' :
                                                 'bg-gray-100 text-gray-700'
                                             }`}>
-                                                {log.action}
+                                                {log.action === 'Pending PM' ? 'Pending Level 2' : log.action}
                                             </span>
                                         </td>
 
@@ -9692,110 +9779,122 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
 // แทนที่ Logic เดิมด้วยโค้ดด้านล่างนี้:
 
 <button 
-    onClick={async () => {
-        // ดึงข้อมูลเดิมจาก Master List เพื่อเปรียบเทียบ
-        const originalUser = allUsers.find(u => u.id === viewingUser.id);
-        if (!originalUser) return;
+// ค้นหา <button> ที่มีข้อความ "บันทึกการแก้ไข" ในส่วน userDetailTab === 'info'
+// แล้วแทนที่ onClick ด้วย function นี้ครับ:
 
-        // 1. ตรวจสอบการเปลี่ยนแปลงข้อมูลทั่วไป (Text Fields)
+onClick={async () => {
+    // 1. ดึงข้อมูล User เดิม (ก่อนแก้ไข) จาก State รวม
+    const originalUser = allUsers.find(u => u.id === viewingUser.id);
+    if (!originalUser) return;
+
+    // Validation เบื้องต้น
+    if (!viewingUser.empId || !viewingUser.firstName || !viewingUser.lastName) {
+        showToast('กรุณากรอกข้อมูลให้ครบถ้วน (รหัส, ชื่อ, นามสกุล)', 'error');
+        return;
+    }
+
+    setIsLoading(true);
+    try {
         const changeDetails = [];
+        let newSignatureUrl = viewingUser.signature;
+        let sigChanged = false;
+
+        // --- A. จัดการลายเซ็น (Signature) ---
+        if (sigMode === 'Draw' && hasDrawn) {
+            const canvas = sigCanvasRef.current;
+            const dataUrl = canvas.toDataURL('image/png');
+            const res = await new Promise((resolve, reject) => {
+                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                    .uploadUserSignature(dataUrl, `SIG_${viewingUser.empId}_${Date.now()}.png`);
+            });
+            if (res.url) {
+                newSignatureUrl = res.url;
+                changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
+                sigChanged = true;
+            }
+        } else if (sigMode === 'Upload' && signatureFile) {
+            const base64 = await fileToBase64(signatureFile);
+            const res = await new Promise((resolve, reject) => {
+                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                    .uploadUserSignature(base64, `SIG_${viewingUser.empId}_${Date.now()}_${signatureFile.name}`);
+            });
+            if (res.url) {
+                newSignatureUrl = res.url;
+                changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
+                sigChanged = true;
+            }
+        }
+
+        // --- B. ตรวจสอบการเปลี่ยนแปลงข้อมูล (Text) ---
         if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
         if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
         if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
-        
-        setIsLoading(true);
-        try {
-            // ⭐ 2. จัดการลายเซ็น (ปรับปรุง Logic ใหม่)
-            let newSignatureUrl = viewingUser.signature; 
-            let sigChanged = false;
 
-            // กรณี 2.1: วาดลายเซ็น (เช็คจาก hasDrawn แม่นยำกว่าเช็คขนาดไฟล์)
-            if (sigMode === 'Draw' && hasDrawn) {
-                const canvas = sigCanvasRef.current;
-                const dataUrl = canvas.toDataURL('image/png');
-                
-                // อัปโหลดรูปลายเซ็น
-                const res = await new Promise((resolve, reject) => {
-                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-                        .uploadUserSignature(dataUrl, `SIG_${viewingUser.empId}_${Date.now()}.png`);
-                });
-                
-                if (res.url) {
-                    newSignatureUrl = res.url;
-                    changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
-                    sigChanged = true;
-                }
-            } 
-            // กรณี 2.2: อัปโหลดไฟล์ (Upload)
-            else if (sigMode === 'Upload' && signatureFile) {
-                const base64 = await fileToBase64(signatureFile);
-                const res = await new Promise((resolve, reject) => {
-                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-                        .uploadUserSignature(base64, `SIG_${viewingUser.empId}_${Date.now()}_${signatureFile.name}`);
-                });
-                
-                if (res.url) {
-                    newSignatureUrl = res.url;
-                    changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
-                    sigChanged = true;
-                }
-            }
-
-            // ถ้าไม่มีการแก้ไขอะไรเลย ให้แจ้งเตือนและจบ
-            if (changeDetails.length === 0 && !sigChanged) {
-                setIsLoading(false);
-                showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
-                return;
-            }
-
-            // 3. รวมข้อมูลเพื่อบันทึก
-            const userToSave = { ...viewingUser, signature: newSignatureUrl };
-
-            // 4. บันทึกข้อมูลลงฐานข้อมูล (Users Sheet)
-            await new Promise(r => google.script.run.withSuccessHandler(r).saveUserData(userToSave));
-            
-            // 5. บันทึก Log
-            await addInvLog(
-                'Edit Profile', 
-                `${viewingUser.empId} ${viewingUser.firstName}`, 
-                `Updated profile`, 
-                `รายการแก้ไข:\n- ${changeDetails.join('\n- ')}`, 
-                [], null, null
-            );
-
-            // ⭐ 6. อัปเดตข้อมูล Global (Requests, Assets, Logs) -- คืนชีพส่วนนี้ให้แล้วครับ
-            const oldFullSig = `${originalUser.empId} ${originalUser.firstName} ${originalUser.lastName}`;
-            const newFullSig = `${viewingUser.empId} ${viewingUser.firstName} ${viewingUser.lastName}`;
-            const oldShortName = `${originalUser.firstName} ${originalUser.lastName}`;
-            const newShortName = `${viewingUser.firstName} ${viewingUser.lastName}`;
-            
-            // เช็คว่าชื่อมีการเปลี่ยนแปลงหรือไม่
-            const hasNameChange = (oldFullSig !== newFullSig) || (oldShortName !== newShortName);
-
-            if (hasNameChange) {
-                 const updateRes = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldFullSig, newFullSig, oldShortName, newShortName));
-                 showToast(`บันทึกและอัปเดตชื่อในประวัติเก่า ${updateRes.message || 'เรียบร้อย'}`);
-            } else {
-                 showToast('บันทึกข้อมูลและลายเซ็นเรียบร้อย');
-            }
-            
-            // 7. อัปเดต State หน้าจอ
-            setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
-            setViewingUser(userToSave); 
-            if (user.id === viewingUser.id) setUser(userToSave);
-            
-            // รีเซ็ตค่าชั่วคราว
-            if(sigCanvasRef.current) clearSignature();
-            setSignatureFile(null);
-            setHasDrawn(false); // รีเซ็ตสถานะวาด
-
-        } catch (err) {
-            console.error(err);
-            showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
-        } finally {
+        if (changeDetails.length === 0 && !sigChanged) {
             setIsLoading(false);
+            showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
+            return;
         }
-    }}
+
+        // เตรียมข้อมูลบันทึก
+        const userToSave = { ...viewingUser, signature: newSignatureUrl };
+
+        // 1. บันทึกข้อมูลหลัก (Users Sheet) + เช็ค EmpID ซ้ำ
+        const saveRes = await new Promise(resolve => {
+            google.script.run.withSuccessHandler(resolve).saveUserData(userToSave);
+        });
+
+        if (!saveRes.success) {
+            setIsLoading(false);
+            showToast(saveRes.message, 'error'); // แจ้งเตือนถ้า EmpID ซ้ำ
+            return;
+        }
+
+        // 2. บันทึก Log การแก้ไข Profile (กรณีแก้ลายเซ็นหรือข้อมูล)
+        // [Cite: User Request - บันทึกประวัติการทำงาน]
+        const logImages = sigChanged ? [{name: 'New Signature', type: 'image/png', url: newSignatureUrl}] : [];
+        await addInvLog(
+            'Edit Profile', 
+            `${viewingUser.empId} ${viewingUser.firstName}`, 
+            `Updated Profile`, 
+            `แก้ไขข้อมูล:\n- ${changeDetails.join('\n- ')}`, 
+            logImages, 
+            null, null
+        );
+
+        // 3. ⭐ Global Update: อัปเดตประวัติย้อนหลัง (ถ้าชื่อ/รหัสเปลี่ยน)
+        const isIdentityChanged = (originalUser.empId !== viewingUser.empId) || 
+                                  (originalUser.firstName !== viewingUser.firstName) || 
+                                  (originalUser.lastName !== viewingUser.lastName);
+
+        if (isIdentityChanged) {
+             const oldData = { empId: originalUser.empId, firstName: originalUser.firstName, lastName: originalUser.lastName };
+             const newData = { empId: viewingUser.empId, firstName: viewingUser.firstName, lastName: viewingUser.lastName };
+             
+             // เรียกฟังก์ชันใหม่ที่แก้ Code.gs
+             const updateRes = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldData, newData));
+             showToast(updateRes.message); // แสดงผลจำนวนรายการที่แก้ได้
+        } else {
+             showToast('บันทึกข้อมูลเรียบร้อย');
+        }
+        
+        // 4. อัปเดตหน้าจอ
+        setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
+        setViewingUser(userToSave);
+        if (user.id === viewingUser.id) setUser(userToSave); // ถ้าแก้ตัวเองให้อัปเดต session ด้วย
+        
+        // Clear Temp Data
+        if(sigCanvasRef.current) clearSignature();
+        setSignatureFile(null);
+        setHasDrawn(false);
+
+    } catch (err) {
+        console.error(err);
+        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+}}
     className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
 >
     <Save size={14}/> บันทึกการแก้ไข
@@ -10079,7 +10178,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                                     ['Create Request', 'Submit', 'Receive Items', 'Add'].some(k => log.action?.includes(k)) ? 'bg-green-50 text-green-600 border-green-100' :
                                                     'bg-gray-50 text-gray-600 border-gray-200'
                                                 }`}>
-                                                    {log.action}
+                                                    {log.action === 'Pending PM' ? 'Pending Level 2' : log.action}
                                                 </span>
                                                 <div className="text-[9px] text-gray-300 mt-1 uppercase tracking-wider">{log.sourceType}</div>
                                             </td>
