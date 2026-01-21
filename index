@@ -1563,7 +1563,27 @@ const handleCreateOrder = async (e, isDraft = false) => {
                 return { ...item, images: processedImages };
             }));
 
+const generateNextReqId = () => {
+            // กรองเฉพาะ ID ที่ขึ้นต้นด้วย REQ-
+            const existingIds = requests
+                .map(r => r.id)
+                .filter(id => id && typeof id === 'string' && id.startsWith('REQ-'));
 
+            if (existingIds.length === 0) return 'REQ-001';
+
+            // หาเลขที่มากที่สุดในปัจจุบัน
+            const maxNum = existingIds.reduce((max, id) => {
+                // ลบคำว่า REQ- ออก แล้วแปลงเป็นตัวเลข
+                const numPart = parseInt(id.replace(/^REQ-/, ''), 10);
+                return !isNaN(numPart) && numPart > max ? numPart : max;
+            }, 0);
+
+            const nextNum = maxNum + 1;
+            
+            // ⭐ ใช้ padStart(3, '0') เพื่อให้ได้อย่างน้อย 3 หลัก (001, 010, 100)
+            // ถ้าเกิน 3 หลัก (เช่น 1000) มันจะแสดงครบทุกหลักตามปกติ (REQ-1000)
+            return `REQ-${String(nextNum).padStart(3, '0')}`;
+        };
             // 3. สร้าง Order Object
             let nextStatus = 'Draft';
             let isFullFlow = false;
@@ -1581,7 +1601,7 @@ const handleCreateOrder = async (e, isDraft = false) => {
             }
             
             const order = {
-                id: editingId || `REQ-00${requests.length + 1}`,
+                id: editingId || generateNextReqId(),
                 requester: `${user.firstName} ${user.lastName}`,
                 status: nextStatus,
                 created: new Date().toISOString().split('T')[0],
@@ -3433,26 +3453,24 @@ needApproval: req.isPreviouslyApproved ? false : !hasEmail,
 
 // [ค้นหาฟังก์ชัน handleConfirmVerification เดิม แล้วแทนที่ด้วยโค้ดนี้]
 
-// --- UPDATED CONFIRM VERIFICATION (Fix: Call saveRequestToSheet to trigger email) ---
+// --- UPDATED CONFIRM VERIFICATION ---
 const handleConfirmVerification = () => {
     const { requestId, needApproval, needContract, note, checks, filesExist, isChangeMode } = verificationData;
     const req = requests.find(r => r.id === requestId);
     if (!req) return;
-
-    // ⭐ สร้างตัวแปรระบุชื่อคนทำรายการ (User ปัจจุบัน)
-    const actionBy = user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole;
     
+    const actionBy = user ? `${user.empId} ${user.firstName} ${user.lastName}` : currentUserRole;
     let updatedReq = null;
     let toastMessage = '';
     let toastType = 'success';
 
     // 1. กรณีไม่ผ่าน -> ส่งคืนแก้ไข (Revise Needed)
     if (!isVerificationPass()) {
+         // ... (Code ส่วนส่งคืนแก้ไข เหมือนเดิม) ...
          let failureReasons = [];
          if (!checks.quotation) failureReasons.push(filesExist.quotation ? "ใบเสนอราคาไม่ถูกต้อง" : "ขาดใบเสนอราคา");
          if (!checks.email) failureReasons.push(filesExist.email ? "เมลอนุมัติไม่ถูกต้อง" : "ขาดเมลอนุมัติ");
          if (!checks.details) failureReasons.push("รายละเอียดสินค้า/ราคาไม่ถูกต้อง");
-         
          const combinedNote = `สิ่งที่ต้องแก้ไข: ${failureReasons.join(', ')} ${note ? `(เพิ่มเติม: ${note})` : ''}`;
          
          updatedReq = { 
@@ -3467,6 +3485,12 @@ const handleConfirmVerification = () => {
     } 
     // 2. กรณีผ่าน (Pass)
     else {
+         // ⭐⭐ เพิ่ม Validation ตรงนี้: ป้องกันการผ่านถ้ายืนยันว่า "ถูกต้อง" แต่ไม่มีไฟล์ และไม่เลือก Full Flow ⭐⭐
+         if (!filesExist.email && !needApproval) {
+             showToast("ไม่พบไฟล์เมลอนุมัติ: กรุณาติ๊กเลือก 'ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)'", 'error');
+             return; // หยุดการทำงาน ไม่ให้บันทึก
+         }
+
          if (isChangeMode) {
              updatedReq = { 
                  ...req, 
@@ -3479,7 +3503,6 @@ const handleConfirmVerification = () => {
              toastMessage = 'เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว (รอออก PR)';
          }
          else if (needApproval) {
-             // ⭐⭐ กรณีนี้คือ Full Flow -> ต้องบันทึกเพื่อให้ syncRequest ทำงานและส่งเมล ⭐⭐
              updatedReq = { 
                  ...req, 
                  status: 'Pending Head', 
@@ -3503,12 +3526,9 @@ const handleConfirmVerification = () => {
          }
     }
 
-    // ⭐ ดำเนินการบันทึกและอัปเดต State
+    // ⭐ ดำเนินการบันทึกและอัปเดต State (เหมือนเดิม)
     if (updatedReq) {
-        // 1. เรียก Backend เพื่อบันทึกและส่งเมล (สำคัญมากสำหรับ Pending Head)
         saveRequestToSheet(updatedReq);
-        
-        // 2. อัปเดตหน้าจอทันที
         setRequests(prev => prev.map(r => r.id === requestId ? updatedReq : r));
         showToast(toastMessage, toastType);
     }
@@ -3936,21 +3956,27 @@ if (req.type === 'Withdraw') {
 
 // --- Helper: Update Status & History (UPDATED: User Signature) ---
       const handleUpdateStatus = (id, newStatus, note = '', images = [], attachments = []) => {
-        // ⭐ สร้างตัวแปรชื่อผู้ใช้จริง
         const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
-
+        
         setRequests(prev => prev.map(r => {
           if (r.id === id) {
             let updateData = { 
                 ...r, 
                 status: newStatus, 
-                // ⭐ ใช้ userSignature แทน currentUserRole
                 history: [...r.history, createLog(STATUS_LABELS[newStatus], userSignature, note, images)] 
             };
 
-            // Logic Gen Doc Number (คงเดิม)
-            if (!r.docNumber && ['Ordered', 'PR Issued', 'Ready to Disburse', 'Approved'].includes(newStatus)) {
-                const shouldGenerate = (r.type === 'Local' && newStatus === 'Ordered') || (r.type === 'HO' && newStatus === 'PO Issued') || (r.type === 'Withdraw' && newStatus === 'Ready to Disburse') || (r.type === 'Borrow' && newStatus === 'Ready to Disburse');
+            // ⭐ แก้ไข Logic การสร้างเลขที่เอกสาร (Gen Doc Number)
+            // เช็คว่ายังไม่มี Doc No และสถานะเป็น Approved หรือ Ready to Disburse
+            if (!r.docNumber && ['Approved', 'Ready to Disburse'].includes(newStatus)) {
+                
+                const shouldGenerate = 
+                    // 1. Local & HO: สร้างเมื่อสถานะเป็น Approved (คือผ่าน Level 2 หรือ PM อนุมัติแล้ว)
+                    ((r.type === 'Local' || r.type === 'HO') && newStatus === 'Approved') ||
+                    
+                    // 2. Withdraw & Borrow: สร้างเมื่อสถานะเป็น Ready to Disburse (คือผ่านการอนุมัติขั้นเดียว ไม่ว่าจาก L1 หรือ L2)
+                    ((r.type === 'Withdraw' || r.type === 'Borrow') && newStatus === 'Ready to Disburse');
+
                 if (shouldGenerate) {
                     const count = getNextDocIndex(requests, r.type, r.purchaseType);
                     updateData.docNumber = generateDocId(r.type, count, r.purchaseType);
