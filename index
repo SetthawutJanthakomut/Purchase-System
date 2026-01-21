@@ -5873,7 +5873,7 @@ filteredRequests.map(req => {
                                               <td className="px-6 py-4 font-mono text-gray-500">{u.empId}</td>
                                               <td className="px-6 py-4">
                                                   {/* ปุ่มสถานะ: แก้ได้เฉพาะ Admin */}
-                                                  {(user.isSuperAdmin || hasPermission(2)) ? (
+                                                  {(user.isSuperAdmin || hasPermission(2) || hasPermission(3)) ? (
                                                       <button 
                                                           onClick={(e) => {
                                                               e.stopPropagation();
