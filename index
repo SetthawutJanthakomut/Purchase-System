@@ -8995,178 +8995,225 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                         const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
                         const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
 
+                        const getLogUser = (statusKey) => {
+                            // หา Log ล่าสุดที่มีสถานะนี้
+                            const log = historyDesc.find(h => isActionMatch(h.action, statusKey));
+                            return getUser(log);
+                        };
+
+                        const userIssuer = getLogUser('Completed'); // คนจ่ายของ (สถานะ Completed)
+                        const userReturner = getLogUser('Returned'); // คนรับคืน (สถานะ Returned)
+
+                        const nameIssuer = userIssuer ? `${userIssuer.firstName} ${userIssuer.lastName}` : '';
+                        const nameReturner = userReturner ? `${userReturner.firstName} ${userReturner.lastName}` : '';
+                        
+                        // หาลายเซ็น
+                        const sigIssuer = userIssuer?.signature ? getDriveImageUrl(userIssuer.signature) : null;
+                        const sigReturner = userReturner?.signature ? getDriveImageUrl(userReturner.signature) : null;
+
 return (
                             <>
                             {/* ================================================================================== */}
                             {/* ⭐ เงื่อนไขที่ 1: กรณีเป็น "ใบยืม (Borrow)" -> แสดงแบบฟอร์มใหม่ (ตามรูป) */}
                             {/* ================================================================================== */}
-                            {selectedRequest.type === 'Borrow' ? (
-                                <div className="font-sans text-black p-4">
-                                    
-                                    {/* 1. ส่วนหัว (Header) - ตัดโลโก้ออก */}
-                                    <div className="text-center mb-6">
-                                        <h1 className="text-2xl font-bold uppercase tracking-widest mb-1">BORROW TOOL SHEET</h1>
-                                        <h2 className="text-lg font-bold">ใบยืมเครื่องมือ</h2>
-                                    </div>
 
-                                    {/* 2. ข้อมูลผู้ยืมและเอกสาร (Info Grid) */}
-                                    <div className="mb-6 border-b-2 border-black pb-4">
-                                        {/* แถวที่ 1 */}
-                                        <div className="flex justify-between items-end mb-1 text-sm">
-                                            <div className="flex items-end w-1/2">
-                                                <span className="font-bold w-16">Name:</span>
-                                                <div className="border-b border-dotted border-black flex-1 text-center font-bold text-blue-900 px-2">
-                                                    {nameReq}
-                                                </div>
-                                            </div>
-                                            <div className="flex items-end w-1/4 pl-2">
-                                                <span className="font-bold whitespace-nowrap mr-2">Employee No.</span>
-                                                <div className="border-b border-dotted border-black flex-1 text-center font-mono">
-                                                    {userReq?.empId || '-'}
-                                                </div>
-                                            </div>
-                                            <div className="flex items-end w-1/4 pl-2">
-                                                <span className="font-bold mr-2">Date:</span>
-                                                <div className="border-b border-dotted border-black flex-1 text-center">
-                                                    {dateReq}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="flex justify-between text-[10px] text-gray-500 mb-4 font-normal">
-                                            <div className="w-1/2 pl-16">ชื่อผู้ยืม</div>
-                                            <div className="w-1/4 text-center">เลขประจำตัว</div>
-                                            <div className="w-1/4 text-center">วันที่</div>
-                                        </div>
+    {selectedRequest.type === 'Borrow' ? (
+        // ปรับ Container ให้กว้างเต็มจอ (w-full) และจัดกลาง (mx-auto)
+        <div className="font-sans text-black p-8 w-full max-w-none mx-auto">
+            
+            {/* 1. ส่วนหัว (Header) */}
+            <div className="text-center mb-6">
+                <h1 className="text-3xl font-bold uppercase tracking-widest mb-1">BORROW TOOL SHEET</h1>
+                <h2 className="text-xl font-bold">ใบยืมเครื่องมือ</h2>
+            </div>
 
-                                        {/* แถวที่ 2 (เพิ่มตามที่ขอ: โครงการ & เลขที่เอกสาร) */}
-                                        <div className="flex justify-between items-end mb-1 text-sm">
-                                            <div className="flex items-end w-2/3">
-                                                <span className="font-bold w-16">Project:</span>
-                                                <div className="border-b border-dotted border-black flex-1 text-left pl-2 font-bold text-black">
-                                                    {selectedRequest.job}
-                                                </div>
-                                            </div>
-                                            <div className="flex items-end w-1/3 pl-4">
-                                                <span className="font-bold whitespace-nowrap mr-2">Doc No:</span>
-                                                <div className="border-b border-dotted border-black flex-1 text-center font-bold">
-                                                    {selectedRequest.docNumber || selectedRequest.id}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="flex justify-between text-[10px] text-gray-500 font-normal">
-                                            <div className="w-2/3 pl-16">โครงการ</div>
-                                            <div className="w-1/3 text-center">เลขที่เอกสาร</div>
-                                        </div>
-                                    </div>
+            {/* 2. ข้อมูลผู้ยืม (Header Info) */}
+<div className="mb-6 border-b-2 border-black pb-4">
+                
+                {/* ใช้ Flex Row เพื่อเรียง 3 ก้อนให้อยู่บรรทัดเดียวกัน */}
+                <div className="flex items-end gap-6 mb-2 text-base w-full">
+                    
+                    {/* ก้อนที่ 1: Name (ให้ยืดกินพื้นที่ที่เหลือ flex-1) */}
+                    <div className="flex-1 flex flex-col">
+                        <div className="flex items-end w-full">
+                            <span className="font-bold whitespace-nowrap mr-2">Name:</span>
+                            <div className="border-b border-dotted border-black flex-1 text-center font-bold text-blue-900 px-2">
+                                {nameReq}
+                            </div>
+                        </div>
+                        <div className="text-xs text-center text-gray-500 mt-1">ชื่อผู้ยืม</div>
+                    </div>
 
-                                    {/* 3. ตารางรายการ (Table) - เลียนแบบในรูป */}
-                                    <table className="w-full border-collapse border border-black mb-8">
-                                        <thead>
-                                            <tr className="bg-gray-100 text-center text-sm">
-                                                <th className="border border-black py-2 w-20">
-                                                    Quantity<br/><span className="text-[10px] font-normal">จำนวน</span>
-                                                </th>
-                                                <th className="border border-black py-2">
-                                                    Description<br/><span className="text-[10px] font-normal">รายการ</span>
-                                                </th>
-                                                <th className="border border-black py-2 w-28">
-                                                    Unit Price<br/><span className="text-[10px] font-normal">ราคา</span>
-                                                </th>
-                                                <th className="border border-black py-2 w-28">
-                                                    Amount<br/><span className="text-[10px] font-normal">จำนวนเงิน</span>
-                                                </th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {selectedRequest.items.map((item, idx) => (
-                                                <tr key={idx} className="text-sm">
-                                                    <td className="border border-black py-3 text-center align-top h-12 font-bold">
-                                                        {item.qty} {item.unit}
-                                                    </td>
-                                                    <td className="border border-black py-3 px-3 align-top">
-                                                        <div className="font-bold">{item.name}</div>
-                                                        <div className="text-xs mt-1 text-gray-600">
-                                                            {item.serial && <span>S/N: {item.serial} </span>}
-                                                            {item.assetId && <span>ID: {item.assetId}</span>}
-                                                        </div>
-                                                        {item.note && <div className="text-xs text-gray-500 italic mt-1">Note: {item.note}</div>}
-                                                    </td>
-                                                    <td className="border border-black py-3 text-right px-2 align-top text-gray-400">-</td>
-                                                    <td className="border border-black py-3 text-right px-2 align-top text-gray-400">-</td>
-                                                </tr>
-                                            ))}
-                                            {/* เติมแถวว่างให้ดูเต็ม (Optional) */}
-                                            {Array.from({ length: Math.max(0, 5 - selectedRequest.items.length) }).map((_, i) => (
-                                                <tr key={`empty-${i}`}>
-                                                    <td className="border border-black py-4"></td><td className="border border-black py-4"></td><td className="border border-black py-4"></td><td className="border border-black py-4"></td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
+                    {/* ก้อนที่ 2: Employee No (Fix ความกว้างพอประมาณ) */}
+                    <div className="w-[25%] flex flex-col">
+                        <div className="flex items-end w-full">
+                            <span className="font-bold whitespace-nowrap mr-2">Employee No:</span>
+                            <div className="border-b border-dotted border-black flex-1 text-center font-mono">
+                                {userReq?.empId || '-'}
+                            </div>
+                        </div>
+                        <div className="text-xs text-center text-gray-500 mt-1">เลขประจำตัว</div>
+                    </div>
 
-                                    {/* 4. ส่วนลายเซ็น (Signatures) - จัดวางตามรูป */}
-                                    <div className="grid grid-cols-2 gap-10 mt-4 signature-section">
-                                        
-                                        {/* ซ้าย: ผู้อนุมัติ + ผู้จ่าย */}
-                                        <div className="flex flex-col gap-6">
-                                            {/* Approved By */}
-                                            <div className="relative">
-                                                <div className="flex items-end mb-1">
-                                                    <span className="font-bold w-20">Approved</span>
-                                                    <div className="border-b border-dotted border-black flex-1 relative h-8">
-                                                        {/* ดึงลายเซ็นผู้อนุมัติ (L1 หรือ L2) */}
-                                                        {(sigL1 || sigL2) && (
-                                                            <img src={sigL1 || sigL2} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-12 object-contain"/>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                <div className="text-[10px] ml-20">อนุมัติ</div>
-                                            </div>
+                    {/* ก้อนที่ 3: Date (Fix ความกว้างพอประมาณ) */}
+                    <div className="w-[20%] flex flex-col">
+                        <div className="flex items-end w-full">
+                            <span className="font-bold whitespace-nowrap mr-2">Date:</span>
+                            <div className="border-b border-dotted border-black flex-1 text-center">
+                                {dateReq}
+                            </div>
+                        </div>
+                        <div className="text-xs text-center text-gray-500 mt-1">วันที่</div>
+                    </div>
+                </div>
 
-                                            {/* Issued By (ผู้จ่าย) */}
-                                            <div className="relative">
-                                                <div className="flex items-end mb-1">
-                                                    <span className="font-bold w-20">Issued</span>
-                                                    <div className="border-b border-dotted border-black flex-1 text-center text-sm pb-1">
-                                                        {/* ถ้ามีคนเซ็น L1 แล้ว ให้ L2 เป็นคนจ่าย หรือเว้นว่างไว้เซ็นมือ */}
-                                                        &nbsp;
-                                                    </div>
-                                                </div>
-                                                <div className="text-[10px] ml-20">ผู้จ่าย</div>
-                                            </div>
-                                        </div>
+                {/* ส่วน Project (เหมือนเดิม) */}
+                <div className="flex justify-between items-end mt-4 mb-1 text-base">
+                    <div className="flex items-end w-full">
+                        <span className="font-bold w-16">Project:</span>
+                        <div className="border-b border-dotted border-black flex-1 text-left pl-2 font-bold text-black">
+                            {selectedRequest.job}
+                        </div>
+                    </div>
+                </div>
+                <div className="flex justify-between text-xs text-gray-500 font-normal">
+                    <div className="pl-16">โครงการ</div>
+                </div>
+            </div>
 
-                                        {/* ขวา: วันกำหนดคืน + ผู้ยืม */}
-                                        <div className="flex flex-col gap-6">
-                                            {/* Date of Return */}
-                                            <div className="relative">
-                                                <div className="flex items-end mb-1">
-                                                    <span className="font-bold w-28 whitespace-nowrap">Date of Return</span>
-                                                    <div className="border-b border-dotted border-black flex-1 text-center text-sm pb-1">
-                                                        .............................
-                                                    </div>
-                                                </div>
-                                                <div className="text-[10px] ml-28">วันกำหนดส่งคืน</div>
-                                            </div>
-
-                                            {/* Borrowed By (ผู้ยืม) */}
-                                            <div className="relative">
-                                                <div className="flex items-end mb-1">
-                                                    <span className="font-bold w-20">Borrowed</span>
-                                                    <div className="border-b border-dotted border-black flex-1 relative h-8">
-                                                        {/* ดึงลายเซ็นผู้ขอ */}
-                                                        {sigReq && (
-                                                            <img src={sigReq} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-12 object-contain"/>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                <div className="text-[10px] ml-20">ผู้ยืม <span className="font-bold ml-2">({nameReq})</span></div>
-                                            </div>
-                                        </div>
-
-                                    </div>
+            {/* 3. ตารางรายการ (Table) */}
+            <table className="w-full border-collapse border border-black mb-10">
+                <thead>
+                    <tr>
+                        <th colSpan="4" className="border border-black p-2 bg-white text-right">
+                            <span className="font-bold text-base">Doc No: {selectedRequest.docNumber || selectedRequest.id}</span>
+                        </th>
+                    </tr>
+                    <tr className="bg-gray-100 text-center text-base">
+                        <th className="border border-black py-3 w-24">
+                            Quantity<br/><span className="text-xs font-normal">จำนวน</span>
+                        </th>
+                        <th className="border border-black py-3">
+                            Description<br/><span className="text-xs font-normal">รายการ</span>
+                        </th>
+                        <th className="border border-black py-3 w-32">
+                            Unit Price<br/><span className="text-xs font-normal">ราคา</span>
+                        </th>
+                        <th className="border border-black py-3 w-32">
+                            Amount<br/><span className="text-xs font-normal">จำนวนเงิน</span>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {selectedRequest.items.map((item, idx) => (
+                        <tr key={idx} className="text-base">
+                            <td className="border border-black py-4 text-center align-top font-bold">
+                                {item.qty} {item.unit}
+                            </td>
+                            <td className="border border-black py-4 px-4 align-top">
+                                <div className="font-bold text-lg">{item.name}</div>
+                                <div className="text-sm mt-1 text-gray-600">
+                                    {item.serial && <span>S/N: {item.serial} </span>}
+                                    {item.assetId && <span>ID: {item.assetId}</span>}
                                 </div>
-                            ) : (
+                                {item.note && <div className="text-sm text-gray-500 italic mt-1">Note: {item.note}</div>}
+                            </td>
+                            <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
+                            <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+
+            {/* 4. ส่วนลายเซ็น (Signature Section) - ปรับปรุงใหม่ */}
+            <div className="grid grid-cols-2 gap-x-16 gap-y-8 mt-6">
+                
+                {/* --- คอลัมน์ซ้าย --- */}
+                <div className="flex flex-col gap-8">
+                    
+                    {/* Approved By */}
+                    <div className="relative">
+                        <div className="flex items-end mb-1">
+                            <span className="font-bold w-24 text-lg">Approved</span>
+                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                {(sigL1 || sigL2) && <img src={sigL1 || sigL2} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
+                            </div>
+                        </div>
+                        {/* ดึงชื่อมาวางต่อ (ใต้เส้น) */}
+                        <div className="text-center font-bold text-sm h-6 mt-1">
+                            {nameL1 && nameL1 !== '..........................' ? `(${nameL1})` : ''}
+                        </div>
+                        <div className="text-xs text-center -mt-1 text-gray-500">ผู้อนุมัติ (Approved By)</div>
+                    </div>
+
+                    {/* Issued By */}
+                    <div className="relative">
+                        <div className="flex items-end mb-1">
+                            <span className="font-bold w-24 text-lg">Issued</span>
+                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                {sigIssuer && <img src={sigIssuer} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
+                            </div>
+                        </div>
+                        {/* ดึงชื่อมาวางต่อ (ใต้เส้น) */}
+                        <div className="text-center font-bold text-sm h-6 mt-1">
+                            {nameIssuer ? `(${nameIssuer})` : ''}
+                        </div>
+                        <div className="text-xs text-center -mt-1 text-gray-500">ผู้จ่าย (Issued By)</div>
+                    </div>
+                </div>
+
+                {/* --- คอลัมน์ขวา --- */}
+                <div className="flex flex-col gap-8">
+                    
+                    {/* Borrowed By */}
+                    <div className="relative">
+                        <div className="flex items-end mb-1">
+                            <span className="font-bold w-24 text-lg">Borrowed</span>
+                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                {sigReq ? <img src={sigReq} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/> : ''}
+                            </div>
+                        </div>
+                        {/* ดึงชื่อมาวางต่อ (ใต้เส้น) */}
+                        <div className="text-center font-bold text-sm h-6 mt-1">
+                            {nameReq ? `(${nameReq})` : ''}
+                        </div>
+                        <div className="text-xs text-center -mt-1 text-gray-500">ผู้ยืม (Borrowed By)</div>
+                    </div>
+
+                    {/* ⭐ Returned By (รวม Date ไว้ในนี้) */}
+                    <div className="relative">
+                        <div className="flex items-end mb-1">
+                            <span className="font-bold w-24 text-lg">Returned</span>
+                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                {sigReturner && <img src={sigReturner} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
+                            </div>
+                        </div>
+                        
+                        {/* ดึงชื่อมาวางต่อ + ตามด้วยวันที่คืน (Enter ลงมา) */}
+                        <div className="text-center mt-1">
+                            {/* ชื่อผู้รับคืน */}
+                            <div className="font-bold text-sm h-6">
+                                {nameReturner ? `(${nameReturner})` : ''}
+                            </div>
+                            
+                            {/* Label */}
+                            <div className="text-xs text-gray-500 mb-2">ผู้รับคืน (Received By)</div>
+                            
+                            {/* วันที่คืน (แสดงเมื่อมีข้อมูล หรือรอรับคืน) */}
+                            <div className="text-sm font-bold">
+                                {nameReturner ? (
+                                    <span>วันที่คืน: {formatDateTh(new Date())}</span> // ปรับเป็นวันที่คืนจริงจาก Log ถ้ามี หรือใช้วันปัจจุบันตอนรับคืน
+                                ) : (
+                                    <span className="text-transparent">.</span> // เว้นที่ไว้ หรือใช้ <span>วันที่คืน: ...........................</span> ถ้าอยากให้เห็นเส้น
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    ) : (
                                 
                             /* ================================================================================== */
                             /* ⭐ เงื่อนไขที่ 2 (ELSE): กรณีอื่นๆ (ซื้อ/เบิกทั่วไป) -> ใช้แบบฟอร์มเดิม */
