@@ -1702,14 +1702,11 @@ useEffect(() => {
            if(data.projects) setProjects(data.projects);
            if(data.users) setAllUsers(data.users);
            
-           // ⭐ Logic แสดงประกาศ (ถ้ามี และ Active)
            if (data.announcement && data.announcement.active) {
                setAnnouncement(data.announcement);
-               setShowPublicAnnounce(true); // เปิด Popup ทันที
                setAnnounceForm({ title: data.announcement.title, detail: data.announcement.detail });
            } else {
                setAnnouncement(null);
-               setShowPublicAnnounce(false);
                setAnnounceForm({ title: '', detail: '' });
            }
 
@@ -4358,6 +4355,17 @@ const PublicAnnouncementPopup = () => (
         )
       );
 
+      
+      
+      if (isLoading) {
+         return (
+             <div className="flex h-screen items-center justify-center bg-gray-50">
+                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+             </div>
+         );
+      }
+      
+      
       // ⭐ 2. เพิ่มการตรวจสอบ Login (ปรับแก้ให้แสดง Popup ได้แม้ยังไม่ Login)
       if (!user) {
           return (
@@ -4376,6 +4384,9 @@ const PublicAnnouncementPopup = () => (
           );
       }
 
+
+
+      
       if (!user) {
           return <AuthScreen 
             requests={requests} // ส่งข้อมูลไปคำนวณตัวเลข
@@ -4385,10 +4396,7 @@ const PublicAnnouncementPopup = () => (
           }} />;
       }
       
-      if (isLoading) {
-         return <div className="flex h-screen items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>;
-      }
-      
+     
       return (
         <div className="flex h-screen bg-gray-50 font-sans text-gray-800 overflow-hidden relative print:bg-white print:h-auto print:overflow-visible">
           
