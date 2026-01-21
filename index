@@ -5147,6 +5147,51 @@ filteredRequests.map(req => {
       
       {/* ส่วนปุ่ม Action คงเดิม */}
       <div className="flex justify-end gap-2 mt-2">
+
+      {(() => {
+            // 1. ฟังก์ชันหาสถานะก่อนหน้า
+            const getPrevStatus = (r) => {
+                if (r.status === 'PR Issued') return 'Approved';
+                if (r.status === 'PO Issued') return 'PR Issued';
+                if (r.status === 'Contract Pending') return 'Approved';
+                if (r.status === 'Contract Signed') return 'Contract Pending';
+                if (r.status === 'Shipping') return r.purchaseType === 'Rent' ? 'Contract Signed' : 'PO Issued';
+                return null;
+            };
+
+            const prevStatus = getPrevStatus(req);
+            
+            // 2. ถ้ามีสถานะย้อนกลับได้ ให้เช็คสิทธิ์
+            if (prevStatus) {
+                // หา Log ล่าสุดที่เป็นสถานะปัจจุบัน เพื่อดูว่าใครเป็นคนกด
+                const lastLog = [...req.history].reverse().find(h => 
+                    h.action === req.status || h.action === STATUS_LABELS[req.status]
+                );
+                
+                // ตรวจสอบว่าเป็น User ปัจจุบันหรือไม่ (เช็คจาก EmpID หรือ ชื่อ)
+                const isActor = lastLog && user && (
+                    lastLog.user.includes(user.empId) || 
+                    lastLog.user.includes(user.firstName)
+                );
+
+                if (isActor) {
+                    return (
+                        <button 
+                            type="button" 
+                            onClick={() => {
+                                if(confirm(`ยืนยันการย้อนสถานะกลับไปเป็น "${STATUS_LABELS[prevStatus] || prevStatus}"?`)) {
+                                    handleUpdateStatus(req.id, prevStatus, `ย้อนกลับสถานะ (Rollback) จาก ${req.status}`);
+                                }
+                            }}
+                            className="flex items-center gap-2 px-4 py-2 bg-orange-50 border border-orange-200 text-orange-700 text-sm font-medium rounded-lg hover:bg-orange-100 shadow-sm transition-colors animate-in fade-in"
+                        >
+                            <RotateCcw className="w-4 h-4"/> ย้อนกลับ ({prevStatus.split(' ')[0]})
+                        </button>
+                    );
+                }
+            }
+            return null;
+        })()}
         
        {((req.requester === `${user.firstName} ${user.lastName}`) || user.isSuperAdmin || hasPermission(2, req.job)) && req.status === 'Draft' && (
             <button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">
