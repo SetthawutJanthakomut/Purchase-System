@@ -2045,8 +2045,10 @@ const filteredLogs = useMemo(() => {
                  // 2. ถ้าไม่มี ID ใน Log -> เช็คจากชื่อ และ ต้องเช็ค Project ด้วย!
                  if (!l.assetId && l.item === viewingItem.name) {
                      
-                     // ✅ เพิ่มเงื่อนไข: ถ้าเป็น Inventory (ไม่ใช่ Asset) และสินค้านั้นมี Project ระบุไว้
-                     if (!isAssetView && viewingItem.project) {
+                     // ⭐ แก้ไข: ลบ !isAssetView ออก เพื่อให้ Asset ก็ต้องเช็ค Project ด้วย
+                     // จากเดิม: if (!isAssetView && viewingItem.project) {
+                     // เปลี่ยนเป็น:
+                     if (viewingItem.project) {
                          const logProj = l.project;
                          const logNote = l.note || '';
                          
@@ -5442,7 +5444,14 @@ filteredRequests.map(req => {
                  
                  {/* Left Side */}
                  <div className="flex items-center gap-4">
-                     <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2"><Monitor className="w-5 h-5"/> ทะเบียนทรัพย์สิน</h3>
+                     <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                         <Monitor className="w-5 h-5"/> ทะเบียนทรัพย์สิน
+                         
+                         {/* ⭐ เพิ่มส่วนนี้: แสดงจำนวนรายการ */}
+                         <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full font-normal">
+                             {filteredAssets.length} รายการ
+                         </span>
+                     </h3>
                      {/* ปุ่มลบ (ซ่อนถ้าเป็น Summary) */}
                      {selectedAssets.length > 0 && assetTabMode !== 'Summary' && hasPermission(21) && (
                          <button onClick={() => handleDeleteAssets()} className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-sm font-bold border border-red-200 hover:bg-red-100 flex items-center gap-2 animate-in fade-in">
@@ -7834,6 +7843,11 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
 {showAddInvModal && (
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm animate-in fade-in">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+            <datalist id="existing-inventory">
+                {[...new Set(inventory.map(i => i.name))].map((name, i) => (
+                    <option key={i} value={name}/>
+                ))}
+            </datalist>
                 
                 {/* Header */}
                 <div className="px-6 py-4 border-b bg-green-50 flex justify-between items-center sticky top-0 z-10">
@@ -7880,7 +7894,15 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     {/* Name */}
                     <div>
                         <label className="block text-sm font-bold text-gray-700 mb-1.5">ชื่อสินค้า</label>
-                        <input type="text" className="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none" value={newStockItem.name} onChange={e => setNewStockItem({...newStockItem, name: e.target.value})} placeholder="ระบุชื่อสินค้า..." autoFocus/>
+                        <input 
+                            type="text" 
+                            list="existing-inventory"  /* ⭐ เพิ่ม attribute นี้ */
+                            className="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none" 
+                            value={newStockItem.name} 
+                            onChange={e => setNewStockItem({...newStockItem, name: e.target.value})} 
+                            placeholder="ระบุชื่อสินค้า..." 
+                            autoFocus
+                        />
                     </div>
 
                     {/* Qty & Unit */}
@@ -8658,7 +8680,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
 
 
 {showEditInvModal && editingStockItem && (
-          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[160] p-4 backdrop-blur-sm">
               <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
                   
                   <div className="px-6 py-4 border-b bg-white flex justify-between items-center sticky top-0 z-10">
@@ -8738,7 +8760,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
       )}
 
 {showEditAssetModal && editingAssetItem && (
-          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[160] p-4 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
                   
                   <div className="px-6 py-4 border-b bg-white flex justify-between items-center sticky top-0 z-10">
@@ -9755,22 +9777,32 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                           <thead className="bg-gray-50 text-gray-600 sticky top-0 shadow-sm border-b border-gray-200">
                               <tr>
                                   <th className="px-6 py-3 font-semibold">ID</th>
+                                  
+                                  {/* ⭐ เพิ่มหัวตาราง Project */}
+                                  <th className="px-6 py-3 font-semibold text-left">Project</th>
+
                                   <th className="px-6 py-3 font-semibold">Serial</th>
                                   <th className="px-6 py-3 font-semibold">Type</th>
                                   <th className="px-6 py-3 font-semibold text-center">Status</th>
                                   <th className="px-6 py-3 font-semibold">Holder</th>
-                                  {/* ❌ ลบคอลัมน์ Action ออกแล้ว */}
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100">
                               {selectedAssetGroup.items.map((item, idx) => (
                                   <tr key={idx} className="hover:bg-blue-50 transition-colors cursor-pointer group" 
                                       onClick={() => {
-                                          /* เปิดหน้า Detail ซ้อนขึ้นมา (z-index 150 > 120) */
                                           openViewItem(item);
                                       }}
                                   >
                                       <td className="px-6 py-4 font-mono text-blue-600 font-bold group-hover:underline">{item.id}</td>
+                                      
+                                      {/* ⭐ เพิ่มข้อมูล Project */}
+                                      <td className="px-6 py-4">
+                                          <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded border border-indigo-100 text-xs font-bold">
+                                              {item.project || 'ส่วนกลาง'}
+                                          </span>
+                                      </td>
+
                                       <td className="px-6 py-4 text-gray-600">{item.serial || '-'}</td>
                                       <td className="px-6 py-4">
                                           <span className={`px-2 py-1 rounded text-xs font-bold ${item.ownerType === 'Rent' ? 'bg-orange-100 text-orange-700' : 'bg-indigo-100 text-indigo-700'}`}>
