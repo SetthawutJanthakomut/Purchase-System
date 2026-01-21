@@ -936,63 +936,65 @@ function loadInitialData() {
     announcement: announcement // ⭐ ส่งข้อมูลประกาศกลับไป
   };
 }
-// --- แก้ไขฟังก์ชัน sendRegistrationOTP (เพิ่มเช็ค Username + Ref Code) ---
-function sendRegistrationOTP(email, username) {
+// 1. แก้ไขฟังก์ชันส่ง OTP ให้รับ empId มาเช็คด้วย
+function sendRegistrationOTP(email, username, empId) { // ⭐ รับพารามิเตอร์ empId เพิ่ม
   const users = getSheetData('Users');
-  
-  // 1. ตรวจสอบ Username ซ้ำ
+
+  // ตรวจสอบ Username ซ้ำ
   if (users.some(u => u.username === username)) {
     return { success: false, message: 'ชื่อผู้ใช้งาน (Username) นี้ถูกใช้งานแล้ว กรุณาเปลี่ยนใหม่' };
   }
 
-  // 2. ตรวจสอบ Email ซ้ำ
+  // ⭐ ตรวจสอบ EmpID ซ้ำ (เพิ่มส่วนนี้)
+  if (users.some(u => u.empId === empId)) {
+    return { success: false, message: 'รหัสพนักงานนี้มีอยู่ในระบบแล้ว' };
+  }
+
+  // ตรวจสอบ Email ซ้ำ
   if (users.some(u => u.email === email)) {
     return { success: false, message: 'อีเมลนี้ถูกใช้งานแล้วในระบบ' };
   }
 
-  // 3. สร้าง OTP และ Ref Code
+  // ... (โค้ดสร้าง OTP ส่วนที่เหลือเหมือนเดิม) ...
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  
-  // สร้าง Ref Code 4 ตัวอักษร (เช่น A7B2)
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let refCode = '';
   for (let i = 0; i < 4; i++) {
     refCode += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   
-  // 4. เก็บ OTP ลง Cache (อายุ 5 นาที)
-  CacheService.getScriptCache().put('OTP_' + email, otp, 300); 
+  CacheService.getScriptCache().put('OTP_' + email, otp, 300);
 
-  // 5. ส่งอีเมล
   try {
     GmailApp.sendEmail(email, `[PurchaseHub] รหัสยืนยัน (Ref: ${refCode})`, 
       `รหัสอ้างอิง (Ref Code): ${refCode}\n\nรหัส OTP ของคุณคือ: ${otp}\n\n(รหัสมีอายุ 5 นาที)`);
-    
-    // ส่ง Ref Code กลับไปแสดงที่หน้าเว็บ
     return { success: true, message: 'ส่งรหัส OTP แล้ว', refCode: refCode };
   } catch (e) {
     return { success: false, message: 'ส่งอีเมลไม่สำเร็จ: ' + e.toString() };
   }
 }
 
-// --- แก้ไขฟังก์ชัน registerUser เดิม ให้รับ OTP ด้วย ---
+// 2. แก้ไขฟังก์ชันบันทึกข้อมูล (เช็คซ้ำอีกรอบก่อนบันทึก)
 function registerUser(formData, otp) {
-  // 1. ตรวจสอบ OTP ก่อน
   const cachedOtp = CacheService.getScriptCache().get('OTP_' + formData.email);
   if (!cachedOtp || cachedOtp !== otp) {
     return { success: false, message: 'รหัส OTP ไม่ถูกต้อง หรือหมดอายุ (กรุณากดรับรหัสใหม่)' };
   }
   
-  // เมื่อผ่านแล้ว ให้ลบ OTP ทิ้งกันใช้ซ้ำ
   CacheService.getScriptCache().remove('OTP_' + formData.email);
 
-  // 2. ตรวจสอบ Username ซ้ำ (เผื่อมีคนสมัครตัดหน้าช่วงรอ OTP)
   const users = getSheetData('Users');
+  
+  // เช็ค Username ซ้ำ
   if (users.some(u => u.username === formData.username)) {
     return { success: false, message: 'Username นี้ถูกใช้งานแล้ว' };
   }
+
+  // ⭐ เช็ค EmpID ซ้ำ (เพิ่มส่วนนี้)
+  if (users.some(u => u.empId === formData.empId)) {
+    return { success: false, message: 'รหัสพนักงานนี้ถูกใช้งานแล้ว' };
+  }
   
-  // 3. บันทึกข้อมูล
   const newUser = {
     id: formData.username, 
     ...formData,
@@ -1004,7 +1006,6 @@ function registerUser(formData, otp) {
   saveDataToSheet('Users', newUser.id, newUser);
   return { success: true, message: 'ลงทะเบียนเรียบร้อย รอแอดมินอนุมัติ' };
 }
-
 // --- [Server Side] ฟังก์ชันสำหรับระบบลืมรหัสผ่าน ---
 
 // 1. ส่ง OTP เพื่อขอเปลี่ยนรหัสผ่าน
