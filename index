@@ -2009,18 +2009,16 @@ const confirmImportAssets = async () => {
 
 
 
-// --- LOGIC: Filtered Logs (Updated: Exclude User Mgmt from All Logs) ---
 const filteredLogs = useMemo(() => {
     let data = invLogs;
 
-    // ⭐ [เพิ่มส่วนนี้] 0. ถ้าเป็นการดูประวัติรวม (ไม่ได้เจาะจง Item) ให้ตัดเรื่อง User/Permission ออก
+    // 0. ถ้าเป็นการดูประวัติรวม (ไม่ได้เจาะจง Item) ให้ตัดเรื่อง User/Permission ออก
     if (!viewingItem) {
         const excludeActions = ['Edit Permissions', 'Edit Profile', 'Edit User Status', 'Register', 'Change Password'];
         data = data.filter(l => !excludeActions.includes(l.action));
     }
 
-    // 1. กรองตาม Project (ถ้ามีการเลือก และไม่ได้ดู item เฉพาะเจาะจง)
-    if (!viewingItem && globalProjectFilter !== 'All') {
+   if (globalProjectFilter !== 'All') { // ⭐ ตัด !viewingItem ออก เพื่อให้กรองตามโครงการเสมอ
         data = data.filter(l => 
             (l.note && l.note.includes(globalProjectFilter)) || 
             (l.project && l.project === globalProjectFilter)
@@ -2029,13 +2027,37 @@ const filteredLogs = useMemo(() => {
 
     // 2. กรองตาม Item (Viewing Detail)
     if (viewingItem) {
-         if (viewingItem.isSummary && viewingItem.combinedIds) {
-             data = data.filter(l => viewingItem.combinedIds.includes(l.assetId));
-         } else {
-             const isAssetView = viewingItem.serial !== undefined; 
+         if (viewingItem.isSummary) {
+             // ... (Logic สำหรับ Summary ใช้ของเดิมที่คุณแก้ไปแล้ว) ...
              data = data.filter(l => {
+                 const nameMatch = l.item === viewingItem.name;
+                 const idMatch = viewingItem.combinedIds && viewingItem.combinedIds.includes(l.assetId);
+                 const summaryIdMatch = l.assetId === viewingItem.id;
+                 return nameMatch || idMatch || summaryIdMatch;
+             });
+         } else {
+             // ⭐ [แก้ไข] Logic สำหรับ Item รายตัว (System/NonSystem/Asset)
+             const isAssetView = viewingItem.serial !== undefined;
+             data = data.filter(l => {
+                 // 1. ถ้ามี ID ใน Log ตรงกัน -> ถือว่าใช่แน่นอน (Priority สูงสุด)
                  if (l.assetId === viewingItem.id) return true;
+
+                 // 2. ถ้าไม่มี ID ใน Log -> เช็คจากชื่อ และ ต้องเช็ค Project ด้วย!
                  if (!l.assetId && l.item === viewingItem.name) {
+                     
+                     // ✅ เพิ่มเงื่อนไข: ถ้าเป็น Inventory (ไม่ใช่ Asset) และสินค้านั้นมี Project ระบุไว้
+                     if (!isAssetView && viewingItem.project) {
+                         const logProj = l.project;
+                         const logNote = l.note || '';
+                         
+                         // ต้องตรงกับ Project ใน Log หรือมีชื่อ Project ปรากฏใน Note
+                         const isProjectMatch = (logProj && logProj === viewingItem.project) || 
+                                                (!logProj && logNote.includes(viewingItem.project));
+                         
+                         // ถ้าชื่อตรง แต่คนละ Project -> ไม่เอา
+                         if (!isProjectMatch) return false;
+                     }
+
                      const assetOnlyActions = ['Import Assets', 'Add Asset', 'Register Asset', 'Return Asset', 'Restore Asset', 'Delete Asset', 'Snooze Alert', 'Disable Alert', 'Enable Alert', 'Update Image'];
                      const isLogForAsset = assetOnlyActions.includes(l.action) || (l.action === 'Borrow' && isAssetView) || (l.action === 'Return' && isAssetView);
                      return isAssetView ? isLogForAsset : !isLogForAsset;
@@ -2244,19 +2266,19 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
       const filteredInventory = useMemo(() => {
           let data = [...inventory];
 
-          // ⭐ กรอง Project (Global)
+          // กรอง Project (Global)
           if (globalProjectFilter !== 'All') {
               data = data.filter(i => i.project === globalProjectFilter);
           }
 
           if (invSearch) {
-    const lower = invSearch.toLowerCase();
-    data = data.filter(i => 
-        i.name.toLowerCase().includes(lower) || 
-        i.id.toLowerCase().includes(lower) ||
-        (i.project && i.project.toLowerCase().includes(lower)) // ⭐ เพิ่มค้นหาโครงการ
-    );
-}
+                const lower = invSearch.toLowerCase();
+                data = data.filter(i => 
+                    i.name.toLowerCase().includes(lower) || 
+                    i.id.toLowerCase().includes(lower) ||
+                    (i.project && i.project.toLowerCase().includes(lower))
+                );
+            }
 
           if (inventoryProjectFilter !== 'All') {
               data = data.filter(i => i.project === inventoryProjectFilter);
@@ -2264,21 +2286,38 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
 
           // 2. Tab Logic
           if (invTabMode === 'Summary') {
-              // ⭐ โหมดรวม: รวมชื่อเหมือนกัน + เก็บ ID รายการย่อย
+              // ⭐ [แก้ไข] Logic การรวม: เก็บรายละเอียด ในระบบ/นอกระบบ และ โครงการ
               const grouped = data.reduce((acc, item) => {
-                  const existingItem = acc.find(x => x.name === item.name);
-                  if (existingItem) {
-                      existingItem.qty += item.qty; // บวกยอดเพิ่ม
-                      existingItem.combinedIds.push(item.id); // 🟢 เก็บ ID เพิ่ม
-                  } else {
-                      // สร้างรายการใหม่ในกลุ่ม
-                      acc.push({ 
+                  let existingItem = acc.find(x => x.name === item.name);
+                  
+                  if (!existingItem) {
+                      existingItem = { 
                           ...item, 
                           id: `SUM-${item.name}`, 
                           isSummary: true,
-                          combinedIds: [item.id] // 🟢 เริ่มเก็บ ID
-                      });
+                          combinedIds: [item.id],
+                          // เริ่มต้นตัวนับใหม่
+                          qty: 0, 
+                          systemQty: 0,
+                          nonSystemQty: 0,
+                          projectBreakdown: {}
+                      };
+                      acc.push(existingItem);
+                  } else {
+                      existingItem.combinedIds.push(item.id);
                   }
+
+                  // บวกยอดรวม
+                  existingItem.qty += item.qty;
+                  
+                  // แยกประเภท
+                  if (item.stockType === 'NonSystem') existingItem.nonSystemQty += item.qty;
+                  else existingItem.systemQty += item.qty;
+
+                  // แยกโครงการ
+                  const projName = item.project || 'ส่วนกลาง';
+                  existingItem.projectBreakdown[projName] = (existingItem.projectBreakdown[projName] || 0) + item.qty;
+
                   return acc;
               }, []);
               return getSortedData(grouped, invSort);
@@ -5225,14 +5264,20 @@ filteredRequests.map(req => {
                          
                          {/* Left: Title & Delete Button */}
                          <div className="flex items-center gap-4">
-                             <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2"><Box className="w-5 h-5"/> คลังวัสดุสิ้นเปลือง</h3>
+                             <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                 <Box className="w-5 h-5"/> คลังวัสดุสิ้นเปลือง 
+                                 {/* ⭐ เพิ่ม: แสดงจำนวนรายการ */}
+                                 <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full font-normal">
+                                     {filteredInventory.length} รายการ
+                                 </span>
+                             </h3>
                              
-                             {/* ⭐ ปุ่มลบหลายรายการ (แสดงเมื่อมีการเลือก และไม่ใช่ Tab Summary) */}
+                             {/* ปุ่มลบหลายรายการ */}
                              {selectedInventory.length > 0 && invTabMode !== 'Summary' && hasPermission(18) && (
                                  <button 
                                     onClick={() => handleDeleteInventory()} 
                                     className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-sm font-bold border border-red-200 hover:bg-red-100 flex items-center gap-2 animate-in fade-in"
-                                 >
+                                >
                                      <Trash2 className="w-4 h-4"/> ลบ {selectedInventory.length} รายการ
                                  </button>
                              )}
@@ -5282,8 +5327,8 @@ filteredRequests.map(req => {
                       <table className="w-full text-sm text-left">
                          <thead className="bg-gray-100 text-gray-600">
                             <tr>
-                                {/* ⭐ Checkbox Header (ซ่อนในโหมด Summary) */}
-                                {invTabMode !== 'Summary' && (
+                                {/* ⭐ แก้ไข: เพิ่มเงื่อนไข hasPermission(18) */}
+                                {invTabMode !== 'Summary' && hasPermission(18) && (
                                     <th className="px-4 py-3 w-10 text-center">
                                         <input type="checkbox" className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
                                             checked={filteredInventory.length > 0 && selectedInventory.length === filteredInventory.length}
@@ -5306,16 +5351,16 @@ filteredRequests.map(req => {
                             </tr>
                          </thead>
                          <tbody className="divide-y">
-                            {filteredInventory.map(inv => (
+                             {filteredInventory.map(inv => (
                                <tr key={inv.id} onClick={() => openViewItem(inv)} className="hover:bg-gray-50 cursor-pointer">
                                   
-                                  {/* ⭐ Checkbox Row (ซ่อนในโหมด Summary) */}
-                                  {invTabMode !== 'Summary' && (
+                                  {/* ⭐ แก้ไข: เพิ่มเงื่อนไข hasPermission(18) */}
+                                  {invTabMode !== 'Summary' && hasPermission(18) && (
                                       <td className="px-4 py-4 text-center" onClick={(e) => e.stopPropagation()}>
                                            <input type="checkbox" className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
                                                checked={selectedInventory.includes(inv.id)}
                                                onChange={() => toggleSelectInventory(inv.id)}
-                                           />
+                                          />
                                       </td>
                                   )}
 
@@ -5323,13 +5368,36 @@ filteredRequests.map(req => {
                                       {inv.isSummary ? <span className="italic text-gray-400">Sum</span> : inv.id}
                                   </td>
                                   <td className="px-6 py-4">
-                                      <div className="font-medium text-gray-900">{inv.name}</div>
-                                      {inv.isSummary && inv.combinedIds && (
-                                          <div className="text-[10px] text-gray-400 mt-1 flex flex-wrap gap-1 items-center">
-                                              <span className="font-bold text-purple-600">รวมจาก:</span> 
-                                              {inv.combinedIds.join(', ')}
-                                          </div>
-                                      )}
+                                       <div className="font-medium text-gray-900">{inv.name}</div>
+                                       
+                                       {/* ⭐ แก้ไข: ส่วนแสดงรายละเอียดของ Summary */}
+                                       {inv.isSummary ? (
+                                           <div className="mt-1 space-y-1">
+                                               {/* แยกประเภท System / NonSystem */}
+                                               <div className="flex gap-2 text-[10px]">
+                                                   <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 font-bold">
+                                                       ในระบบ: {inv.systemQty}
+                                                   </span>
+                                                   <span className="bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded border border-orange-100 font-bold">
+                                                       นอกระบบ: {inv.nonSystemQty}
+                                                   </span>
+                                               </div>
+                                               
+                                               {/* แยกโครงการ (แสดงเฉพาะถ้าเลือกดูทุกโครงการ) */}
+                                               {globalProjectFilter === 'All' && inv.projectBreakdown && (
+                                                   <div className="flex flex-wrap gap-1 mt-1">
+                                                       {Object.entries(inv.projectBreakdown).map(([proj, qty]) => (
+                                                           <span key={proj} className="text-[9px] bg-gray-100 text-gray-600 px-1.5 rounded border border-gray-200" title={`โครงการ ${proj}`}>
+                                                               {proj}: <b>{qty}</b>
+                                                           </span>
+                                                       ))}
+                                                   </div>
+                                               )}
+                                           </div>
+                                       ) : (
+                                           /* ของเดิม (แสดง ID รวม) ถ้าไม่ใช่ Summary อาจจะไม่ต้องแสดงอะไร หรือแสดงตามเดิม */
+                                           null
+                                       )}
                                   </td>
 
                                   {globalProjectFilter === 'All' && invTabMode !== 'Summary' && (
@@ -8252,7 +8320,12 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                     <div><span className="text-gray-500 block text-xs mb-1">รหัส (ID)</span><span className="font-mono font-bold text-gray-700">{viewingItem.id}</span></div>
 <div className="col-span-2 md:col-span-1">
     <span className="text-gray-500 block text-xs mb-1">โครงการ (Project)</span>
-    <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">{viewingItem.project || 'ไม่ระบุ'}</span>
+    <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
+        {/* ⭐ แก้ไข: ถ้าเป็น Summary และเลือกทุกโครงการ ให้แสดง "ทุกโครงการ" */}
+        {viewingItem.isSummary && globalProjectFilter === 'All' 
+            ? 'ทุกโครงการ' 
+            : (viewingItem.project || 'ไม่ระบุ')}
+    </span>
 </div>
 
                                     <div><span className="text-gray-500 block text-xs mb-1">ชื่อรายการ</span><span className="font-bold text-gray-900">{viewingItem.name}</span></div>
@@ -8270,10 +8343,18 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                         // ⭐ Inventory Fields (Updated)
                                         <>
                                             <div><span className="text-gray-500 block text-xs mb-1">ประเภทสต็อก</span>
-                                                <span className={`px-2 py-0.5 rounded text-xs font-bold ${viewingItem.stockType === 'NonSystem' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}`}>
-                                                    {viewingItem.stockType === 'NonSystem' ? 'ของนอกระบบ' : 'ของในระบบ'}
-                                                </span>
-                                            </div>
+    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+        // ⭐ แก้ไข: ถ้าเป็น Summary (ไม่ว่าจะเลือกโครงการไหน) ให้ใช้สีม่วง
+        viewingItem.isSummary 
+            ? 'bg-purple-100 text-purple-700' 
+            : (viewingItem.stockType === 'NonSystem' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700')
+    }`}>
+        {/* ⭐ แก้ไข: ถ้าเป็น Summary ให้แสดง "รวม" เสมอ */}
+        {viewingItem.isSummary
+            ? 'รวม' 
+            : (viewingItem.stockType === 'NonSystem' ? 'ของนอกระบบ' : 'ของในระบบ')}
+    </span>
+</div>
                                             <div><span className="text-gray-500 block text-xs mb-1">คงเหลือ</span><span className="font-bold text-blue-600 text-lg">{viewingItem.qty} {viewingItem.unit}</span></div>
                                             <div><span className="text-gray-500 block text-xs mb-1">Min Stock</span><span className="font-medium text-red-600">{viewingItem.minStock}</span></div>
                                             <div><span className="text-gray-500 block text-xs mb-1">ราคาต่อหน่วย</span><span className="font-medium text-gray-700">{viewingItem.price?.toLocaleString()} บาท</span></div>
