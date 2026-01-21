@@ -1446,59 +1446,84 @@ const saveLogToSheet = (log) => {
    });
 };
 
-// --- LOGIC: CREATE ORDER (UPDATED: Upload Item Images) ---
-      const handleCreateOrder = async (e, isDraft = false) => {
+const handleCreateOrder = async (e, isDraft = false) => {
         e.preventDefault();
+        
+        // Validation พื้นฐาน (ส่วนหัว)
         if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
             showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
             return;
         }
         if (orderItems.length === 0) { 
-            showToast("กรุณาเพิ่มรายการ", 'error'); 
+            showToast("กรุณาเพิ่มรายการ", 'error');
             return; 
         }
         
 
-        if (!isDraft) { // เช็คเฉพาะตอนกดส่งจริง (Draft ไม่ต้องเช็คก็ได้)
-        const targetProject = newOrderMeta.job;
-        
-        for (const item of orderItems) {
-            // 1. กรณีเบิก (Withdraw): เช็คของในคลังโครงการนั้น
-            if (newOrderMeta.type === 'Withdraw') {
-                const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
-                if (!stockItem) {
-                    showToast(`ผิดพลาด: สินค้า "${item.name}" ไม่มีในโครงการ ${targetProject}`, 'error');
-                    return; // หยุดการทำงาน
-                }
-                if (item.qty > stockItem.qty) {
-                    showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
-                    return; // หยุดการทำงาน
-                }
-            } 
-            // 2. กรณียืม (Borrow): เช็คสถานะ Asset ID
-            else if (newOrderMeta.type === 'Borrow') {
-                // ต้องมี Asset ID (ถ้าเลือกมาถูกต้อง)
-                if (item.assetId) {
-                    const assetItem = assets.find(a => a.id === item.assetId);
-                    if (!assetItem) {
-                        showToast(`ผิดพลาด: ไม่พบทรัพย์สินรหัส ${item.assetId}`, 'error');
-                        return;
+        // ⭐ เริ่มการตรวจสอบ Validation รายละเอียด (ทำงานเฉพาะเมื่อกด "ส่งคำขอ" ไม่ใช่ "บันทึกร่าง")
+        if (!isDraft) { 
+            const targetProject = newOrderMeta.job;
+            
+            for (const item of orderItems) {
+                
+                // ------------------------------------------------------------------
+                // ✅ 1. ตรวจสอบ SubJob หรือ EP Code (สำหรับ Local, HO, Withdraw)
+                // ------------------------------------------------------------------
+                if (['Local', 'HO', 'Withdraw'].includes(newOrderMeta.type)) {
+                    // ต้องมีอย่างใดอย่างหนึ่ง (SubJob OR EP Code)
+                    if (!item.subJob && !item.epCode) {
+                        showToast(`รายการ "${item.name}" ต้องระบุ SubJob หรือ EP Code อย่างใดอย่างหนึ่ง`, 'error');
+                        return; // หยุดการทำงานทันที
                     }
-                    // เช็คว่าอยู่โครงการที่เลือกไหม (ถ้าต้องการบังคับข้ามโครงการต้องแก้ตรงนี้)
-                    if (assetItem.project !== targetProject) {
-                         // อาจจะอนุญาตหรือแจ้งเตือน ตาม Policy (ในที่นี้แจ้งเตือนไว้ก่อน)
-                         // showToast(`ทรัพย์สิน ${item.assetId} ไม่ใช่ของโครงการ ${targetProject}`, 'error');
-                         // return;
+                }
+
+                // ------------------------------------------------------------------
+                // ✅ 2. ตรวจสอบราคาต่อหน่วย (สำหรับ Local, HO) ต้องไม่เท่ากับ 0
+                // ------------------------------------------------------------------
+                if (['Local', 'HO'].includes(newOrderMeta.type)) {
+                    // แปลงเป็นตัวเลขก่อนเช็ค เพื่อความชัวร์
+                    const price = parseFloat(item.unitPrice);
+                    if (!price || price <= 0) {
+                        showToast(`รายการ "${item.name}" ต้องระบุราคาต่อหน่วย (ต้องมากกว่า 0)`, 'error');
+                        return; // หยุดการทำงานทันที
                     }
-                    if (assetItem.status !== 'Available') {
-                        showToast(`ผิดพลาด: ทรัพย์สิน "${item.name}" ไม่ว่าง (สถานะ: ${assetItem.status})`, 'error');
-                        return;
+                }
+
+                // ------------------------------------------------------------------
+                // (Logic เดิม) เช็คสต็อกสำหรับเบิก/ยืม
+                // ------------------------------------------------------------------
+                // 1. กรณีเบิก (Withdraw): เช็คของในคลังโครงการนั้น
+                if (newOrderMeta.type === 'Withdraw') {
+                    const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
+                    if (!stockItem) {
+                        showToast(`ผิดพลาด: สินค้า "${item.name}" ไม่มีในโครงการ ${targetProject}`, 'error');
+                        return; 
+                    }
+                    if (item.qty > stockItem.qty) {
+                        showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
+                        return; 
+                    }
+                } 
+                // 2. กรณียืม (Borrow): เช็คสถานะ Asset ID
+                else if (newOrderMeta.type === 'Borrow') {
+                    if (item.assetId) {
+                        const assetItem = assets.find(a => a.id === item.assetId);
+                        if (!assetItem) {
+                            showToast(`ผิดพลาด: ไม่พบทรัพย์สินรหัส ${item.assetId}`, 'error');
+                            return;
+                        }
+                        // เช็คว่าอยู่โครงการที่เลือกไหม (ถ้าต้องการบังคับข้ามโครงการต้องแก้ตรงนี้)
+                        // ...
+                        if (assetItem.status !== 'Available') {
+                            showToast(`ผิดพลาด: ทรัพย์สิน "${item.name}" ไม่ว่าง (สถานะ: ${assetItem.status})`, 'error');
+                            return;
+                        }
                     }
                 }
             }
         }
-    }
-        setIsLoading(true); // เริ่มโหลด
+
+        setIsLoading(true);
         
         let attachmentData = newOrderMeta.attachment;
         let quotationData = newOrderMeta.quotation;
@@ -2623,20 +2648,51 @@ const getSelectionItems = () => {
           setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [] });
       };
 
+// [แก้ไข] เพิ่มฟังก์ชันคำนวณวันที่ล่วงหน้า
+      const getFutureDate = (days) => {
+          const date = new Date();
+          date.setDate(date.getDate() + days);
+          return date.toISOString().split('T')[0];
+      };
+
+      // [แก้ไข] ปรับปรุง handleOpenCreateModal
       const handleOpenCreateModal = () => {
           setEditingId(null);
           setOrderItems([]);
           setNewOrderMeta({ 
               type: 'Local', 
               purchaseType: 'Buy', 
-              job: globalProjectFilter !== 'All' ? globalProjectFilter : '', // ⭐ Auto-fill Project
-              dateRequired: '', 
-              priority: 'Normal', 
+              job: globalProjectFilter !== 'All' ? globalProjectFilter : '', 
+              dateRequired: getFutureDate(7), // ⭐ กำหนดค่าเริ่มต้นเป็น อีก 15 วัน
+              priority: 'Urgent', // (8-30 วัน = Urgent)
               attachment: null, 
               quotation: null 
           });
           setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [] });
           setShowCreateModal(true);
+      };
+
+
+      // [เพิ่มใหม่] ฟังก์ชันเปลี่ยนวันที่พร้อมคำนวณ Priority อัตโนมัติ
+      const handleDateChange = (e) => {
+          const selectedDate = e.target.value;
+          if (!selectedDate) {
+              setNewOrderMeta(prev => ({ ...prev, dateRequired: selectedDate }));
+              return;
+          }
+
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const target = new Date(selectedDate);
+          const diffTime = target - today;
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+          let newPriority = 'Normal';
+          if (diffDays <= 7) newPriority = 'Critical';      // 0 - 7 วัน -> ด่วนมาก
+          else if (diffDays <= 30) newPriority = 'Urgent';  // 8 - 30 วัน -> ด่วน
+          else newPriority = 'Normal';                      // 31 วันขึ้นไป -> ปกติ
+
+          setNewOrderMeta(prev => ({ ...prev, dateRequired: selectedDate, priority: newPriority }));
       };
 
       const initiateRecall = (id) => {
@@ -6069,18 +6125,41 @@ filteredRequests.map(req => {
             <form className="space-y-6">
               {/* Type Selection */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-2">
+                
                  {hasPermission(4) && (
-                 <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Local'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Local' ? 'bg-orange-50 border-orange-500 text-orange-800 shadow-sm' : 'border-gray-200 bg-white hover:border-orange-200'}`}><HardHat className="w-5 h-5 mx-auto mb-1"/> ซื้อ (Local)</button>
+                 <button type="button" onClick={() => setNewOrderMeta({
+                     ...newOrderMeta, 
+                     type: 'Local',
+                     dateRequired: getFutureDate(7), // ⭐ Local: อีก 15 วัน
+                     priority: 'Urgent' // 8-30 วัน = Urgent
+                 })} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Local' ? 'bg-orange-50 border-orange-500 text-orange-800 shadow-sm' : 'border-gray-200 bg-white hover:border-orange-200'}`}><HardHat className="w-5 h-5 mx-auto mb-1"/> ซื้อ (Local)</button>
                   )}
+
                  {hasPermission(5) && (
-                 <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'HO'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'HO' ? 'bg-purple-50 border-purple-500 text-purple-800 shadow-sm' : 'border-gray-200 bg-white hover:border-purple-200'}`}><Building className="w-5 h-5 mx-auto mb-1"/> ซื้อ (HO)</button>
-                )}
+                 <button type="button" onClick={() => setNewOrderMeta({
+                     ...newOrderMeta, 
+                     type: 'HO',
+                     dateRequired: getFutureDate(15), // ⭐ HO: อีก 15 วัน
+                     priority: 'Urgent'
+                 })} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'HO' ? 'bg-purple-50 border-purple-500 text-purple-800 shadow-sm' : 'border-gray-200 bg-white hover:border-purple-200'}`}><Building className="w-5 h-5 mx-auto mb-1"/> ซื้อ (HO)</button>
+                 )}
+
                  {hasPermission(6) && (
-                <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Withdraw'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Withdraw' ? 'bg-pink-50 border-pink-500 text-pink-800 shadow-sm' : 'border-gray-200 bg-white hover:border-pink-200'}`}><Package className="w-5 h-5 mx-auto mb-1"/> เบิกวัสดุ</button>
+                <button type="button" onClick={() => setNewOrderMeta({
+                    ...newOrderMeta, 
+                    type: 'Withdraw',
+                    dateRequired: getFutureDate(0), // ⭐ เบิก: วันนี้ (Today)
+                    priority: 'Critical' // 0-7 วัน = Critical
+                })} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Withdraw' ? 'bg-pink-50 border-pink-500 text-pink-800 shadow-sm' : 'border-gray-200 bg-white hover:border-pink-200'}`}><Package className="w-5 h-5 mx-auto mb-1"/> เบิกวัสดุ</button>
                 )}
 
-                {hasPermission(7) && (
-                 <button type="button" onClick={() => setNewOrderMeta({...newOrderMeta, type: 'Borrow'})} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Borrow' ? 'bg-blue-50 border-blue-500 text-blue-800 shadow-sm' : 'border-gray-200 bg-white hover:border-blue-200'}`}><Monitor className="w-5 h-5 mx-auto mb-1"/> ยืมทรัพย์สิน</button>
+                 {hasPermission(7) && (
+                 <button type="button" onClick={() => setNewOrderMeta({
+                     ...newOrderMeta, 
+                     type: 'Borrow',
+                     dateRequired: getFutureDate(0), // ⭐ ยืม: วันนี้ (Today)
+                     priority: 'Critical' // 0-7 วัน = Critical
+                 })} className={`p-3 rounded-xl border-2 text-center transition-all ${newOrderMeta.type === 'Borrow' ? 'bg-blue-50 border-blue-500 text-blue-800 shadow-sm' : 'border-gray-200 bg-white hover:border-blue-200'}`}><Monitor className="w-5 h-5 mx-auto mb-1"/> ยืมทรัพย์สิน</button>
                  )}
               </div>
               
@@ -6139,7 +6218,14 @@ filteredRequests.map(req => {
                 
                 <div className={newOrderMeta.type === 'Borrow' ? "col-span-2" : "col-span-1"}>
                     <label className="block text-sm font-bold text-gray-700 mb-1.5">วันที่ใช้ (Date Required)</label>
-                    <input required type="date" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" value={newOrderMeta.dateRequired} onChange={e => setNewOrderMeta({...newOrderMeta, dateRequired: e.target.value})}/>
+                    <input 
+                        required 
+                        type="date" 
+                        className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" 
+                        value={newOrderMeta.dateRequired} 
+                        onChange={handleDateChange} // ⭐ ใช้ฟังก์ชัน Smart Priority ที่สร้างใหม่
+                        min={new Date().toISOString().split('T')[0]} // ⭐ ห้ามเลือกย้อนหลัง
+                    />
                 </div>
               </div>
 
