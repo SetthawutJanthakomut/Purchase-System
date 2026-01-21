@@ -2946,104 +2946,106 @@ const getSelectionItems = () => {
           setShowReturnAssetModal(true);
       };
 
-// --- LOGIC: RETURN ASSET (UPDATED VALIDATION) ---
-      const confirmReturnAsset = async () => {
-          const asset = assets.find(a => a.id === returnAssetData.id);
-          if (!asset) return;
-          
-          // ⭐ Validation
-          if (returnAssetData.condition === 'Lost' || returnAssetData.condition === 'Damaged') {
-              if (!returnAssetData.note || returnAssetData.note.trim() === '') {
-                  showToast('กรุณาระบุหมายเหตุ (สำหรับสถานะ สูญหาย/ชำรุด)', 'error');
-                  return;
-              }
-          }
-          
-          if (returnAssetData.condition === 'Damaged') {
-              if (!returnAssetData.images || returnAssetData.images.length === 0) {
-                  showToast('กรุณาถ่ายรูปสภาพทรัพย์สิน (สำหรับสถานะ ชำรุด)', 'error');
-                  return;
-              }
-          }
-          
-          setIsLoading(true);
+// [แก้ไข] ฟังก์ชันยืนยันรับคืน (Update: บันทึก User จริงลงประวัติ)
+const confirmReturnAsset = async () => {
+    const asset = assets.find(a => a.id === returnAssetData.id);
+    if (!asset) return;
+    
+    // Validation
+    if (returnAssetData.condition === 'Lost' || returnAssetData.condition === 'Damaged') {
+        if (!returnAssetData.note || returnAssetData.note.trim() === '') {
+            showToast('กรุณาระบุหมายเหตุ (สำหรับสถานะ สูญหาย/ชำรุด)', 'error');
+            return;
+        }
+    }
+    
+    if (returnAssetData.condition === 'Damaged') {
+        if (!returnAssetData.images || returnAssetData.images.length === 0) {
+            showToast('กรุณาถ่ายรูปสภาพทรัพย์สิน (สำหรับสถานะ ชำรุด)', 'error');
+            return;
+        }
+    }
+    
+    setIsLoading(true);
+    try {
+        // 1. Upload Images
+        let uploadedFiles = [];
+        if (returnAssetData.images && returnAssetData.images.length > 0) {
+            const uploadPromises = returnAssetData.images.map(file => {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.readAsDataURL(file);
+                    reader.onload = () => {
+                        google.script.run
+                            .withSuccessHandler(resolve)
+                            .withFailureHandler(reject)
+                            .uploadAssetImage(reader.result, file.name);
+                    };
+                });
+            });
+            uploadedFiles = await Promise.all(uploadPromises);
+        }
+        
+        const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+        
+        // 2. New Status
+        let newStatus = 'Available';
+        if (returnAssetData.condition === 'Damaged') newStatus = 'Damaged';
+        if (returnAssetData.condition === 'Lost') newStatus = 'Lost';
 
-          try {
-              // 1. Upload Images
-              let uploadedFiles = [];
-              if (returnAssetData.images && returnAssetData.images.length > 0) {
-                  const uploadPromises = returnAssetData.images.map(file => {
-                      return new Promise((resolve, reject) => {
-                          const reader = new FileReader();
-                          reader.readAsDataURL(file);
-                          reader.onload = () => {
-                              google.script.run
-                                .withSuccessHandler(resolve)
-                                .withFailureHandler(reject)
-                                .uploadAssetImage(reader.result, file.name);
-                          };
-                      });
-                  });
-                  uploadedFiles = await Promise.all(uploadPromises);
-              }
-              
-              const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-              
-              // 2. New Status
-              let newStatus = 'Available';
-              if (returnAssetData.condition === 'Damaged') newStatus = 'Damaged';
-              if (returnAssetData.condition === 'Lost') newStatus = 'Lost';
+        // 3. Update Asset
+        const updatedAsset = { 
+            ...asset, 
+            status: newStatus,
+            holder: '-', 
+            currentRequestId: null, 
+            lastUpdated: new Date().toLocaleString('th-TH'),
+            image: uploadedFiles.length > 0 ? uploadedFiles[0].name : asset.image,
+            note: returnAssetData.note || asset.note 
+        };
+        setAssets(prev => prev.map(a => a.id === asset.id ? updatedAsset : a));
+        
+        const { images, ...assetForServer } = updatedAsset;
+        saveAssetToSheet(assetForServer);
 
-              // 3. Update Asset
-              const updatedAsset = { 
-                  ...asset, 
-                  status: newStatus,
-                  holder: '-', 
-                  currentRequestId: null, 
-                  lastUpdated: new Date().toLocaleString('th-TH'),
-                  image: uploadedFiles.length > 0 ? uploadedFiles[0].name : asset.image,
-                  // ถ้าคืนของแล้ว จะเอา Note ไปแปะที่ Asset หลักด้วยก็ได้ (Optional)
-                  note: returnAssetData.note || asset.note 
-              };
+        // 4. Log & Request Update
+        let statusText = 'ปกติ/ดี (พร้อมใช้งาน)';
+        if (returnAssetData.condition === 'Damaged') statusText = 'ชำรุด';
+        if (returnAssetData.condition === 'Lost') statusText = 'สูญหาย';
 
-              setAssets(prev => prev.map(a => a.id === asset.id ? updatedAsset : a));
-              
-              const { images, ...assetForServer } = updatedAsset;
-              saveAssetToSheet(assetForServer); 
+        // ⭐ [แก้ไข] ระบุตัวตนคนทำรายการรับคืน (User ปัจจุบัน)
+        const returnerSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
 
-              // 4. Log & Request Update
-              let statusText = 'ปกติ/ดี (พร้อมใช้งาน)';
-              if (returnAssetData.condition === 'Damaged') statusText = 'ชำรุด';
-              if (returnAssetData.condition === 'Lost') statusText = 'สูญหาย';
+        // บันทึก Log ของ Asset
+        await addInvLog('Return Asset', asset.name, 'Return', `รับคืน: ${statusText} โดย ${returnerSignature} ${returnAssetData.note ? `(${returnAssetData.note})` : ''}`, logAttachments, asset.currentRequestId);
+        
+        // บันทึก Log ของ Request (เพื่อให้ไปโชว์ใน PDF ช่อง Returned By)
+        if (asset.currentRequestId) {
+            setRequests(prev => prev.map(r => {
+                if (r.id === asset.currentRequestId) {
+                    const updatedReq = { 
+                        ...r, 
+                        status: 'Returned', 
+                        // ใช้ returnerSignature แทน currentUserRole
+                        history: [...r.history, createLog('Returned', returnerSignature, `คืนของ: ${statusText}`, logAttachments)]
+                    };
+                    saveRequestToSheet(updatedReq); 
+                    return updatedReq;
+                }
+                return r;
+            }));
+        }
+        
+        setIsLoading(false);
+        setShowReturnAssetModal(false);
+        showToast('รับคืนและอัปเดตสถานะเรียบร้อย');
 
-              addInvLog('Return Asset', asset.name, 'Return', `รับคืน: ${statusText} ${returnAssetData.note ? `(${returnAssetData.note})` : ''}`, logAttachments, asset.currentRequestId);
-              
-              if (asset.currentRequestId) {
-                  setRequests(prev => prev.map(r => {
-                      if (r.id === asset.currentRequestId) {
-                          const updatedReq = { 
-                              ...r, 
-                              status: 'Returned', 
-                              history: [...r.history, createLog('Returned', currentUserRole, `คืนของ: ${statusText}`, logAttachments)]
-                          };
-                          saveRequestToSheet(updatedReq); 
-                          return updatedReq;
-                      }
-                      return r;
-                  }));
-              }
-              
-              setIsLoading(false);
-              setShowReturnAssetModal(false);
-              showToast('รับคืนและอัปเดตสถานะเรียบร้อย');
-
-          } catch (error) {
-              setIsLoading(false);
-              console.error(error);
-              showToast("Error: " + error.message, 'error');
-          }
-      };
-
+    } catch (error) {
+        setIsLoading(false);
+        console.error(error);
+        showToast("Error: " + error.message, 'error');
+    }
+};
 
 // --- LOGIC: UPDATE ASSET (UPDATED VALIDATION) ---
       const handleUpdateAsset = async (e) => {
@@ -5070,14 +5072,13 @@ filteredRequests.map(req => {
 
 
         {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
-        {/* ปุ่มพิมพ์ (Print) - Updated Logic */}
-        {/* แสดงเมื่อ: (Local) หรือ (HO Full Flow) หรือ (Withdraw) และสถานะผ่านการอนุมัติแล้ว */}
-        {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed'].includes(req.status) && 
-         (req.type === 'Local' || req.type === 'Withdraw' || req.type === 'Borrow' || (req.type === 'HO' && req.isFullApprovalFlow)) && (
-          <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
-              <Printer className="w-4 h-4"/> พิมพ์
-          </button>
-        )}
+
+{['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && 
+ (req.type === 'Local' || req.type === 'Withdraw' || req.type === 'Borrow' || (req.type === 'HO' && req.isFullApprovalFlow)) && (
+  <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
+      <Printer className="w-4 h-4"/> พิมพ์
+  </button>
+)}
         
         <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
         
@@ -6580,8 +6581,8 @@ filteredRequests.map(req => {
       )}
           
 {showDetailModal && selectedRequest && (
-        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in">
-             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in no-print">
+         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
                  <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
                      <div>
                          <div className="flex items-center gap-3">
@@ -6592,17 +6593,17 @@ filteredRequests.map(req => {
                      </div>
                      
                      <div className="flex items-center gap-2">
-                        {/* ⭐ เพิ่มปุ่มพิมพ์ใน Modal ตรงนี้ ⭐ */}
-                        {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed'].includes(selectedRequest.status) && 
-                         (selectedRequest.type === 'Local' || selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' || (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)) && (
-                            <button 
-                                onClick={() => handleOpenPrintPreview(selectedRequest)}
-                                className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
-                                title="พิมพ์เอกสาร"
-                            >
-                                <Printer className="w-4 h-4"/> พิมพ์
-                            </button>
-                        )}
+
+{['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(selectedRequest.status) && 
+ (selectedRequest.type === 'Local' || selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' || (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)) && (
+    <button 
+        onClick={() => handleOpenPrintPreview(selectedRequest)}
+        className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
+        title="พิมพ์เอกสาร"
+    >
+        <Printer className="w-4 h-4"/> พิมพ์
+    </button>
+)}
 
                         <button type="button" onClick={() => setShowDetailModal(false)} className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors" title="ปิดหน้าต่าง">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -8856,364 +8857,368 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
           </div>
       )}
 
-{/* --- PRINT PREVIEW MODAL (FIXED: No Extra Pages & Centered Layout) --- */}
-      {showPOPreviewModal && selectedRequest && (
-        <div className="fixed inset-0 bg-white z-[200] overflow-auto">
-            <div className="max-w-[210mm] mx-auto p-8 print-container">
-                
-                {/* --- CSS สำหรับ Print --- */}
-                <style>{`
-                    @media print {
-                        /* กำหนดระยะขอบกระดาษ */
-                        @page { size: A4; margin: 15mm 10mm; }
-                        
-                        /* 1. รีเซ็ตความสูง: ให้ความสูงเท่ากับเนื้อหาจริง ไม่ฟิก A4 */
-                        html, body, .print-content-wrapper { 
-                            height: auto !important; 
-                            min-height: 0 !important;
-                            overflow: visible !important; 
-                            background: white !important;
-                        }
-                        
-                        /* 2. ปลดล็อก Modal */
-                        .fixed.inset-0 { 
-                            position: static !important; 
-                            display: block !important;
-                            overflow: visible !important;
-                        }
-                        .print-container { 
-                            width: 100% !important; 
-                            max-width: none !important; 
-                            padding: 0 !important; 
-                            margin: 0 !important; 
-                            box-shadow: none !important;
-                        }
+{/* --- PRINT PREVIEW MODAL --- */}
+{showPOPreviewModal && selectedRequest && (
+  <div className="fixed inset-0 bg-white z-[200] overflow-auto">
+      <div className="w-full max-w-none mx-auto p-4 md:p-8 print-container flex flex-col items-center">
+          
 
-                        /* 3. บังคับหัวตารางให้ทำซ้ำทุกหน้า */
-                        table { width: 100% !important; }
-                        thead { display: table-header-group !important; }
-                        tfoot { display: table-footer-group !important; }
-                        tbody { display: table-row-group !important; }
-                        tr { page-break-inside: avoid !important; }
+          <style>{`
+              @media print {
+                  @page { size: A4; margin: 15mm; }
+                  html, body { 
+                      height: auto !important; 
+                      min-height: 0 !important;
+                      overflow: visible !important; 
+                      background: white !important;
+                      width: 100% !important;
+                      margin: 0 !important;
+                      padding: 0 !important;
+                  }
+                  .fixed.inset-0 { 
+                      position: static !important; 
+                      display: flex !important;
+                      justify-content: center !important;
+                      align-items: flex-start !important;
+                      overflow: visible !important;
+                      width: 100% !important;
+                      margin: 0 !important;
+                      padding: 0 !important;
+                  }
+                  .print-container { 
+                      width: 100% !important;
+                      max-width: none !important; 
+                      padding: 0 !important; 
+                      margin: 0 auto !important; 
+                      box-shadow: none !important;
+                      display: flex !important;
+                      justify-content: center !important;
+                  }
+                  .print-content-wrapper {
+                      width: 100% !important;
+                      max-width: 210mm !important;
+                      margin: 0 auto !important;
+                      padding: 0 !important;
+                      height: auto !important; 
+                      min-height: 0 !important;
+                      overflow: visible !important; 
+                      background: white !important;
+                  }
+                  /* ซ่อน Element อื่นๆ ที่มี class no-print */
+                  .no-print { display: none !important; }
+                  
+                  table { width: 100% !important; }
+                  thead { display: table-header-group !important; }
+                  tfoot { display: table-footer-group !important; }
+                  tbody { display: table-row-group !important; }
+                  tr { page-break-inside: avoid !important; }
+                  .signature-section { page-break-inside: avoid; break-inside: avoid; }
+              }
 
-                        /* ซ่อนปุ่มกด */
-                        .no-print { display: none !important; }
-                        
-                        /* ลายเซ็นห้ามถูกตัด */
-                        .signature-section { page-break-inside: avoid; break-inside: avoid; }
-                    }
+              .preview-table th, .preview-table td { 
+                  border: 1px solid black;
+                  padding: 6px 8px; 
+                  font-size: 12px; 
+                  vertical-align: top;
+              }
+              .header-box { 
+                  border: 1px solid black;
+                  padding: 10px; 
+                  margin-bottom: 15px; 
+              }
+          `}</style>
 
-                    /* Style ตาราง */
-                    .preview-table th, .preview-table td { 
-                        border: 1px solid black; 
-                        padding: 6px 8px; 
-                        font-size: 12px; 
-                        vertical-align: top;
-                    }
-                    /* เส้นขอบของกล่อง Header */
-                    .header-box { 
-                        border: 1px solid black; 
-                        padding: 10px; 
-                        margin-bottom: 15px; 
-                    }
-                `}</style>
+          {/* Toolbar */}
+          <div className="w-full max-w-[210mm] flex justify-between items-center mb-6 border-b pb-4 no-print bg-gray-50 p-4 rounded-xl">
+              <div>
+                  <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                      <Printer className="w-6 h-6 text-blue-600"/> ตัวอย่างก่อนพิมพ์
+                  </h2>
+                  <p className="text-sm text-gray-500">ตรวจสอบความถูกต้องก่อนสั่งพิมพ์</p>
+              </div>
+              <div className="flex gap-2">
+                  <button onClick={handlePrint} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold transition-all">
+                      <Printer className="w-4 h-4"/> สั่งพิมพ์
+                  </button>
+                  <button onClick={() => setShowPOPreviewModal(false)} className="px-6 py-2.5 border border-gray-300 rounded-lg hover:bg-white bg-white text-gray-700 font-bold transition-all">
+                      ปิด
+                  </button>
+              </div>
+          </div>
 
-                {/* Toolbar (ไม่แสดงตอนพิมพ์) */}
-                <div className="flex justify-between items-center mb-6 border-b pb-4 no-print bg-gray-50 p-4 rounded-xl">
-                    <div>
-                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                            <Printer className="w-6 h-6 text-blue-600"/> ตัวอย่างก่อนพิมพ์ (Print Preview)
-                        </h2>
-                        <p className="text-sm text-gray-500">ตรวจสอบความถูกต้องก่อนสั่งพิมพ์</p>
-                    </div>
-                    <div className="flex gap-2">
-                        <button onClick={handlePrint} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold transition-all">
-                            <Printer className="w-4 h-4"/> สั่งพิมพ์
-                        </button>
-                        <button onClick={() => setShowPOPreviewModal(false)} className="px-6 py-2.5 border border-gray-300 rounded-lg hover:bg-white bg-white text-gray-700 font-bold transition-all">
-                            ปิด
-                        </button>
-                    </div>
-                </div>
+          {/* --- DOCUMENT CONTENT --- */}
+          <div className="print-content-wrapper bg-white text-black font-sans relative text-sm w-full max-w-[210mm]"> {/* จัดกลางด้วย max-w-[210mm] ในหน้าจอปกติ */}
+              
+              {(() => {
+                  const formatDateTh = (d) => {
+                      if(!d) return '';
+                      let dateObj;
+                      if (typeof d === 'string') {
+                          const cleanDate = d.split(' ')[0];
+                          if (cleanDate.includes('/')) {
+                              const parts = cleanDate.split('/');
+                              if (parts.length === 3) {
+                                  let d = parts[0].padStart(2, '0');
+                                  let m = parts[1].padStart(2, '0');
+                                  let y = parseInt(parts[2]);
+                                  if (y < 2400) y += 543;
+                                  return `${d}/${m}/${y}`;
+                              }
+                          }
+                          dateObj = new Date(d);
+                      } else { dateObj = d; }
+                      
+                      if (!dateObj || isNaN(dateObj.getTime())) return d;
+                      const day = dateObj.getDate().toString().padStart(2, '0');
+                      const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
+                      const year = dateObj.getFullYear() < 2400 ? dateObj.getFullYear() + 543 : dateObj.getFullYear();
+                      return `${day}/${month}/${year}`;
+                  };
 
-                {/* --- DOCUMENT CONTENT --- */}
-                {/* เพิ่ม class print-content-wrapper เพื่อใช้ target ใน CSS */}
-                <div className="print-content-wrapper bg-white min-h-[297mm] text-black font-sans relative text-sm">
-                    
-                    {(() => {
-                        const formatDateTh = (d) => {
-                            if(!d) return '';
-                            let dateObj;
-                            if (typeof d === 'string') {
-                                const cleanDate = d.split(' ')[0];
-                                if (cleanDate.includes('/')) {
-                                    const parts = cleanDate.split('/');
-                                    if (parts.length === 3) {
-                                        let d = parts[0].padStart(2, '0');
-                                        let m = parts[1].padStart(2, '0');
-                                        let y = parseInt(parts[2]);
-                                        if (y < 2400) y += 543;
-                                        return `${d}/${m}/${y}`;
-                                    }
-                                }
-                                dateObj = new Date(d);
-                            } else { dateObj = d; }
-                            
-                            if (!dateObj || isNaN(dateObj.getTime())) return d;
-                            const day = dateObj.getDate().toString().padStart(2, '0');
-                            const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
-                            const year = dateObj.getFullYear() < 2400 ? dateObj.getFullYear() + 543 : dateObj.getFullYear();
-                            return `${day}/${month}/${year}`;
-                        };
+                  // --- DATA PREPARATION ---
+                  const historyDesc = [...(selectedRequest.history || [])].reverse();
+                  const isActionMatch = (logAction, statusKey) => {
+                      if (!logAction) return false;
+                      const label = STATUS_LABELS[statusKey] || '';
+                      return logAction === statusKey || logAction === label || logAction.includes(label);
+                  };
+                  
+                  // Helper: แยก EmpID/Name
+                  const getUser = (log) => {
+                      if(!log || !log.user) return null;
+                      // ลบคำว่า (Email) ถ้ามี
+                      let txt = log.user.replace(' (Email)', '').trim();
+                      // แยกส่วนแรกเป็น ID (สมมติเก็บแบบ "ID Name")
+                      const firstPart = txt.split(' ')[0];
+                      // ค้นหาใน allUsers
+                      return allUsers.find(u => 
+                          (u.empId && u.empId === firstPart) || 
+                          (u.username === txt) ||
+                          (u.email && txt.includes(u.email)) ||
+                          (`${u.firstName} ${u.lastName}` === txt)
+                      );
+                  };
 
-                        // Data Preparation
-                        const historyDesc = [...(selectedRequest.history || [])].reverse();
-                        const isActionMatch = (logAction, statusKey) => {
-                            if (!logAction) return false;
-                            const label = STATUS_LABELS[statusKey] || '';
-                            return logAction === statusKey || logAction === label || logAction.includes(label);
-                        };
-                        const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
-                        let l1Log = historyDesc.find(h => isActionMatch(h.action, 'Pending PM') || ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')));
-                        const l2Log = historyDesc.find(h => (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) && h !== l1Log);
-                        const getUser = (log) => {
-                            if(!log || !log.user) return null;
-                            let txt = log.user.replace(' (Email)', '').trim();
-                            const firstPart = txt.split(' ')[0];
-                            return allUsers.find(u => (u.empId && u.empId === firstPart) || (u.username === txt) || (u.email && txt.includes(u.email)) || (`${u.firstName} ${u.lastName}` === txt));
-                        };
-                        const userReq = getUser(reqLog);
-                        const userL1 = getUser(l1Log);
-                        const userL2 = getUser(l2Log);
-                        const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user.replace(' (Email)', '') : selectedRequest.requester);
-                        const nameL1 = userL1 ? `${userL1.firstName} ${userL1.lastName}` : (l1Log ? l1Log.user.replace(' (Email)', '') : '..........................');
-                        const nameL2 = userL2 ? `${userL2.firstName} ${userL2.lastName}` : (l2Log ? l2Log.user.replace(' (Email)', '') : '..........................');
-                        const dateReq = formatDateTh(reqLog ? reqLog.date : selectedRequest.created);
-                        const dateL1 = l1Log ? formatDateTh(l1Log.date) : '....../....../......';
-                        const dateL2 = l2Log ? formatDateTh(l2Log.date) : '....../....../......';
-                        const sigReq = userReq?.signature ? getDriveImageUrl(userReq.signature) : null;
-                        const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
-                        const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
+                  const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
+                  let l1Log = historyDesc.find(h => isActionMatch(h.action, 'Pending PM') || ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')));
+                  const l2Log = historyDesc.find(h => (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) && h !== l1Log);
+                  
+                  const userReq = getUser(reqLog);
+                  const userL1 = getUser(l1Log);
+                  const userL2 = getUser(l2Log);
+                  
+                  // ชื่อและวันที่ (Request / L1 / L2)
+                  const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user.replace(' (Email)', '') : selectedRequest.requester);
+                  const nameL1 = userL1 ? `${userL1.firstName} ${userL1.lastName}` : (l1Log ? l1Log.user.replace(' (Email)', '') : '..........................');
+                  const nameL2 = userL2 ? `${userL2.firstName} ${userL2.lastName}` : (l2Log ? l2Log.user.replace(' (Email)', '') : '..........................');
+                  const dateReq = formatDateTh(reqLog ? reqLog.date : selectedRequest.created);
+                  const dateL1 = l1Log ? formatDateTh(l1Log.date) : '....../....../......';
+                  const dateL2 = l2Log ? formatDateTh(l2Log.date) : '....../....../......';
+                  
+                  // ลายเซ็น (Request / L1 / L2)
+                  const sigReq = userReq?.signature ? getDriveImageUrl(userReq.signature) : null;
+                  const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
+                  const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
 
-                        const getLogUser = (statusKey) => {
-                            // หา Log ล่าสุดที่มีสถานะนี้
-                            const log = historyDesc.find(h => isActionMatch(h.action, statusKey));
-                            return getUser(log);
-                        };
+                  // --- หา Issued By (คนจ่ายของ) และ Returned By (คนรับคืน) ---
+                  const getLogUser = (statusKey) => {
+                      const log = historyDesc.find(h => isActionMatch(h.action, statusKey));
+                      return { user: getUser(log), log: log };
+                  };
 
-                        const userIssuer = getLogUser('Completed'); // คนจ่ายของ (สถานะ Completed)
-                        const userReturner = getLogUser('Returned'); // คนรับคืน (สถานะ Returned)
+                  // Issued: สถานะ 'Completed' (สำหรับ Borrow/Withdraw)
+                  const issuerData = getLogUser('Completed');
+                  const userIssuer = issuerData.user;
+                  const nameIssuer = userIssuer ? `${userIssuer.firstName} ${userIssuer.lastName}` : (issuerData.log ? issuerData.log.user : '');
+                  const sigIssuer = userIssuer?.signature ? getDriveImageUrl(userIssuer.signature) : null;
 
-                        const nameIssuer = userIssuer ? `${userIssuer.firstName} ${userIssuer.lastName}` : '';
-                        const nameReturner = userReturner ? `${userReturner.firstName} ${userReturner.lastName}` : '';
-                        
-                        // หาลายเซ็น
-                        const sigIssuer = userIssuer?.signature ? getDriveImageUrl(userIssuer.signature) : null;
-                        const sigReturner = userReturner?.signature ? getDriveImageUrl(userReturner.signature) : null;
+                  // Returned: สถานะ 'Returned'
+                  const returnerData = getLogUser('Returned');
+                  const userReturner = returnerData.user;
+                  const nameReturner = userReturner ? `${userReturner.firstName} ${userReturner.lastName}` : (returnerData.log ? returnerData.log.user : '');
+                  const sigReturner = userReturner?.signature ? getDriveImageUrl(userReturner.signature) : null;
+                  const dateReturn = returnerData.log ? formatDateTh(returnerData.log.date) : '....../....../......';
 
-return (
-                            <>
-                            {/* ================================================================================== */}
-                            {/* ⭐ เงื่อนไขที่ 1: กรณีเป็น "ใบยืม (Borrow)" -> แสดงแบบฟอร์มใหม่ (ตามรูป) */}
-                            {/* ================================================================================== */}
+                  return (
+                      <>
+                      {/* ================================================================================== */}
+                      {/* FORM TYPE 1: BORROW TOOL SHEET */}
+                      {/* ================================================================================== */}
 
-    {selectedRequest.type === 'Borrow' ? (
-        // ปรับ Container ให้กว้างเต็มจอ (w-full) และจัดกลาง (mx-auto)
-        <div className="font-sans text-black p-8 w-full max-w-none mx-auto">
-            
-            {/* 1. ส่วนหัว (Header) */}
-            <div className="text-center mb-6">
-                <h1 className="text-3xl font-bold uppercase tracking-widest mb-1">BORROW TOOL SHEET</h1>
-                <h2 className="text-xl font-bold">ใบยืมเครื่องมือ</h2>
-            </div>
+                      {selectedRequest.type === 'Borrow' ? (
+                          <div className="font-sans text-black p-4 w-full">
+                              
+                              <div className="text-center mb-6">
+                                  <h1 className="text-3xl font-bold uppercase tracking-widest mb-1">BORROW TOOL SHEET</h1>
+                                  <h2 className="text-xl font-bold">ใบยืมเครื่องมือ</h2>
+                              </div>
 
-            {/* 2. ข้อมูลผู้ยืม (Header Info) */}
-<div className="mb-6 border-b-2 border-black pb-4">
-                
-                {/* ใช้ Flex Row เพื่อเรียง 3 ก้อนให้อยู่บรรทัดเดียวกัน */}
-                <div className="flex items-end gap-6 mb-2 text-base w-full">
-                    
-                    {/* ก้อนที่ 1: Name (ให้ยืดกินพื้นที่ที่เหลือ flex-1) */}
-                    <div className="flex-1 flex flex-col">
-                        <div className="flex items-end w-full">
-                            <span className="font-bold whitespace-nowrap mr-2">Name:</span>
-                            <div className="border-b border-dotted border-black flex-1 text-center font-bold text-blue-900 px-2">
-                                {nameReq}
-                            </div>
-                        </div>
-                        <div className="text-xs text-center text-gray-500 mt-1">ชื่อผู้ยืม</div>
-                    </div>
+                              <div className="mb-6 border-b-2 border-black pb-4">
+                                  <div className="flex items-end gap-6 mb-2 text-base w-full">
+                                      {/* [แก้ไข] ลดความกว้าง Name, เพิ่มพื้นที่ให้ Employee No และ Date */}
+                                      <div className="flex-1 flex flex-col">
+                                          <div className="flex items-end w-full">
+                                              <span className="font-bold whitespace-nowrap mr-2">Name:</span>
+                                              <div className="border-b border-dotted border-black flex-1 text-center font-bold text-blue-900 px-2 truncate">
+                                                  {nameReq}
+                                              </div>
+                                          </div>
+                                          <div className="text-xs text-center text-gray-500 mt-1">ชื่อผู้ยืม</div>
+                                      </div>
 
-                    {/* ก้อนที่ 2: Employee No (Fix ความกว้างพอประมาณ) */}
-                    <div className="w-[25%] flex flex-col">
-                        <div className="flex items-end w-full">
-                            <span className="font-bold whitespace-nowrap mr-2">Employee No:</span>
-                            <div className="border-b border-dotted border-black flex-1 text-center font-mono">
-                                {userReq?.empId || '-'}
-                            </div>
-                        </div>
-                        <div className="text-xs text-center text-gray-500 mt-1">เลขประจำตัว</div>
-                    </div>
+                                      <div className="w-[35%] flex flex-col">
+                                          <div className="flex items-end w-full">
+                                              <span className="font-bold whitespace-nowrap mr-2">Employee No:</span>
+                                              <div className="border-b border-dotted border-black flex-1 text-center font-mono">
+                                                  {userReq?.empId || '-'}
+                                              </div>
+                                          </div>
+                                          <div className="text-xs text-center text-gray-500 mt-1">เลขประจำตัว</div>
+                                      </div>
 
-                    {/* ก้อนที่ 3: Date (Fix ความกว้างพอประมาณ) */}
-                    <div className="w-[20%] flex flex-col">
-                        <div className="flex items-end w-full">
-                            <span className="font-bold whitespace-nowrap mr-2">Date:</span>
-                            <div className="border-b border-dotted border-black flex-1 text-center">
-                                {dateReq}
-                            </div>
-                        </div>
-                        <div className="text-xs text-center text-gray-500 mt-1">วันที่</div>
-                    </div>
-                </div>
+                                      <div className="w-[25%] flex flex-col">
+                                          <div className="flex items-end w-full">
+                                              <span className="font-bold whitespace-nowrap mr-2">Date:</span>
+                                              <div className="border-b border-dotted border-black flex-1 text-center">
+                                                  {dateReq}
+                                              </div>
+                                          </div>
+                                          <div className="text-xs text-center text-gray-500 mt-1">วันที่</div>
+                                      </div>
+                                  </div>
 
-                {/* ส่วน Project (เหมือนเดิม) */}
-                <div className="flex justify-between items-end mt-4 mb-1 text-base">
-                    <div className="flex items-end w-full">
-                        <span className="font-bold w-16">Project:</span>
-                        <div className="border-b border-dotted border-black flex-1 text-left pl-2 font-bold text-black">
-                            {selectedRequest.job}
-                        </div>
-                    </div>
-                </div>
-                <div className="flex justify-between text-xs text-gray-500 font-normal">
-                    <div className="pl-16">โครงการ</div>
-                </div>
-            </div>
+                                  <div className="flex justify-between items-end mt-4 mb-1 text-base">
+                                      <div className="flex items-end w-full">
+                                          <span className="font-bold w-16">Project:</span>
+                                          <div className="border-b border-dotted border-black flex-1 text-left pl-2 font-bold text-black">
+                                              {selectedRequest.job}
+                                          </div>
+                                      </div>
+                                  </div>
+                                  <div className="flex justify-between text-xs text-gray-500 font-normal">
+                                      <div className="pl-16">โครงการ</div>
+                                  </div>
+                              </div>
 
-            {/* 3. ตารางรายการ (Table) */}
-            <table className="w-full border-collapse border border-black mb-10">
-                <thead>
-                    <tr>
-                        <th colSpan="4" className="border border-black p-2 bg-white text-right">
-                            <span className="font-bold text-base">Doc No: {selectedRequest.docNumber || selectedRequest.id}</span>
-                        </th>
-                    </tr>
-                    <tr className="bg-gray-100 text-center text-base">
-                        <th className="border border-black py-3 w-24">
-                            Quantity<br/><span className="text-xs font-normal">จำนวน</span>
-                        </th>
-                        <th className="border border-black py-3">
-                            Description<br/><span className="text-xs font-normal">รายการ</span>
-                        </th>
-                        <th className="border border-black py-3 w-32">
-                            Unit Price<br/><span className="text-xs font-normal">ราคา</span>
-                        </th>
-                        <th className="border border-black py-3 w-32">
-                            Amount<br/><span className="text-xs font-normal">จำนวนเงิน</span>
-                        </th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {selectedRequest.items.map((item, idx) => (
-                        <tr key={idx} className="text-base">
-                            <td className="border border-black py-4 text-center align-top font-bold">
-                                {item.qty} {item.unit}
-                            </td>
-                            <td className="border border-black py-4 px-4 align-top">
-                                <div className="font-bold text-lg">{item.name}</div>
-                                <div className="text-sm mt-1 text-gray-600">
-                                    {item.serial && <span>S/N: {item.serial} </span>}
-                                    {item.assetId && <span>ID: {item.assetId}</span>}
-                                </div>
-                                {item.note && <div className="text-sm text-gray-500 italic mt-1">Note: {item.note}</div>}
-                            </td>
-                            <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
-                            <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
+                              {/* Table */}
+                              <table className="w-full border-collapse border border-black mb-10">
+                                  <thead>
+                                      <tr>
+                                          <th colSpan="4" className="border border-black p-2 bg-white text-right">
+                                              <span className="font-bold text-base">Doc No: {selectedRequest.docNumber || selectedRequest.id}</span>
+                                          </th>
+                                      </tr>
+                                      <tr className="bg-gray-100 text-center text-base">
+                                          <th className="border border-black py-3 w-24">
+                                              Quantity<br/><span className="text-xs font-normal">จำนวน</span>
+                                          </th>
+                                          <th className="border border-black py-3">
+                                              Description<br/><span className="text-xs font-normal">รายการ</span>
+                                          </th>
+                                          <th className="border border-black py-3 w-32">
+                                              Unit Price<br/><span className="text-xs font-normal">ราคา</span>
+                                          </th>
+                                          <th className="border border-black py-3 w-32">
+                                              Amount<br/><span className="text-xs font-normal">จำนวนเงิน</span>
+                                          </th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      {selectedRequest.items.map((item, idx) => (
+                                          <tr key={idx} className="text-base">
+                                              <td className="border border-black py-4 text-center align-top font-bold">
+                                                  {item.qty} {item.unit}
+                                              </td>
+                                              <td className="border border-black py-4 px-4 align-top">
+                                                  <div className="font-bold text-lg">{item.name}</div>
+                                                  <div className="text-sm mt-1 text-gray-600">
+                                                      {item.serial && <span>S/N: {item.serial} </span>}
+                                                      {item.assetId && <span>ID: {item.assetId}</span>}
+                                                  </div>
+                                                  {item.note && <div className="text-sm text-gray-500 italic mt-1">Note: {item.note}</div>}
+                                              </td>
+                                              <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
+                                              <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
+                                          </tr>
+                                      ))}
+                                  </tbody>
+                              </table>
 
-            {/* 4. ส่วนลายเซ็น (Signature Section) - ปรับปรุงใหม่ */}
-            <div className="grid grid-cols-2 gap-x-16 gap-y-8 mt-6">
-                
-                {/* --- คอลัมน์ซ้าย --- */}
-                <div className="flex flex-col gap-8">
-                    
-                    {/* Approved By */}
-                    <div className="relative">
-                        <div className="flex items-end mb-1">
-                            <span className="font-bold w-24 text-lg">Approved</span>
-                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
-                                {(sigL1 || sigL2) && <img src={sigL1 || sigL2} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
-                            </div>
-                        </div>
-                        {/* ดึงชื่อมาวางต่อ (ใต้เส้น) */}
-                        <div className="text-center font-bold text-sm h-6 mt-1">
-                            {nameL1 && nameL1 !== '..........................' ? `(${nameL1})` : ''}
-                        </div>
-                        <div className="text-xs text-center -mt-1 text-gray-500">ผู้อนุมัติ (Approved By)</div>
-                    </div>
+                              {/* Signatures */}
+                              <div className="grid grid-cols-2 gap-x-16 gap-y-8 mt-6">
+                                  {/* Left Column */}
+                                  <div className="flex flex-col gap-8">
+                                      {/* Approved By */}
+                                      <div className="relative">
+                                          <div className="flex items-end mb-1">
+                                              <span className="font-bold w-24 text-lg">Approved</span>
+                                              <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                                  {(sigL1 || sigL2) && <img src={sigL1 || sigL2} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
+                                              </div>
+                                          </div>
+                                          <div className="text-center font-bold text-sm h-6 mt-1">
+                                              {nameL1 && nameL1 !== '..........................' ? `(${nameL1})` : ''}
+                                          </div>
+                                          <div className="text-xs text-center -mt-1 text-gray-500">ผู้อนุมัติ (Approved By)</div>
+                                      </div>
 
-                    {/* Issued By */}
-                    <div className="relative">
-                        <div className="flex items-end mb-1">
-                            <span className="font-bold w-24 text-lg">Issued</span>
-                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
-                                {sigIssuer && <img src={sigIssuer} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
-                            </div>
-                        </div>
-                        {/* ดึงชื่อมาวางต่อ (ใต้เส้น) */}
-                        <div className="text-center font-bold text-sm h-6 mt-1">
-                            {nameIssuer ? `(${nameIssuer})` : ''}
-                        </div>
-                        <div className="text-xs text-center -mt-1 text-gray-500">ผู้จ่าย (Issued By)</div>
-                    </div>
-                </div>
+                                      {/* Issued By (แสดงเมื่อจ่ายของแล้ว) */}
+                                      <div className="relative">
+                                          <div className="flex items-end mb-1">
+                                              <span className="font-bold w-24 text-lg">Issued</span>
+                                              <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                                  {sigIssuer && <img src={sigIssuer} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
+                                              </div>
+                                          </div>
+                                          <div className="text-center font-bold text-sm h-6 mt-1">
+                                              {nameIssuer ? `(${nameIssuer})` : ''}
+                                          </div>
+                                          <div className="text-xs text-center -mt-1 text-gray-500">ผู้จ่าย (Issued By)</div>
+                                      </div>
+                                  </div>
 
-                {/* --- คอลัมน์ขวา --- */}
-                <div className="flex flex-col gap-8">
-                    
-                    {/* Borrowed By */}
-                    <div className="relative">
-                        <div className="flex items-end mb-1">
-                            <span className="font-bold w-24 text-lg">Borrowed</span>
-                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
-                                {sigReq ? <img src={sigReq} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/> : ''}
-                            </div>
-                        </div>
-                        {/* ดึงชื่อมาวางต่อ (ใต้เส้น) */}
-                        <div className="text-center font-bold text-sm h-6 mt-1">
-                            {nameReq ? `(${nameReq})` : ''}
-                        </div>
-                        <div className="text-xs text-center -mt-1 text-gray-500">ผู้ยืม (Borrowed By)</div>
-                    </div>
+                                  {/* Right Column */}
+                                  <div className="flex flex-col gap-8">
+                                      {/* Borrowed By */}
+                                      <div className="relative">
+                                          <div className="flex items-end mb-1">
+                                              <span className="font-bold w-24 text-lg">Borrowed</span>
+                                              <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                                  {sigReq ? <img src={sigReq} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/> : ''}
+                                              </div>
+                                          </div>
+                                          <div className="text-center font-bold text-sm h-6 mt-1">
+                                              {nameReq ? `(${nameReq})` : ''}
+                                          </div>
+                                          <div className="text-xs text-center -mt-1 text-gray-500">ผู้ยืม (Borrowed By)</div>
+                                      </div>
 
-                    {/* ⭐ Returned By (รวม Date ไว้ในนี้) */}
-                    <div className="relative">
-                        <div className="flex items-end mb-1">
-                            <span className="font-bold w-24 text-lg">Returned</span>
-                            <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
-                                {sigReturner && <img src={sigReturner} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
-                            </div>
-                        </div>
-                        
-                        {/* ดึงชื่อมาวางต่อ + ตามด้วยวันที่คืน (Enter ลงมา) */}
-                        <div className="text-center mt-1">
-                            {/* ชื่อผู้รับคืน */}
-                            <div className="font-bold text-sm h-6">
-                                {nameReturner ? `(${nameReturner})` : ''}
-                            </div>
-                            
-                            {/* Label */}
-                            <div className="text-xs text-gray-500 mb-2">ผู้รับคืน (Received By)</div>
-                            
-                            {/* วันที่คืน (แสดงเมื่อมีข้อมูล หรือรอรับคืน) */}
-                            <div className="text-sm font-bold">
-                                {nameReturner ? (
-                                    <span>วันที่คืน: {formatDateTh(new Date())}</span> // ปรับเป็นวันที่คืนจริงจาก Log ถ้ามี หรือใช้วันปัจจุบันตอนรับคืน
-                                ) : (
-                                    <span className="text-transparent">.</span> // เว้นที่ไว้ หรือใช้ <span>วันที่คืน: ...........................</span> ถ้าอยากให้เห็นเส้น
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
-            </div>
-        </div>
-    ) : (
+                                      {/* Returned By (แสดงเมื่อรับคืนแล้ว) */}
+                                      <div className="relative">
+                                          <div className="flex items-end mb-1">
+                                              <span className="font-bold w-24 text-lg">Returned</span>
+                                              <div className="border-b border-dotted border-black flex-1 relative h-10 text-center flex items-end justify-center">
+                                                  {sigReturner && <img src={sigReturner} className="absolute bottom-0 left-1/2 -translate-x-1/2 max-h-16 object-contain"/>}
+                                              </div>
+                                          </div>
+                                          <div className="text-center mt-1">
+                                              <div className="font-bold text-sm h-6">
+                                                  {nameReturner ? `(${nameReturner})` : ''}
+                                              </div>
+                                              <div className="text-xs text-gray-500 mb-2">ผู้รับคืน (Received By)</div>
+                                              <div className="text-sm font-bold">
+                                                  {nameReturner ? (
+                                                      <span>วันที่คืน: {dateReturn}</span>
+                                                  ) : (
+                                                      <span className="text-transparent">.</span>
+                                                  )}
+                                              </div>
+                                          </div>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      ) : (
                                 
                             /* ================================================================================== */
                             /* ⭐ เงื่อนไขที่ 2 (ELSE): กรณีอื่นๆ (ซื้อ/เบิกทั่วไป) -> ใช้แบบฟอร์มเดิม */
