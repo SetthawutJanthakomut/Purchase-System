@@ -2602,29 +2602,54 @@ const getItemLatestImage = (item) => {
     if (log) return log.images[0];
     return null;
 };
-// --- UPDATED: Selection Logic (Project Filtered) ---
+
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
     const targetProject = newOrderMeta.job; // ⭐ กรองตามโครงการที่เลือก
     let items = [];
-
+    
     // ถ้ายังไม่ได้เลือกโครงการ ให้คืนค่าว่าง (บังคับเลือกโครงการก่อน)
     if (!targetProject) return [];
 
-    // 1. กรอง Source ตามโครงการ
-    const projectInventory = inventory.filter(i => i.project === targetProject);
-    const projectAssets = assets.filter(a => a.project === targetProject);
+    // วันที่ปัจจุบันสำหรับเช็คหมดสัญญา
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    // 2. กำหนด Source ตามประเภทคำขอ
+    // 1. กรอง Inventory ตามโครงการ
+    const projectInventory = inventory.filter(i => i.project === targetProject);
+
+    // 2. กรอง Assets (Project + Available + Not Expired)
+    const projectAssets = assets.filter(a => {
+        // 2.1 ต้องตรงโครงการ
+        if (a.project !== targetProject) return false;
+        
+        // 2.2 ต้องสถานะ Available เท่านั้น (ตามโจทย์)
+        if (a.status !== 'Available') return false;
+
+        // 2.3 ต้องไม่หมดอายุสัญญา (เฉพาะของเช่า)
+        if (a.ownerType === 'Rent' && a.rentalEnd) {
+            const endDate = new Date(a.rentalEnd);
+            if (!isNaN(endDate.getTime())) {
+                endDate.setHours(0, 0, 0, 0);
+                // ถ้าวันสิ้นสุด น้อยกว่า วันนี้ = หมดอายุ -> ไม่แสดง
+                if (endDate < today) return false;
+            }
+        }
+        return true;
+    });
+
+    // 3. กำหนด Source ตามประเภทคำขอ
     if (type === 'Local' || type === 'Withdraw') {
         items = projectInventory;
     } else if (type === 'HO') {
+        // HO เลือกได้ทั้ง Inventory และ Assets (ที่ผ่านเงื่อนไขแล้ว)
         items = [...projectInventory, ...projectAssets];
     } else if (type === 'Borrow') {
-        items = projectAssets.filter(a => a.status === 'Available');
+        // Borrow ใช้ Assets ที่ผ่านเงื่อนไขแล้ว
+        items = projectAssets; 
     }
 
-    // 3. Search Logic
+    // 4. Search Logic
     if (selectionSearch) {
         const lower = selectionSearch.toLowerCase();
         items = items.filter(i => 
