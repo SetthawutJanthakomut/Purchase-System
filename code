@@ -95,79 +95,49 @@ function processEmailAction(e) {
   const customNote = e.parameter.note || ''; 
 
   console.log(`[ProcessEmail] ===== START =====`);
-  console.log(`[ProcessEmail] Action: ${action}`);
-  console.log(`[ProcessEmail] Request ID: ${reqId}`);
-  console.log(`[ProcessEmail] Role: ${role}`);
-  console.log(`[ProcessEmail] Approver: ${approver}`);
+  console.log(`[ProcessEmail] Action: ${action} | ID: ${reqId} | Approver: ${approver}`);
 
-// ⭐ [เพิ่มใหม่] ค้นหาข้อมูล User จาก Email เพื่อแสดงชื่อจริงและรหัสพนักงาน
+  // ค้นหา User เพื่อแสดงชื่อใน Log
   const allUsers = getSheetData('Users');
-  
-  // กรณี targetEmail อาจมีหลายคน (คั่นด้วย comma) ให้ลองแยกและค้นหาคนแรก หรือใช้ค่าเดิม
-  // ปกติ approver จะส่งมาเป็น email จากการแก้ไขจุดที่ 1
-  let userDisplay = approver + " (Email)"; 
-  
-  // ค้นหาใน Users ว่าอีเมลนี้ตรงกับใคร
+  let userDisplay = approver + " (Email)";
   const foundUser = allUsers.find(u => u.email && approver.includes(u.email));
-  
   if (foundUser) {
       userDisplay = `${foundUser.empId} ${foundUser.firstName} ${foundUser.lastName} (Email)`;
   }
 
-
   const requests = getSheetData('Requests');
   const reqIndex = requests.findIndex(r => r.id === reqId);
 
-  if (reqIndex === -1) {
-    console.error(`[ProcessEmail] ❌ Request not found: ${reqId}`);
-    return HtmlService.createHtmlOutput("<h2>❌ ไม่พบเอกสาร</h2>");
-  }
+  if (reqIndex === -1) return HtmlService.createHtmlOutput("<h2>❌ ไม่พบเอกสาร</h2>");
 
   let req = requests[reqIndex];
   
-  // Validation
-  if (role === 'Head' && req.status !== 'Pending Head') {
-     console.log(`[ProcessEmail] ⚠️ Status mismatch. Current: ${req.status}, Expected: Pending Head`);
-     return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
-  }
-  if (role === 'PM' && req.status !== 'Pending PM') {
-     console.log(`[ProcessEmail] ⚠️ Status mismatch. Current: ${req.status}, Expected: Pending PM`);
+  // Validation Check
+  if ((role === 'Head' && req.status !== 'Pending Head') || (role === 'PM' && req.status !== 'Pending PM')) {
      return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
   }
 
-  // อัปเดตสถานะ
+  // Update Status Logic
   let newStatus = '';
   let logNote = '';
-  
   if (action === 'approve') {
     if (role === 'Head') {
-      // ⭐ แก้ไข: ถ้าเป็น เบิก/ยืม ให้ผ่านไปขั้นตอนจ่ายของได้เลย (ไม่ต้องรอ PM)
       if (req.type === 'Withdraw' || req.type === 'Borrow') {
         newStatus = 'Ready to Disburse';
-        console.log(`[ProcessEmail] ✅ Head approved (${req.type}) -> Status: Ready to Disburse`);
       } else {
-        // ถ้าเป็น ซื้อ (Local/HO) ให้ส่งต่อ PM ตามปกติ
         newStatus = 'Pending PM';
-        console.log(`[ProcessEmail] ✅ Head approved -> Status: Pending PM`);
       }
-    }
-
-
-    else if (role === 'PM') {
+    } else if (role === 'PM') {
       newStatus = 'Approved';
-      console.log(`[ProcessEmail] ✅ PM approved -> Status: Approved`);
     }
     logNote = `Approved via Email by ${approver}`;
-  } 
-  else if (action === 'confirm_reject') { 
+  } else if (action === 'confirm_reject') { 
     newStatus = 'Rejected';
     logNote = `Rejected via Email by ${approver}: ${customNote}`; 
-    console.log(`[ProcessEmail] ❌ Rejected with note: ${customNote}`);
   }
 
-  // Save
+  // Save Data
   req.status = newStatus;
-  
   if (!req.history) req.history = [];
   req.history.push({
     date: new Date().toLocaleString('th-TH'),
@@ -175,47 +145,44 @@ function processEmailAction(e) {
     user: userDisplay,
     note: logNote
   });
-
-  console.log(`[ProcessEmail] 💾 Saving to Sheet...`);
+  
   saveDataToSheet('Requests', req.id, req);
 
-  // ⭐⭐⭐ เพิ่มส่วนนี้: ส่งเมลต่อถ้าเป็น Pending PM ⭐⭐⭐
+  // --- Trigger Logic ---
+  
+  // 1. ถ้าต้องส่งต่อ Level 2 (Pending PM) ให้ส่งปุ่มอนุมัติ
   if (newStatus === 'Pending PM') {
-    console.log(`[ProcessEmail] 📧 Triggering email to PM...`);
     try {
-      const pmEmails = findApproverEmails(req.job, 9); // Permission ID 9 = PM
-      
-      if (pmEmails) {
-        console.log(`[ProcessEmail] ✅ Found PM emails: ${pmEmails}`);
-        sendApprovalEmail(req, pmEmails, 'PM');
-        console.log(`[ProcessEmail] ✅ Email sent to PM successfully!`);
-      } else {
-        console.error(`[ProcessEmail] ⚠️ No PM approver found for project: ${req.job}`);
-      }
-    } catch (emailError) {
-      console.error(`[ProcessEmail] ❌ Failed to send PM email: ${emailError.toString()}`);
+      const pmEmails = findApproverEmails(req.job, 9);
+      if (pmEmails) sendApprovalEmail(req, pmEmails, 'PM');
+    } catch (e) {
+      console.error(`[ProcessEmail] Failed to send PM email: ${e.toString()}`);
     }
   }
 
+  // 2. ⭐⭐ [เพิ่มใหม่] แจ้งเตือนเจ้าของ (Requester) ว่ามีการทำรายการแล้ว ⭐⭐
+  try {
+      // เรียกฟังก์ชันแจ้งเตือน (ระบบจะกรองเองว่าถ้าเป็น Pending PM จะไม่ส่งซ้ำให้ผู้อนุมัติ แต่จะส่งให้เจ้าของ)
+      handleStatusNotification(req);
+  } catch (e) {
+      console.error(`[ProcessEmail] Failed to notify owner: ${e.toString()}`);
+  }
+
+  // Return HTML Result
   const color = newStatus === 'Rejected' ? 'red' : 'green';
   const message = newStatus === 'Rejected' ? 'บันทึกการไม่อนุมัติเรียบร้อย' : 'อนุมัติเรียบร้อย';
   
-  console.log(`[ProcessEmail] ===== END =====`);
-  
-let displayStatus = newStatus;
+  // แสดงผลชื่อสถานะแบบใหม่ในหน้าเว็บตอบกลับ
+  let displayStatus = newStatus;
+  if (newStatus === 'Pending Head') displayStatus = 'Pending Level 1';
   if (newStatus === 'Pending PM') displayStatus = 'Pending Level 2';
 
   return HtmlService.createHtmlOutput(`
     <div style="font-family: sans-serif; text-align: center; padding: 50px;">
       <h1 style="color: ${color};">${message}</h1>
       <p>เอกสาร: <strong>${reqId}</strong></p>
-      
-      <p>สถานะ: ${displayStatus}</p>
-      
+      <p>สถานะปัจจุบัน: <strong>${displayStatus}</strong></p>
       ${customNote ? `<p>เหตุผล: ${customNote}</p>` : ''}
-      
-      ${newStatus === 'Pending PM' ? '<p style="color: blue;">✅ ส่งเมลต่อ Level 2 แล้ว</p>' : ''}
-      
       <button onclick="window.close()" style="padding: 10px 20px; margin-top:20px; cursor: pointer;">ปิดหน้านี้</button>
     </div>
   `);
@@ -641,41 +608,28 @@ function syncRequest(request) {
   console.log(`[SyncRequest] Status: ${request.status}`);
   console.log(`[SyncRequest] Job: ${request.job}`);
   
-  // บันทึกข้อมูล
+  // 1. บันทึกข้อมูล (เหมือนเดิม)
   const result = saveDataToSheet('Requests', request.id, request);
   
+  // 2. ระบบส่งเมลอนุมัติเดิม (Approval Buttons) - เก็บไว้เหมือนเดิม
   try {
       if (request.status === 'Pending Head') {
-          console.log("[SyncRequest] ✅ Status = Pending Head -> Finding Head approvers...");
           const headEmails = findApproverEmails(request.job, 8); 
-          
-          if (headEmails) {
-             console.log(`[SyncRequest] 📧 Sending email to: ${headEmails}`);
-             sendApprovalEmail(request, headEmails, 'Head');
-             console.log("[SyncRequest] ✅ Email sent successfully!");
-          } else {
-             console.log(`[SyncRequest] ⚠️ WARNING: No Head approver found for project: ${request.job}`);
-          }
+          if (headEmails) sendApprovalEmail(request, headEmails, 'Head');
       }
-      
       else if (request.status === 'Pending PM') {
-          console.log("[SyncRequest] ✅ Status = Pending PM -> Finding PM approvers...");
           const pmEmails = findApproverEmails(request.job, 9);
-          
-          if (pmEmails) {
-             console.log(`[SyncRequest] 📧 Sending email to: ${pmEmails}`);
-             sendApprovalEmail(request, pmEmails, 'PM');
-             console.log("[SyncRequest] ✅ Email sent successfully!");
-          } else {
-             console.log(`[SyncRequest] ⚠️ WARNING: No PM approver found for project: ${request.job}`);
-          }
+          if (pmEmails) sendApprovalEmail(request, pmEmails, 'PM');
       } 
-      else {
-          console.log(`[SyncRequest] ℹ️ Status '${request.status}' - No email action required.`);
-      }
-
   } catch (e) {
-      console.error("❌ [SyncRequest] Email sending FAILED: " + e.toString());
+      console.error("❌ [SyncRequest] Approval Email FAILED: " + e.toString());
+  }
+
+  // 3. ⭐⭐ [เพิ่มใหม่] ระบบแจ้งเตือนสถานะ (Notification) ⭐⭐
+  try {
+      handleStatusNotification(request);
+  } catch (e) {
+      console.error("❌ [SyncRequest] Notification Email FAILED: " + e.toString());
   }
 
   console.log(`[SyncRequest] ===== END =====`);
@@ -1312,4 +1266,154 @@ function uploadUserSignature(base64Data, fileName) {
   } catch (e) {
     return { error: e.toString() };
   }
+}
+
+
+// --- NOTIFICATION SYSTEM (NEW) ---
+
+// ฟังก์ชันหลักสำหรับจัดการส่งเมลแจ้งเตือนตามสถานะ
+function handleStatusNotification(req) {
+  const status = req.status;
+  if (status === 'Draft') return;
+
+  // 1. หาอีเมลผู้ขอ
+  const requesterEmail = findUserEmail(req.requester);
+  
+  // 2. หาอีเมลผู้รับผิดชอบขั้นตอนถัดไป
+  let nextActorEmails = [];
+  if (status !== 'Pending Head' && status !== 'Pending PM') {
+      const permId = getPermissionForStatus(req);
+      if (permId) {
+          const emailsStr = findApproverEmails(req.job, permId);
+          if (emailsStr) nextActorEmails = emailsStr.split(',');
+      }
+  }
+
+  // 3. รวมรายชื่อผู้รับ
+  let recipients = [requesterEmail, ...nextActorEmails]
+      .filter(email => email && email.includes('@'))
+      .map(e => e.trim());
+  recipients = [...new Set(recipients)];
+
+  if (recipients.length === 0) return;
+
+  // ⭐ เปลี่ยนชื่อสถานะสำหรับแสดงผล (Display Logic)
+  let displayStatus = status;
+  if (status === 'Pending Head') displayStatus = 'Pending Level 1';
+  if (status === 'Pending PM') displayStatus = 'Pending Level 2';
+
+  // 4. สร้างเนื้อหาและส่ง (ระบุโครงการในหัวข้อตามโจทย์)
+  const subject = `[อัปเดตสถานะ: ${displayStatus}] ${req.id} - โครงการ ${req.job}`;
+  const body = createNotificationBody(req, displayStatus); // ส่ง displayStatus เข้าไป
+
+  recipients.forEach(email => {
+      try {
+          GmailApp.sendEmail(email, subject, '', { htmlBody: body });
+          console.log(`[Notification] Sent to ${email}`);
+      } catch (e) {
+          console.error(`[Notification] Error: ${e.toString()}`);
+      }
+  });
+}
+
+// ฟังก์ชันจับคู่สถานะ -> สิทธิ์ของผู้ที่ต้องทำรายการต่อ
+function getPermissionForStatus(req) {
+  switch (req.status) {
+    case 'Pending Check': return 10; // รอตรวจสอบ -> ฝ่าย Verify (10)
+    case 'Revise Needed': return null; // รอแก้ไข -> ผู้ขอ (ไม่ต้องหาสิทธิ์เพิ่ม)
+    
+    // Approved -> แยกตามประเภท
+    case 'Approved': 
+        if (req.type === 'Local') return 12; // Local -> รอออก PO/สั่งซื้อ (12)
+        if (req.type === 'HO' && req.purchaseType === 'Buy') return 11; // HO Buy -> รอออก PR (11)
+        if (req.type === 'HO' && req.purchaseType === 'Rent') return req.needContract !== false ? 14 : 13; // HO Rent -> สัญญา (14) หรือ ส่งของ (13)
+        return null;
+
+    case 'PR Issued': return 12; // PR ออกแล้ว -> รอออก PO (12)
+    case 'PO Issued': return 13; // PO ออกแล้ว -> รออัปเดตส่งของ (13)
+    case 'Ordered': return 15; // สั่งซื้อแล้ว -> รอรับของ (15)
+    case 'Contract Pending': return 14; // รอสัญญา -> ฝ่ายสัญญา (14)
+    case 'Contract Signed': return 13; // สัญญาแล้ว -> รอส่งของ (13)
+    case 'Shipping': return 15; // กำลังส่ง -> รอรับของ (15)
+    case 'Partially Received': return 15; // รับบางส่วน -> รอรับเพิ่ม (15)
+    case 'Ready to Disburse': return 24; // รอจ่าย -> Store (24)
+    
+    // จบงาน / คืนของ / ไม่ผ่าน -> แจ้งแค่ผู้ขอและผู้เกี่ยวข้องทราบ (ไม่ต้องมี Action ต่อ)
+    case 'Completed': return null; 
+    case 'Returned': return null;
+    case 'Rejected': return null;
+    
+    default: return null;
+  }
+}
+
+// ฟังก์ชันค้นหาอีเมลจากชื่อผู้ใช้งาน (requester string)
+function findUserEmail(requesterStr) {
+  if (!requesterStr) return null;
+  const users = getSheetData('Users');
+  
+  // requesterStr อาจเป็น "First Last" หรือ "ID First Last"
+  // ลองหาแบบ Contains
+  const user = users.find(u => {
+      const fullName = `${u.firstName} ${u.lastName}`;
+      const fullSig = `${u.empId} ${u.firstName} ${u.lastName}`;
+      return requesterStr === fullName || requesterStr === fullSig || requesterStr.includes(u.email);
+  });
+
+  return user ? user.email : null;
+}
+
+function createNotificationBody(req, displayStatus) {
+  const color = 
+      req.status === 'Rejected' ? '#d32f2f' : 
+      req.status === 'Completed' ? '#2e7d32' : 
+      req.status.includes('Pending') ? '#f57c00' : '#1976d2';
+
+  // ถ้าไม่ได้ส่ง displayStatus มา ให้คำนวณใหม่
+  if (!displayStatus) {
+      displayStatus = req.status;
+      if (req.status === 'Pending Head') displayStatus = 'Pending Level 1';
+      if (req.status === 'Pending PM') displayStatus = 'Pending Level 2';
+  }
+
+  return `
+    <div style="font-family: 'Sarabun', sans-serif; max-width: 600px; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: ${color}; color: white; padding: 15px;">
+            <h2 style="margin: 0; font-size: 18px;">รายการมีการอัปเดตสถานะ</h2>
+        </div>
+        <div style="padding: 20px;">
+            <p>เรียน ผู้เกี่ยวข้อง,</p>
+            <p>รายการคำขอหมายเลข <strong>${req.id}</strong> มีการเปลี่ยนแปลงสถานะดังนี้:</p>
+            
+            <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+                <tr style="background-color: #f5f5f5;">
+                    <td style="padding: 10px; border: 1px solid #ddd;"><strong>สถานะปัจจุบัน</strong></td>
+                    <td style="padding: 10px; border: 1px solid #ddd; color: ${color}; font-weight: bold;">${displayStatus}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><strong>โครงการ</strong></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${req.job}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><strong>ผู้ขอ</strong></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${req.requester}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><strong>รายการสินค้า</strong></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${req.items[0].name} ${req.items.length > 1 ? `(และอีก ${req.items.length - 1} รายการ)` : ''}</td>
+                </tr>
+            </table>
+
+            ${req.history && req.history.length > 0 ? `
+            <p style="color: #666; font-size: 12px;">
+                <strong>อัปเดตล่าสุดโดย:</strong> ${req.history[req.history.length - 1].user}<br/>
+                <strong>บันทึก:</strong> ${req.history[req.history.length - 1].note || '-'}
+            </p>` : ''}
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <a href="${ScriptApp.getService().getUrl()}" style="background-color: #1976d2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">เข้าสู่ระบบเพื่อดูรายละเอียด</a>
+            </div>
+        </div>
+    </div>
+  `;
 }
