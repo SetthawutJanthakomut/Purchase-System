@@ -5161,10 +5161,34 @@ filteredRequests.map(req => {
         )}
 
 
-        {currentUserRole === ROLES.USER && (req.status.includes('Pending')) && (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-4 h-4"/> เรียกคืน</button>)}
+        {(() => {
+            // 1. เช็คสิทธิ์: ต้องเป็นเจ้าของรายการเท่านั้น
+            const isOwner = req.requester === `${user.firstName} ${user.lastName}`;
+            
+            // 2. เช็คสถานะตามประเภท:
+            // - การสั่งซื้อ (Local/HO): ดึงได้จนถึง Pending PM (Level 2) รวมถึง Pending Check/Head ด้วย
+            const canRecallBuy = ['Local', 'HO'].includes(req.type) && ['Pending Check', 'Pending Head', 'Pending PM'].includes(req.status);
+            
+            // - การเบิก/ยืม (Withdraw/Borrow): ดึงได้เฉพาะ Pending Head (Level 1/2)
+            const canRecallUse = ['Withdraw', 'Borrow'].includes(req.type) && ['Pending Head'].includes(req.status);
+
+            if (isOwner && (canRecallBuy || canRecallUse)) {
+                return (
+                    <button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm transition-colors">
+                        <RotateCcw className="w-4 h-4"/> เรียกคืน
+                    </button>
+                );
+            }
+            return null;
+        })()}
 
 {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && 
- (req.type === 'Local' || req.type === 'Withdraw' || req.type === 'Borrow' || (req.type === 'HO' && req.isFullApprovalFlow)) && (
+ (req.type === 'Local' || 
+  req.type === 'Withdraw' || 
+  req.type === 'Borrow' || 
+  // ⭐ แก้ตรงนี้: ให้ HO พิมพ์ได้ถ้าเป็น Full Flow หรือ สถานะ Approved (คือผ่าน Verify แล้ว)
+  (req.type === 'HO' && (req.isFullApprovalFlow || req.status === 'Approved'))
+ ) && (
   <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
       <Printer className="w-4 h-4"/> พิมพ์
   </button>
@@ -6751,15 +6775,20 @@ filteredRequests.map(req => {
                      <div className="flex items-center gap-2">
 
 {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(selectedRequest.status) && 
- (selectedRequest.type === 'Local' || selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow' || (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)) && (
-    <button 
-        onClick={() => handleOpenPrintPreview(selectedRequest)}
-        className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
-        title="พิมพ์เอกสาร"
-    >
-        <Printer className="w-4 h-4"/> พิมพ์
-    </button>
-)}
+                         (selectedRequest.type === 'Local' || 
+                          selectedRequest.type === 'Withdraw' || 
+                          selectedRequest.type === 'Borrow' || 
+                          // ⭐ ปรับปรุง: ให้ HO พิมพ์ได้ถ้าเป็น Full Flow หรือ สถานะผ่านการอนุมัติแล้ว (Approved ขึ้นไป)
+                          (selectedRequest.type === 'HO' && (selectedRequest.isFullApprovalFlow || selectedRequest.status === 'Approved' || ['PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Completed'].includes(selectedRequest.status)))
+                         ) && (
+                            <button 
+                                onClick={() => handleOpenPrintPreview(selectedRequest)}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
+                                title="พิมพ์เอกสาร"
+                            >
+                                <Printer className="w-4 h-4"/> พิมพ์
+                            </button>
+                        )}
 
                         <button type="button" onClick={() => setShowDetailModal(false)} className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors" title="ปิดหน้าต่าง">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -7456,24 +7485,26 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                  {/* Additional Options */}
                  <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
                      
-                     {/* Full Flow Option */}
-                     <label className={`flex items-start gap-3 cursor-pointer group ${!isVerificationPass() ? 'opacity-50 pointer-events-none' : ''}`}>
-                         <div className="pt-0.5 relative">
-                             <input 
-                                 type="checkbox" 
-                                 className="peer w-5 h-5 appearance-none border-2 border-gray-300 rounded checked:bg-blue-600 checked:border-blue-600 transition-colors"
-                                 checked={verificationData.needApproval}
-                                 onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})}
-                             />
-                             <CheckCircle className="w-3.5 h-3.5 text-white absolute top-[3px] left-[3px] opacity-0 peer-checked:opacity-100 pointer-events-none"/>
-                         </div>
-                         <div>
-                             <p className="text-sm font-bold text-gray-800 group-hover:text-blue-700 transition-colors">
-                                 ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)
-                             </p>
-                             <p className="text-xs text-gray-500">สำหรับเคสต้องการหลักฐานเพิ่มเติม</p>
-                         </div>
-                     </label>
+                     {/* Full Flow Option: ซ่อนถ้าเป็น Change Mode */}
+                     {!verificationData.isChangeMode && (
+                         <label className={`flex items-start gap-3 cursor-pointer group ${!isVerificationPass() ? 'opacity-50 pointer-events-none' : ''}`}>
+                             <div className="pt-0.5 relative">
+                                 <input 
+                                     type="checkbox" 
+                                     className="peer w-5 h-5 appearance-none border-2 border-gray-300 rounded checked:bg-blue-600 checked:border-blue-600 transition-colors"
+                                     checked={verificationData.needApproval}
+                                     onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})}
+                                 />
+                                 <CheckCircle className="w-3.5 h-3.5 text-white absolute top-[3px] left-[3px] opacity-0 peer-checked:opacity-100 pointer-events-none"/>
+                             </div>
+                             <div>
+                                 <p className="text-sm font-bold text-gray-800 group-hover:text-blue-700 transition-colors">
+                                     ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)
+                                 </p>
+                                 <p className="text-xs text-gray-500">สำหรับเคสต้องการหลักฐานเพิ่มเติม</p>
+                             </div>
+                         </label>
+                     )}
 
                      {/* Contract Option (Only for Rent) */}
                      {requests.find(r => r.id === verificationData.requestId)?.purchaseType === 'Rent' && (
