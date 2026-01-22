@@ -1,5 +1,8 @@
 // --- CONFIGURATION ---
+const SUPABASE_URL = 'https://cgrmoykqhqopxexkuzto.supabase.co'; // ใส่ Project URL ของคุณ
+const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); // ✅ ดึงจากตู้เซฟ
 const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
+
 
 function doGet(e) {
   // ⭐ ตรวจสอบ Action จากอีเมล
@@ -27,6 +30,36 @@ function doGet(e) {
     .setTitle('PurchaseHub System')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function callSupabase(tableName, method, payload = null, params = '') {
+  const table = tableName.toLowerCase(); 
+  let url = `${SUPABASE_URL}/rest/v1/${table}${params}`;
+  
+  const options = {
+    method: method,
+    headers: {
+      'apikey': SUPABASE_KEY, // ต้องเป็น anon key ที่คุณเพิ่งเปลี่ยน
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal',
+      'User-Agent': 'PurchaseHub-Script/1.0' // หลอกว่าเป็น App ไม่ใช่ Browser
+    },
+    muteHttpExceptions: true
+  };
+
+  if (payload) {
+    options.payload = JSON.stringify(payload);
+  }
+
+  const response = UrlFetchApp.fetch(url, options);
+  // ถ้า Error ให้พ่นออกมาดูเลย
+  if (response.getResponseCode() >= 400) {
+    Logger.log("❌ Supabase Error: " + response.getContentText());
+    return "[]"; // ส่งอาเรย์ว่างกลับไปกันแอปพัง
+  }
+  
+  return response.getContentText();
 }
 
 function createRejectForm(e) {
@@ -650,78 +683,52 @@ function getOrCreateSheet(sheetName) {
   return sheet;
 }
 
+// แก้ไขฟังก์ชัน getSheetData ใน Code.gs
 function getSheetData(sheetName) {
-  const sheet = getOrCreateSheet(sheetName);
+  // 1. อ่านข้อมูลจาก Supabase โดยดึงมาเฉพาะ column 'payload'
+  // ใช้ sheetName.toLowerCase() เพื่อแปลง Requests -> requests ให้ตรงกับชื่อตารางใน Supabase
+  const jsonResponse = callSupabase(sheetName.toLowerCase(), 'get', null, '?select=payload');
   
-  // ⭐ ป้องกันอ่าน Sheet ว่าง
-  if (sheet.getLastRow() === 0) {
-    console.log(`[GetSheetData] Sheet '${sheetName}' is empty. Creating header...`);
-    sheet.appendRow(['ID', 'JSON_Data']); // สร้าง Header
-    return [];
+  // 2. แปลง Text เป็น Object
+  const data = JSON.parse(jsonResponse);
+  
+  // 3. ⭐ จุดสำคัญ: แกะกล่อง payload ออกมา
+  // เปลี่ยนจาก [{payload: {...}}, {payload: {...}}] ให้กลายเป็น [{...}, {...}]
+  if (Array.isArray(data)) {
+    return data.map(row => row.payload); 
+  } else {
+    return []; // กรณีไม่มีข้อมูล หรือ Error
   }
-  
-  const data = sheet.getDataRange().getValues();
-  
-  // ⭐ ตรวจสอบว่ามีแค่ Header หรือไม่
-  if (data.length <= 1) {
-    console.log(`[GetSheetData] Sheet '${sheetName}' has only header row.`);
-    return [];
-  }
-  
-  const result = [];
-  
-  for (let i = 0; i < data.length; i++) {
-    // ⭐ ข้าม Row 0 (Header)
-    if (i === 0 && data[i][0] === 'ID') {
-      continue;
-    }
-    
-    // ⭐ ข้าม Row ว่าง
-    if (!data[i][1] || data[i][1].toString().trim() === '') {
-      continue;
-    }
-    
-    try {
-      const parsed = JSON.parse(data[i][1]);
-      result.push(parsed);
-    } catch (e) {
-      console.error(`[GetSheetData] ❌ Error parsing row ${i} in ${sheetName}: ${e.toString()}`);
-      console.error(`[GetSheetData] Raw data: ${data[i][1]}`);
-    }
-  }
-  
-  console.log(`[GetSheetData] Loaded ${result.length} records from ${sheetName}`);
-  return result;
 }
 
 function saveDataToSheet(sheetName, id, dataObj) {
-  const sheet = getOrCreateSheet(sheetName);
-  const allData = sheet.getDataRange().getValues();
-  let rowIndex = -1;
-  for (let i = 0; i < allData.length; i++) {
-    if (allData[i][0] == id) {
-      rowIndex = i + 1; 
-      break;
-    }
-  }
-  const jsonString = JSON.stringify(dataObj);
-  if (rowIndex > 0) {
-    sheet.getRange(rowIndex, 2).setValue(jsonString);
-  } else {
-    sheet.appendRow([id, jsonString]);
-  }
+  // ใช้ UPSERT (ถ้ามี ID นี้แล้วให้ทับ ถ้าไม่มีให้สร้างใหม่)
+  const record = {
+    id: id.toString(), // บังคับเป็น String
+    payload: dataObj   // เก็บข้อมูลก้อนใหญ่ใน jsonb
+  };
+  
+  // การเรียกใช้แบบ POST พร้อม header Prefer: resolution=merge-duplicates คือการทำ Upsert ใน Supabase
+  const table = sheetName.toLowerCase();
+  const url = `${SUPABASE_URL}/rest/v1/${table}`;
+  const options = {
+    method: 'post',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates' // ⭐ หัวใจสำคัญ: สั่งให้ทับถ้า ID ซ้ำ
+    },
+    payload: JSON.stringify(record)
+  };
+  
+  UrlFetchApp.fetch(url, options);
   return true;
 }
 
 function deleteDataFromSheet(sheetName, id) {
-  const sheet = getOrCreateSheet(sheetName);
-  const data = sheet.getDataRange().getValues();
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] == id) {
-      sheet.deleteRow(i + 1);
-      break;
-    }
-  }
+  // สั่งลบแถวที่ id ตรงกัน
+  callSupabase(sheetName, 'delete', null, `?id=eq.${id}`);
 }
 
 // --- FILE UPLOAD FUNCTIONS ---
