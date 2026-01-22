@@ -1945,7 +1945,12 @@ const confirmImportAssets = async () => {
         if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อรายการ`, 'error'); return; }
         if (!item.serial) { showToast(`รายการที่ ${line}: ขาด Serial No.`, 'error'); return; }
         if (!item.price && item.price !== 0) { showToast(`รายการที่ ${line}: ขาดราคา`, 'error'); return; }
+        const validStatuses = ['Available', 'Borrowed', 'Lost', 'Damaged'];
         if (!item.status) { showToast(`รายการที่ ${line}: ขาดสถานะ`, 'error'); return; }
+        if (!validStatuses.includes(item.status)) { 
+            showToast(`รายการที่ ${line}: สถานะ "${item.status}" ไม่ถูกต้อง (ต้องเป็น Available, Borrowed, Lost, Damaged)`, 'error'); 
+            return; 
+        }
         
         if (item.id && assets.some(a => a.id === item.id)) {
             showToast(`รายการที่ ${line}: รหัสทรัพย์สิน "${item.id}" มีอยู่ในระบบแล้ว`, 'error'); return;
@@ -9847,7 +9852,17 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                                   <td className="px-3 py-2 text-gray-500">{row.rentalStart || '-'}</td>
                                                   <td className="px-3 py-2 text-gray-500">{row.rentalEnd || '-'}</td>
                                                   <td className="px-3 py-2 text-center">
-                                                      <span className={`px-2 py-0.5 rounded ${row.status === 'Available' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{row.status}</span>
+                                                       {/* ⭐ [แก้ไข] ตรวจสอบและแสดงสีแดงถ้า Status ผิด */}
+                                                       {['Available', 'Borrowed', 'Lost', 'Damaged'].includes(row.status) ? (
+                                                           <span className={`px-2 py-0.5 rounded ${row.status === 'Available' ?
+                                                               'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                                                               {row.status}
+                                                           </span>
+                                                       ) : (
+                                                           <span className="bg-red-100 text-red-600 px-2 py-0.5 rounded font-bold border border-red-200" title="ค่าที่ถูกต้อง: Available, Borrowed, Lost, Damaged">
+                                                               {row.status || 'Empty'} (?)
+                                                           </span>
+                                                       )}
                                                   </td>
                                                   <td className={`px-3 py-2 ${row.status === 'Borrowed' && (!row.holder || row.holder === '-') ? 'bg-red-100 text-red-600 font-bold' : ''}`}>{row.holder}</td>
                                                   <td className="px-3 py-2 text-gray-500 max-w-[150px] truncate" title={row.note}>{row.note}</td>
