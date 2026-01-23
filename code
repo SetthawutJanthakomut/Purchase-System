@@ -1318,12 +1318,13 @@ function uploadUserSignature(base64Data, fileName) {
 
 // --- NOTIFICATION SYSTEM (NEW) ---
 
-// ฟังก์ชันหลักสำหรับจัดการส่งเมลแจ้งเตือนตามสถานะ
+// --- NOTIFICATION SYSTEM (UPDATED FOR ROLLBACK) ---
+
 function handleStatusNotification(req) {
   const status = req.status;
   if (status === 'Draft') return;
 
-  // 1. หาอีเมลผู้ขอ
+  // 1. หาอีเมลผู้ขอ (เจ้าของ Order)
   const requesterEmail = findUserEmail(req.requester);
   
   // 2. หาอีเมลผู้รับผิดชอบขั้นตอนถัดไป
@@ -1336,7 +1337,7 @@ function handleStatusNotification(req) {
       }
   }
 
-  // 3. รวมรายชื่อผู้รับ
+  // 3. รวมรายชื่อผู้รับ (ผู้ขอ + ผู้อนุมัติขั้นถัดไป)
   let recipients = [requesterEmail, ...nextActorEmails]
       .filter(email => email && email.includes('@'))
       .map(e => e.trim());
@@ -1344,14 +1345,23 @@ function handleStatusNotification(req) {
 
   if (recipients.length === 0) return;
 
-  // ⭐ เปลี่ยนชื่อสถานะสำหรับแสดงผล (Display Logic)
+  // จัดการชื่อสถานะสำหรับแสดงผล
   let displayStatus = status;
   if (status === 'Pending Head') displayStatus = 'Pending Level 1';
   if (status === 'Pending PM') displayStatus = 'Pending Level 2';
 
-  // 4. สร้างเนื้อหาและส่ง (ระบุโครงการในหัวข้อตามโจทย์)
-  const subject = `[อัปเดตสถานะ: ${displayStatus}] ${req.id} - โครงการ ${req.job}`;
-  const body = createNotificationBody(req, displayStatus); // ส่ง displayStatus เข้าไป
+  // ⭐ [เพิ่มใหม่] ตรวจสอบว่าเป็น Rollback หรือไม่ (เช็คจาก Note ในประวัติล่าสุด)
+  let subjectPrefix = `[อัปเดตสถานะ: ${displayStatus}]`;
+  
+  const lastLog = req.history && req.history.length > 0 ? req.history[req.history.length - 1] : null;
+  // ถ้า Note มีคำว่า Rollback ให้เปลี่ยนหัวข้อเมล
+  if (lastLog && lastLog.note && (lastLog.note.includes('Rollback') || lastLog.note.includes('ย้อนกลับ'))) {
+      subjectPrefix = `[แจ้งเตือน: ย้อนสถานะ (Rollback) กลับเป็น ${displayStatus}]`;
+  }
+
+  // 4. สร้างเนื้อหาและส่ง
+  const subject = `${subjectPrefix} ${req.id} - โครงการ ${req.job}`;
+  const body = createNotificationBody(req, displayStatus);
 
   recipients.forEach(email => {
       try {
@@ -1362,7 +1372,6 @@ function handleStatusNotification(req) {
       }
   });
 }
-
 // ฟังก์ชันจับคู่สถานะ -> สิทธิ์ของผู้ที่ต้องทำรายการต่อ
 function getPermissionForStatus(req) {
   switch (req.status) {
