@@ -711,17 +711,7 @@ function syncRequest(request) {
 
 // --- HELPER FUNCTIONS ---
 
-function getOrCreateSheet(sheetName) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-    if (['Projects', 'Inventory', 'Assets', 'Requests', 'Users'].includes(sheetName)) {
-      sheet.appendRow(['ID', 'JSON_Data']); 
-    }
-  }
-  return sheet;
-}
+
 
 // แก้ไขฟังก์ชัน getSheetData ใน Code.gs
 function getSheetData(sheetName) {
@@ -1095,77 +1085,34 @@ function sendUsernameToEmail(email) {
 
 // --- [เพิ่มฟังก์ชันนี้ที่ท้ายไฟล์ Code.gs] ---
 
-// ฟังก์ชันสำหรับอัปเดตชื่อผู้ทำรายการในประวัติ (Logs) เมื่อมีการเปลี่ยนชื่อ/รหัส
-function updateHistoryLogSignature(oldSignature, newSignature) {
-  console.log(`[UpdateLog] Changing from "${oldSignature}" to "${newSignature}"`);
-  
-  const sheet = getOrCreateSheet('Logs');
-  const data = sheet.getDataRange().getValues();
-  let updateCount = 0;
-  
-  // เริ่มวนลูปตั้งแต่แถวที่ 2 (index 1) เพื่อข้าม Header
-  for (let i = 1; i < data.length; i++) {
-    // data[i][1] คือคอลัมน์ JSON_Data
-    if (!data[i][1]) continue;
-    
-    try {
-      let log = JSON.parse(data[i][1]);
-      
-      // ถ้าชื่อคนทำรายการ (by) ตรงกับชื่อเก่า
-      if (log.by === oldSignature) {
-        log.by = newSignature; // เปลี่ยนเป็นชื่อใหม่
-        
-        // บันทึกกลับลงไปใน Sheet (แถว i+1 เพราะ index เริ่มที่ 0 แต่ Sheet เริ่มที่ 1)
-        sheet.getRange(i + 1, 2).setValue(JSON.stringify(log));
-        updateCount++;
-      }
-    } catch (e) {
-      console.error(`[UpdateLog] Error parsing row ${i + 1}: ${e.toString()}`);
-    }
-  }
-  
-  console.log(`[UpdateLog] Updated ${updateCount} records.`);
-  return { success: true, count: updateCount };
-}
+
 
 // ฟังก์ชันอัปเดตข้อมูลผู้ใช้ในทุก Sheet (Requests, Assets, Logs)
 // --- [Code.gs] ---
 
-// ฟังก์ชันอัปเดตข้อมูลย้อนหลังทั่วทั้งระบบ (Global Update) - ฉบับปรับปรุง
+// ⭐ ฟังก์ชันอัปเดตข้อมูลย้อนหลังทั่วทั้งระบบ (Global Update) - ฉบับ Supabase
 function updateUserGlobalData(oldData, newData) {
   console.log(`[GlobalUpdate] Starting... from ${oldData.empId} to ${newData.empId}`);
-  
-  // 1. เตรียมรูปแบบข้อมูลใหม่ (New Data)
+
+  // 1. เตรียมรูปแบบข้อมูลใหม่
   const newFullSig = `${newData.empId} ${newData.firstName} ${newData.lastName}`;
   const newShortName = `${newData.firstName} ${newData.lastName}`;
 
-  // 2. สร้างรายการรูปแบบข้อมูลเก่าที่เป็นไปได้ทั้งหมด (Possible Old Patterns)
-  // เพื่อให้ดักจับข้อมูลได้ครอบคลุมที่สุด ไม่ว่าจะเก็บแบบไหน
+  // 2. รูปแบบข้อมูลเก่าที่ต้องการค้นหา
   const oldPatterns = [
-    // แบบเต็ม: "2EN-3000 Level No1"
     `${oldData.empId} ${oldData.firstName} ${oldData.lastName}`,
-    // แบบมี Email ต่อท้าย
     `${oldData.empId} ${oldData.firstName} ${oldData.lastName} (Email)`,
-    // แบบสั้น: "Level No1"
     `${oldData.firstName} ${oldData.lastName}`,
-    // ⭐ แบบกึ่งเต็ม (ID + ชื่อหน้า): "2EN-3000 Level" (กรณี Approver บางทีเก็บไม่ครบ)
     `${oldData.empId} ${oldData.firstName}`,
-    // ⭐ แบบ ID อย่างเดียว (เช็คแบบ StartWith): "2EN-3000"
-    oldData.empId 
+    oldData.empId
   ];
 
-  // Helper: ฟังก์ชันเช็คว่าค่าในเซลล์ตรงกับ Pattern เก่าหรือไม่
   const isMatch = (value) => {
     if (!value || typeof value !== 'string') return false;
     const val = value.trim();
-    // วนลูปเช็คทุก Pattern
     return oldPatterns.some(pattern => {
-      // ถ้า Pattern เป็น ID ล้วนๆ ให้เช็คว่า "ขึ้นต้นด้วย" (เพื่อความแม่นยำ)
-      if (pattern === oldData.empId) {
-        return val.startsWith(pattern); 
-      }
-      // กรณีอื่นเช็คแบบตรงตัว
-      return val === pattern || val.replace(/\s+/g, ' ') === pattern; 
+      if (pattern === oldData.empId) return val.startsWith(pattern);
+      return val === pattern || val.replace(/\s+/g, ' ') === pattern;
     });
   };
 
@@ -1173,86 +1120,62 @@ function updateUserGlobalData(oldData, newData) {
   let countLog = 0;
   let countAsset = 0;
 
-  // --- 1. อัปเดต Sheet "Requests" ---
-  const reqSheet = getOrCreateSheet('Requests');
-  const reqData = reqSheet.getDataRange().getValues();
-  
-  for (let i = 1; i < reqData.length; i++) {
-    if (!reqData[i][1]) continue;
-    try {
-      let req = JSON.parse(reqData[i][1]);
-      let changed = false;
+  // --- Helper ดึงข้อมูลพร้อม ID (เพราะ Logs ไม่มี ID ใน Payload) ---
+  const getTableData = (table) => {
+    const res = callSupabase(table, 'get', null, '?select=id,payload');
+    const data = JSON.parse(res);
+    return Array.isArray(data) ? data : [];
+  };
 
-      // 1.1 แก้ชื่อผู้ขอ (Requester)
-      if (isMatch(req.requester)) {
-        req.requester = newShortName; // ปกติ requester ใช้ชื่อสั้น
-        changed = true;
-      }
+  // --- 1. อัปเดตตาราง Requests ---
+  const requestRows = getTableData('Requests');
+  requestRows.forEach(row => {
+    let req = row.payload;
+    let changed = false;
 
-      // 1.2 แก้ผู้อนุมัติ (Approver L1, L2) -> จุดที่เคยมีปัญหา
-      if (isMatch(req.approverL1)) { 
-        req.approverL1 = newFullSig; 
-        changed = true; 
-      }
-      if (isMatch(req.approverL2)) { 
-        req.approverL2 = newFullSig; 
-        changed = true; 
-      }
+    // แก้ไขชื่อผู้ขอและผู้อนุมัติ
+    if (isMatch(req.requester)) { req.requester = newShortName; changed = true; }
+    if (isMatch(req.approverL1)) { req.approverL1 = newFullSig; changed = true; }
+    if (isMatch(req.approverL2)) { req.approverL2 = newFullSig; changed = true; }
 
-      // 1.3 แก้ใน History Array
-      if (req.history && Array.isArray(req.history)) {
-        req.history.forEach(h => {
-          if (isMatch(h.user)) {
-            h.user = newFullSig;
-            changed = true;
-          }
-        });
-      }
-
-      if (changed) {
-        reqSheet.getRange(i + 1, 2).setValue(JSON.stringify(req));
-        countReq++;
-      }
-    } catch (e) {
-      console.error(`Error parsing Request row ${i+1}: ${e.toString()}`);
+    // แก้ไขใน History
+    if (req.history && Array.isArray(req.history)) {
+      req.history.forEach(h => {
+        if (isMatch(h.user)) { h.user = newFullSig; changed = true; }
+      });
     }
-  }
 
-  // --- 2. อัปเดต Sheet "Logs" (ประวัติรวม) ---
-  const logSheet = getOrCreateSheet('Logs');
-  const logData = logSheet.getDataRange().getValues();
-  for (let i = 1; i < logData.length; i++) {
-    if (!logData[i][1]) continue;
-    try {
-      let log = JSON.parse(logData[i][1]);
-      
-      if (isMatch(log.by)) {
-        log.by = newFullSig;
-        logSheet.getRange(i + 1, 2).setValue(JSON.stringify(log));
-        countLog++;
-      }
-    } catch (e) {}
-  }
+    if (changed) {
+      saveDataToSheet('Requests', row.id, req);
+      countReq++;
+    }
+  });
 
-  // --- 3. อัปเดต Sheet "Assets" (ผู้ถือครอง) ---
-  const assetSheet = getOrCreateSheet('Assets');
-  const assetData = assetSheet.getDataRange().getValues();
-  for (let i = 1; i < assetData.length; i++) {
-    if (!assetData[i][1]) continue;
-    try {
-      let asset = JSON.parse(assetData[i][1]);
-      
-      if (isMatch(asset.holder)) {
-        asset.holder = newShortName;
-        assetSheet.getRange(i + 1, 2).setValue(JSON.stringify(asset));
-        countAsset++;
-      }
-    } catch (e) {}
-  }
+  // --- 2. อัปเดตตาราง Logs (ประวัติรวม) ---
+  const logRows = getTableData('Logs');
+  logRows.forEach(row => {
+    let log = row.payload;
+    if (isMatch(log.by)) {
+      log.by = newFullSig;
+      saveDataToSheet('Logs', row.id, log);
+      countLog++;
+    }
+  });
 
-  return { 
-    success: true, 
-    message: `อัปเดตข้อมูลย้อนหลังสำเร็จ: เอกสาร(${countReq}), ประวัติ(${countLog}), ทรัพย์สิน(${countAsset})` 
+  // --- 3. อัปเดตตาราง Assets (ผู้ถือครอง) ---
+  const assetRows = getTableData('Assets');
+  assetRows.forEach(row => {
+    let asset = row.payload;
+    if (isMatch(asset.holder)) {
+      asset.holder = newShortName;
+      saveDataToSheet('Assets', row.id, asset);
+      countAsset++;
+    }
+  });
+
+  return {
+    success: true,
+    message: `อัปเดตข้อมูลย้อนหลังสำเร็จ: เอกสาร(${countReq}), ประวัติ(${countLog}), ทรัพย์สิน(${countAsset})`
   };
 }
 
