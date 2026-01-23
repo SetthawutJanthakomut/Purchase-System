@@ -143,30 +143,51 @@ function processEmailAction(e) {
 
   if (reqIndex === -1) return HtmlService.createHtmlOutput("<h2>❌ ไม่พบเอกสาร</h2>");
 
-  let req = requests[reqIndex];
+let req = requests[reqIndex];
   
-  // Validation Check
-  if ((role === 'Head' && req.status !== 'Pending Head') || (role === 'PM' && req.status !== 'Pending PM')) {
-     return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว</h2>");
+  // ⭐⭐ [แก้ไข] Validation Check: เพิ่ม role 'Approver'
+  const isWithdrawOrBorrow = (req.type === 'Withdraw' || req.type === 'Borrow');
+  let isValidRole = false;
+
+  if (role === 'Head' && req.status === 'Pending Head') isValidRole = true;
+  else if (role === 'PM' && req.status === 'Pending PM') isValidRole = true;
+  else if (isWithdrawOrBorrow && role === 'PM' && req.status === 'Pending Head') isValidRole = true;
+  // ✅ เพิ่ม: ถ้าเป็น Role 'Approver' (มาจากเมลรวม) ถือว่าผ่านเสมอสำหรับงานเบิก/ยืมที่ยังรออนุมัติ
+  else if (role === 'Approver' && isWithdrawOrBorrow && req.status === 'Pending Head') isValidRole = true;
+
+  if (!isValidRole) {
+     return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว หรือคุณไม่มีสิทธิ์ในสถานะปัจจุบัน</h2>");
   }
 
-  // Update Status Logic
+  // ⭐⭐ [แก้ไข] Update Status Logic
   let newStatus = '';
   let logNote = '';
   if (action === 'approve') {
-    if (role === 'Head') {
-      if (req.type === 'Withdraw' || req.type === 'Borrow') {
+    // กรณี เบิก/ยืม: ไม่ว่าใครกด (Head/PM) ให้ไปสถานะรอจ่ายของทันที
+    if (isWithdrawOrBorrow) {
         newStatus = 'Ready to Disburse';
-      } else {
-        newStatus = 'Pending PM';
-      }
-    } else if (role === 'PM') {
-      newStatus = 'Approved';
+    } 
+    // กรณี ซื้อ (Local/HO): เป็นไปตาม Step เดิม
+    else {
+        if (role === 'Head') {
+            newStatus = 'Pending PM';
+        } else if (role === 'PM') {
+            newStatus = 'Approved';
+        }
     }
     logNote = `Approved via Email by ${approver}`;
   } else if (action === 'confirm_reject') { 
     newStatus = 'Rejected';
     logNote = `Rejected via Email by ${approver}: ${customNote}`; 
+  }
+
+  if (!req.docNumber && (newStatus === 'Approved' || newStatus === 'Ready to Disburse')) {
+      // เรียกใช้ฟังก์ชันที่เพิ่งเพิ่มเข้าไป
+      const count = getNextDocIndex(requests, req.type, req.purchaseType);
+      req.docNumber = generateDocId(req.type, count, req.purchaseType);
+      
+      // บันทึก Log เพิ่มเติมว่าระบบสร้างเลขให้แล้ว
+      logNote += ` (Generated Doc No: ${req.docNumber})`;
   }
 
   // Save Data
@@ -644,11 +665,30 @@ function syncRequest(request) {
   // 1. บันทึกข้อมูล (เหมือนเดิม)
   const result = saveDataToSheet('Requests', request.id, request);
   
-  // 2. ระบบส่งเมลอนุมัติเดิม (Approval Buttons) - เก็บไว้เหมือนเดิม
+// 2. ระบบส่งเมลอนุมัติ (Approval Buttons)
   try {
       if (request.status === 'Pending Head') {
-          const headEmails = findApproverEmails(request.job, 8); 
-          if (headEmails) sendApprovalEmail(request, headEmails, 'Head');
+          // ⭐⭐ [แก้ไข] เช็คประเภทคำขอ ⭐⭐
+          if (request.type === 'Withdraw' || request.type === 'Borrow') {
+              // กรณีเบิก/ยืม: หาอีเมลทั้ง 2 ระดับ
+              const headEmails = findApproverEmails(request.job, 8); // Level 1
+              const pmEmails = findApproverEmails(request.job, 9);   // Level 2
+              
+              // รวมอีเมลเป็น string เดียวกัน (คั่นด้วย comma)
+              let recipients = [];
+              if (headEmails) recipients.push(headEmails);
+              if (pmEmails) recipients.push(pmEmails);
+              
+              // ถ้ามีคนรับ ให้ส่งครั้งเดียวโดยใช้ Role กลางว่า 'Approver'
+              if (recipients.length > 0) {
+                  const combinedEmails = recipients.join(',');
+                  sendApprovalEmail(request, combinedEmails, 'Approver'); 
+              }
+          } else {
+              // กรณีปกติ (ซื้อ Local/HO): ส่งตามลำดับขั้นเดิม
+              const headEmails = findApproverEmails(request.job, 8);
+              if (headEmails) sendApprovalEmail(request, headEmails, 'Head');
+          }
       }
       else if (request.status === 'Pending PM') {
           const pmEmails = findApproverEmails(request.job, 9);
@@ -658,7 +698,7 @@ function syncRequest(request) {
       console.error("❌ [SyncRequest] Approval Email FAILED: " + e.toString());
   }
 
-  // 3. ⭐⭐ [เพิ่มใหม่] ระบบแจ้งเตือนสถานะ (Notification) ⭐⭐
+  // 3. ระบบแจ้งเตือนสถานะ (Notification) (เหมือนเดิม)
   try {
       handleStatusNotification(request);
   } catch (e) {
@@ -1423,4 +1463,34 @@ function createNotificationBody(req, displayStatus) {
         </div>
     </div>
   `;
+}
+
+// --- เพิ่มฟังก์ชันสำหรับสร้างเลข Doc No. ใน Backend (ท้ายไฟล์ code.gs) ---
+
+function getNextDocIndex(allRequests, type, purchaseType) {
+  return allRequests.filter(r => {
+    if (!r.docNumber) return false;
+    if (r.type !== type) return false;
+    if (type === 'HO') return r.purchaseType === purchaseType;
+    return true;
+  }).length;
+}
+
+function generateDocId(type, index, purchaseType) {
+  const now = new Date();
+  const timeZone = "GMT+7";
+  const year = Utilities.formatDate(now, timeZone, "yy");
+  const month = Utilities.formatDate(now, timeZone, "MM");
+  const runNo = (index + 1).toString().padStart(3, '0');
+  
+  switch(type) {
+      case 'Local': return `LPO-${year}${month}-${runNo}`;
+      case 'HO': 
+          return purchaseType === 'Rent' 
+              ? `HRO-${year}${month}-${runNo}` 
+              : `HPO-${year}${month}-${runNo}`;
+      case 'Withdraw': return `WID-${year}${month}-${runNo}`;
+      case 'Borrow': return `BOR-${year}${month}-${runNo}`;
+      default: return `DOC-${year}${month}-${runNo}`;
+  }
 }
