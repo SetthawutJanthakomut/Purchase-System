@@ -2547,61 +2547,80 @@ const selectSuggestion = (item) => {
     }
 };
 
-// --- LOGIC: Add Item & Validation (ตรวจสอบก่อนเพิ่ม) ---
-      const handleAddItem = () => {
+const handleAddItem = () => {
         if (!tempItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
         
         const currentType = newOrderMeta.type;
 
-// 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
-if (currentType === 'Withdraw') {
-    // ⭐ เช็คทั้งชื่อ และ โครงการ
-    const stockItem = inventory.find(i => i.name === tempItem.name && i.project === newOrderMeta.job);
-    
-    if (!stockItem) {
-        showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลังของโครงการ ${newOrderMeta.job}`, 'error');
-        return;
-    }
-    if (tempItem.qty > stockItem.qty) {
-        showToast(`จำนวนในคลังไม่พอ (มี: ${stockItem.qty} ${stockItem.unit})`, 'error');
-        return;
-    }
-}
+        // 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
+        if (currentType === 'Withdraw') {
+            const stockItem = inventory.find(i => i.name === tempItem.name && i.project === newOrderMeta.job);
+            if (!stockItem) {
+                showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลังของโครงการ ${newOrderMeta.job}`, 'error');
+                return;
+            }
+
+            // ⭐ [เพิ่ม] คำนวณยอดที่ถูกจองในใบอื่นที่ยังไม่จบงาน (Active Requests)
+            const activeRequests = requests.filter(r => 
+                r.id !== editingId && // ไม่นับใบปัจจุบัน (กรณีแก้ไข)
+                !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) && // สถานะที่ถือว่า Active
+                r.job === newOrderMeta.job && 
+                r.type === 'Withdraw'
+            );
+            
+            const reservedQty = activeRequests.reduce((sum, req) => {
+                const sameItem = req.items.find(i => i.name === tempItem.name);
+                return sum + (sameItem ? (sameItem.qty || 0) : 0);
+            }, 0);
+
+            const realAvailable = stockItem.qty - reservedQty;
+
+            if (tempItem.qty > realAvailable) {
+                showToast(`จำนวนในคลังไม่พอ (มี: ${stockItem.qty}, รอจ่ายใบอื่น: ${reservedQty}, คงเหลือจริง: ${realAvailable})`, 'error');
+                return;
+            }
+        }
 
         // 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow)
         if (currentType === 'Borrow') {
-            // ต้องเลือกจากรายการที่มีอยู่จริงเท่านั้น (ต้องมี Asset ID)
             if (!tempItem.assetId) {
-                showToast(`กรุณาเลือกทรัพย์สินจากรายการ (กดปุ่ม 3 ขีด)`, 'error');
+                showToast(`กรุณาเลือกทรัพย์สินจากรายการ (กดปุ่ม 3 ขีด)`, 'error'); return;
+            }
+            // เช็คว่าเลือกรายการซ้ำในใบเดียวกันหรือไม่
+            if (orderItems.some(item => item.assetId === tempItem.assetId)) {
+                showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error'); return;
+            }
+
+            // ⭐ [เพิ่ม] ตรวจสอบว่า Asset นี้ติดอยู่ในใบอื่นที่รออนุมัติ/รอจ่าย หรือไม่
+            const pendingRequests = requests.filter(r => 
+                r.id !== editingId &&
+                !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) && 
+                r.type === 'Borrow'
+            );
+            
+            const isPendingElsewhere = pendingRequests.some(r => 
+                r.items.some(i => i.assetId === tempItem.assetId)
+            );
+
+            if (isPendingElsewhere) {
+                showToast(`ทรัพย์สินนี้อยู่ในระหว่างการยืม/รออนุมัติ ในเอกสารอื่น`, 'error');
                 return;
             }
 
-            // เช็คว่าเลือกรายการซ้ำหรือไม่ (ในรายการที่กำลังจะส่ง)
-            const isDuplicate = orderItems.some(item => item.assetId === tempItem.assetId);
-            if (isDuplicate) {
-                showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error');
-                return;
-            }
-
-            // เช็คสถานะจากข้อมูลจริง (Real-time check)
+            // เช็คสถานะ Real-time (Asset Table)
             const assetRealtime = assets.find(a => a.id === tempItem.assetId);
-            if (!assetRealtime) {
-                 showToast(`ไม่พบข้อมูลทรัพย์สินนี้ในระบบ`, 'error');
-                 return;
-            }
-            if (assetRealtime.status !== 'Available') {
-                 showToast(`ทรัพย์สินไม่ว่าง: ${tempItem.name} (สถานะ: ${assetRealtime.status})`, 'error');
+            if (!assetRealtime || assetRealtime.status !== 'Available') {
+                 showToast(`ทรัพย์สินไม่ว่าง: ${tempItem.name} (สถานะ: ${assetRealtime ? assetRealtime.status : 'N/A'})`, 'error');
                  return;
             }
         }
 
         // ผ่านทุกเงื่อนไข -> เพิ่มรายการ
         setOrderItems([...orderItems, { ...tempItem }]);
-        
-        // Reset Form
         setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '' });
-        setStockSuggestion(null); // Clear suggestion
+        setStockSuggestion(null); 
       };
+
 
 const handleEditItem = (index) => {
           const itemToEdit = orderItems[index];
@@ -2633,50 +2652,93 @@ const getItemLatestImage = (item) => {
     return null;
 };
 
+// [Code เดิม]
+// const getSelectionItems = () => {
+//     const type = newOrderMeta.type;
+//     const targetProject = newOrderMeta.job;
+//     let items = [];
+//     if (!targetProject) return [];
+//     const today = new Date(); today.setHours(0, 0, 0, 0);
+//     const projectInventory = inventory.filter(i => i.project === targetProject);
+//     const projectAssets = assets.filter(a => { ... });
+//     ...
+
+// [Code ใหม่]
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
-    const targetProject = newOrderMeta.job; // ⭐ กรองตามโครงการที่เลือก
-    let items = [];
+    const targetProject = newOrderMeta.job;
     
-    // ถ้ายังไม่ได้เลือกโครงการ ให้คืนค่าว่าง (บังคับเลือกโครงการก่อน)
+    // ถ้ายังไม่ได้เลือกโครงการ ให้คืนค่าว่าง
     if (!targetProject) return [];
 
-    // วันที่ปัจจุบันสำหรับเช็คหมดสัญญา
+    // เตรียมข้อมูล Active Requests ในโครงการนี้
+    const activeRequests = requests.filter(r => 
+        r.id !== editingId &&
+        !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
+        r.job === targetProject
+    );
+
+    // 1. กรอง Inventory: หักยอดจอง (Reserved)
+    let projectInventory = inventory
+        .filter(i => i.project === targetProject)
+        .map(inv => {
+            // ถ้าเป็นการเบิก ให้คำนวณยอดจองล่วงหน้า
+            if (type === 'Withdraw') {
+                const reserved = activeRequests
+                    .filter(r => r.type === 'Withdraw')
+                    .reduce((sum, req) => {
+                        const item = req.items.find(i => i.name === inv.name);
+                        return sum + (item ? (item.qty || 0) : 0);
+                    }, 0);
+                // คืนค่า object ใหม่ที่มี qty ลดลงตามยอดจอง
+                return { ...inv, qty: Math.max(0, inv.qty - reserved) };
+            }
+            return inv; 
+        })
+        .filter(i => {
+            // ถ้าเป็นการเบิก และของหมด(หลังหักยอดจอง) ไม่ต้องแสดง
+            if (type === 'Withdraw') return i.qty > 0;
+            return true;
+        });
+
+    // 2. กรอง Assets: ซ่อนตัวที่ติด Pending
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // 1. กรอง Inventory ตามโครงการ
-    const projectInventory = inventory.filter(i => i.project === targetProject);
+    // รวบรวม Asset IDs ที่กำลังถูกยืมในใบอื่น (Pending)
+    const busyAssetIds = new Set(
+        activeRequests
+            .filter(r => r.type === 'Borrow')
+            .flatMap(r => r.items)
+            .map(i => i.assetId)
+            .filter(id => id)
+    );
 
-    // 2. กรอง Assets (Project + Available + Not Expired)
     const projectAssets = assets.filter(a => {
-        // 2.1 ต้องตรงโครงการ
         if (a.project !== targetProject) return false;
-        
-        // 2.2 ต้องสถานะ Available เท่านั้น (ตามโจทย์)
         if (a.status !== 'Available') return false;
 
-        // 2.3 ต้องไม่หมดอายุสัญญา (เฉพาะของเช่า)
+        // ⭐ Filter: ถ้าติดอยู่ใน Active Request ใบอื่น (Busy) ให้ซ่อน
+        if (type === 'Borrow' && busyAssetIds.has(a.id)) return false;
+
         if (a.ownerType === 'Rent' && a.rentalEnd) {
             const endDate = new Date(a.rentalEnd);
             if (!isNaN(endDate.getTime())) {
                 endDate.setHours(0, 0, 0, 0);
-                // ถ้าวันสิ้นสุด น้อยกว่า วันนี้ = หมดอายุ -> ไม่แสดง
                 if (endDate < today) return false;
             }
         }
         return true;
     });
 
-    // 3. กำหนด Source ตามประเภทคำขอ
+    // 3. รวมรายการตามประเภทคำขอ
+    let items = [];
     if (type === 'Local' || type === 'Withdraw') {
         items = projectInventory;
     } else if (type === 'HO') {
-        // HO เลือกได้ทั้ง Inventory และ Assets (ที่ผ่านเงื่อนไขแล้ว)
         items = [...projectInventory, ...projectAssets];
     } else if (type === 'Borrow') {
-        // Borrow ใช้ Assets ที่ผ่านเงื่อนไขแล้ว
-        items = projectAssets; 
+        items = projectAssets;
     }
 
     // 4. Search Logic
@@ -5246,6 +5308,9 @@ filteredRequests.map(req => {
       {(() => {
             // 1. ฟังก์ชันหาสถานะก่อนหน้า
             const getPrevStatus = (r) => {
+                // ⭐ เพิ่มเงื่อนไขนี้: ถ้าสถานะเป็น "Ordered" ให้ย้อนกลับไป "Approved"
+                if (r.status === 'Ordered') return 'Approved';
+
                 if (r.status === 'PR Issued') return 'Approved';
                 if (r.status === 'PO Issued') return 'PR Issued';
                 if (r.status === 'Contract Pending') return 'Approved';
@@ -5253,7 +5318,6 @@ filteredRequests.map(req => {
                 if (r.status === 'Shipping') return r.purchaseType === 'Rent' ? 'Contract Signed' : 'PO Issued';
                 return null;
             };
-
             const prevStatus = getPrevStatus(req);
             
             // 2. ถ้ามีสถานะย้อนกลับได้ ให้เช็คสิทธิ์
