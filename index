@@ -3621,16 +3621,28 @@ const handleConfirmVerification = () => {
              return; // หยุดการทำงาน ไม่ให้บันทึก
          }
 
-         if (isChangeMode) {
+   if (isChangeMode) {
+             // 1. กำหนดประเภทใหม่ที่ต้องการเปลี่ยน
+             const newType = 'HO'; 
+             const newPurchaseType = 'Buy'; // (ปกติเปลี่ยนจาก Local จะเป็น HO ซื้อขาด)
+
+             // 2. ⭐ สำคัญ: สั่งนับเลขใหม่ โดยนับเฉพาะใบที่เป็น HO (Buy) ที่มีอยู่แล้ว
+             const count = getNextDocIndex(requests, newType, newPurchaseType);
+             
+             // 3. ⭐ สร้างเลข ID ใหม่ (จะได้เลขต่อจาก HPO ใบสุดท้าย)
+             const newDocId = generateDocId(newType, count, newPurchaseType);
+
              updatedReq = { 
                  ...req, 
-                 type: 'HO', 
+                 type: newType, 
                  status: 'Approved', 
-                 purchaseType: 'Buy', 
+                 purchaseType: newPurchaseType, 
+                 docNumber: newDocId, // ✅ เอาเลขใหม่ (HPO-xxx) ทับเลขเก่า (LPO-xxx) ทันที
                  needContract: needContract,
-                 history: [...req.history, createLog('Change to HO (Verified)', actionBy, `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว: ${note}`)] 
+                 history: [...req.history, createLog('Change to HO (Verified)', actionBy, `เปลี่ยนเป็น HO (เลขที่ใหม่: ${newDocId}) และตรวจสอบผ่านแล้ว: ${note}`)] 
              };
-             toastMessage = 'เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว (รอออก PR)';
+             
+             toastMessage = `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว (เลขที่ใหม่: ${newDocId})`;
          }
          else if (needApproval) {
              updatedReq = { 
