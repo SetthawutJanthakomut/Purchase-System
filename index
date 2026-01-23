@@ -1736,20 +1736,39 @@ useEffect(() => {
         }).loadInitialData();
       }, []);
 
+useEffect(() => {
+  setIsLoading(true);
+  
+  // 1. โหลดข้อมูลหลักก่อน (เร็วขึ้นเพราะไม่มี Logs)
+  google.script.run.withSuccessHandler((data) => {
+     if(data.requests) setRequests(data.requests);
+     if(data.inventory) setInventory(data.inventory);
+     if(data.assets) setAssets(data.assets);
+     if(data.projects) setProjects(data.projects);
+     if(data.users) setAllUsers(data.users);
+     
+     // จัดการ Announcement
+     if (data.announcement && data.announcement.active) {
+         setAnnouncement(data.announcement);
+         setAnnounceForm({ title: data.announcement.title, detail: data.announcement.detail });
+     } else {
+         setAnnouncement(null);
+         setAnnounceForm({ title: '', detail: '' });
+     }
 
-// --- EFFECT: Load Data from Backend ---
-      useEffect(() => {
-        setIsLoading(true);
-        google.script.run.withSuccessHandler((data) => {
-           if(data.requests) setRequests(data.requests);
-           if(data.inventory) setInventory(data.inventory);
-           if(data.assets) setAssets(data.assets);
-           if(data.logs) setInvLogs(data.logs);
-           if(data.projects) setProjects(data.projects);
-           if(data.users) setAllUsers(data.users); // ⭐ เพิ่มบรรทัดนี้ครับ!
-           setIsLoading(false);
-        }).loadInitialData();
-      }, []);
+     setIsLoading(false); // ✅ หน้าเว็บพร้อมใช้งานทันทีตรงนี้!
+
+     // 2. แอบโหลด Logs ตามมาทีหลัง (Background Fetch)
+     // จะไม่ขัดจังหวะการใช้งาน User
+     google.script.run.withSuccessHandler((logs) => {
+         if(logs && logs.length > 0) {
+             setInvLogs(logs);
+             // showToast('อัปเดตประวัติการทำงานล่าสุดแล้ว', 'info'); // (Optional) แจ้งเตือนเมื่อ Logs มาถึง
+         }
+     }).getRecentLogs(100); // โหลดแค่ 100 รายการล่าสุด
+
+  }).loadInitialData();
+}, []);
 
 
       // State from original file
@@ -8833,6 +8852,26 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                 ))}</tbody>
                             </table>
                             {filteredLogs.length === 0 && <div className="p-12 text-center text-gray-400 flex flex-col items-center"><Search className="w-12 h-12 mb-3 opacity-20"/>ไม่พบรายการประวัติที่ค้นหา</div>}
+                            
+                            {/* ⭐⭐⭐ เพิ่มปุ่ม Load More ตรงนี้ ⭐⭐⭐ */}
+                            <div className="p-4 text-center bg-gray-50 border-t border-gray-200">
+                                <button 
+                                    onClick={() => {
+                                        if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
+                                        setIsLoading(true);
+                                        // เรียกฟังก์ชัน backend เพื่อโหลดข้อมูลจำนวนมาก
+                                        google.script.run.withSuccessHandler((logs) => {
+                                            if (logs) setInvLogs(logs);
+                                            setIsLoading(false);
+                                            showToast('โหลดประวัติครบถ้วนแล้ว');
+                                        }).getRecentLogs(2000); // 👈 ระบุจำนวนที่ต้องการโหลดเพิ่ม
+                                    }}
+                                    className="text-blue-600 hover:text-blue-800 text-sm font-bold underline transition-colors flex items-center justify-center gap-2 mx-auto"
+                                >
+                                    <RefreshCw size={14}/> โหลดประวัติย้อนหลังเพิ่มเติม (Load More Logs)
+                                </button>
+                            </div>
+
                         </div>
                     </div>
 
@@ -9947,10 +9986,16 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
          </div>
       )}
 
-{/* --- IMPORT ASSETS MODAL (FULL COLUMNS) --- */}
-      {showImportAssetModal && (
-          <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[100] p-4 backdrop-blur-sm animate-in fade-in">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
+{showImportAssetModal && (
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[100] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
+            
+            {/* ⭐⭐⭐ เพิ่มส่วนนี้: สร้างรายการตัวเลือกผู้ใช้ ⭐⭐⭐ */}
+            <datalist id="import-user-list">
+                {allUsers.map((u, i) => (
+                    <option key={i} value={`${u.firstName} ${u.lastName}`}>{u.empId}</option>
+                ))}
+            </datalist>
                   
                   {/* Header */}
                   <div className="px-6 py-4 border-b flex justify-between items-center bg-white">
@@ -10138,8 +10183,21 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
 
                                                   {/* Holder */}
                                                   <td className="px-2 py-1">
-                                                      <input type="text" list="user-list-options" disabled={row.status !== 'Borrowed'} className={`w-full border-b outline-none transition-colors ${row.status === 'Borrowed' ? (!row.holder || row.holder === '-' ? 'bg-red-50 border-red-300 text-red-600 focus:border-blue-500' : 'bg-transparent border-transparent focus:border-blue-500') : 'bg-gray-100 text-gray-400 border-transparent cursor-not-allowed'}`} value={row.status === 'Borrowed' ? row.holder : ''} placeholder={row.status === 'Borrowed' ? "ระบุชื่อ..." : "-"} onChange={e => { const newData = [...importData]; newData[idx].holder = e.target.value; setImportData(newData); }}/>
-                                                  </td>
+    <input 
+        type="text" 
+        list="import-user-list"  // ⭐ แก้ตรงนี้: ให้ตรงกับ ID ของ datalist ด้านบน
+        disabled={row.status !== 'Borrowed'} 
+        className={`w-full border-b outline-none transition-colors ${row.status === 'Borrowed' ?
+            (!row.holder || row.holder === '-' ? 'bg-red-50 border-red-300 text-red-600 focus:border-blue-500' : 'bg-transparent border-transparent focus:border-blue-500') : 'bg-gray-100 text-gray-400 border-transparent cursor-not-allowed'}`} 
+        value={row.status === 'Borrowed' ? row.holder : ''} 
+        placeholder={row.status === 'Borrowed' ? "ระบุชื่อหรือเลือก..." : "-"} 
+        onChange={e => { 
+            const newData = [...importData]; 
+            newData[idx].holder = e.target.value;
+            setImportData(newData); 
+        }}
+    />
+</td>
 
                                                   {/* Note */}
                                                   <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const newData = [...importData]; newData[idx].note = e.target.value; setImportData(newData); }}/></td>
@@ -11220,6 +11278,26 @@ onClick={async () => {
                                     )) : <tr><td colSpan="4" className="p-10 text-center text-gray-400">ไม่พบประวัติการทำงาน</td></tr>}
                                 </tbody>
                             </table>
+                            
+                            {/* ⭐⭐⭐ เพิ่มปุ่ม Load More ตรงนี้ ⭐⭐⭐ */}
+                            <div className="p-4 text-center border-t border-gray-100 bg-gray-50">
+                                <button 
+                                    onClick={() => {
+                                        if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
+                                        setIsLoading(true);
+                                        // เรียกฟังก์ชัน backend เพื่อโหลดข้อมูลจำนวนมาก (เช่น 1000 หรือ 5000 รายการ)
+                                        google.script.run.withSuccessHandler((logs) => {
+                                            if (logs) setInvLogs(logs);
+                                            setIsLoading(false);
+                                            showToast('โหลดประวัติทั้งหมดเรียบร้อย');
+                                        }).getRecentLogs(2000); // 👈 ระบุจำนวนที่ต้องการโหลดเพิ่ม
+                                    }}
+                                    className="text-indigo-600 hover:text-indigo-800 text-sm font-bold underline flex items-center justify-center gap-1 mx-auto transition-colors"
+                                >
+                                    <Clock size={14}/> โหลดประวัติเพิ่มเติม (Load All History)
+                                </button>
+                            </div>
+                            
                         </div>
                     );
                 })()}
