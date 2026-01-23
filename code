@@ -1,7 +1,7 @@
 // --- CONFIGURATION ---
 const SUPABASE_URL = 'https://cgrmoykqhqopxexkuzto.supabase.co'; // ใส่ Project URL ของคุณ
 const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); // ✅ ดึงจากตู้เซฟ
-const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
+
 
 
 function doGet(e) {
@@ -923,19 +923,35 @@ function saveUserData(user) {
 }
 
 function loadInitialData() {
-  // ดึงข้อมูลประกาศจาก Settings
   const settings = getSheetData('Settings');
   const announcement = settings.find(s => s.id === 'ANNOUNCEMENT') || null;
-
+  
   return {
     requests: getSheetData('Requests'),
     inventory: getSheetData('Inventory'),
     assets: getSheetData('Assets'),
-    logs: getSheetData('Logs'),
+    // logs: getSheetData('Logs'), // ❌ ปิดบรรทัดนี้ เพื่อไม่ให้โหลด Logs ก้อนยักษ์ตอนเปิดแอป
+    logs: [], // ✅ ส่ง Array ว่างกลับไปก่อนเพื่อให้หน้าเว็บไม่พัง
     projects: getSheetData('Projects'),
     users: getSheetData('Users'),
-    announcement: announcement // ⭐ ส่งข้อมูลประกาศกลับไป
+    announcement: announcement
   };
+}
+
+// ⭐ เพิ่มฟังก์ชันใหม่สำหรับโหลด Logs แยกต่างหาก
+// ดึงข้อมูลแค่ 100 รายการล่าสุด (ช่วยลดภาระได้มหาศาล)
+function getRecentLogs(limit = 100) {
+  // order=id.desc คือเรียงจาก id ล่าสุด (ถ้า id คุณรันตามเวลา)
+  // limit=100 คือเอาแค่ 100 รายการ
+  const params = `?select=payload&order=id.desc&limit=${limit}`; 
+  const jsonResponse = callSupabase('logs', 'get', null, params);
+  const data = JSON.parse(jsonResponse);
+  
+  if (Array.isArray(data)) {
+    return data.map(row => row.payload);
+  } else {
+    return [];
+  }
 }
 // 1. แก้ไขฟังก์ชันส่ง OTP ให้รับ empId มาเช็คด้วย
 function sendRegistrationOTP(email, username, empId) { // ⭐ รับพารามิเตอร์ empId เพิ่ม
