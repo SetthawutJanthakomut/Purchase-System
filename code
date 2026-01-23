@@ -1503,3 +1503,304 @@ function generateDocId(type, index, purchaseType) {
       default: return `DOC-${year}${month}-${runNo}`;
   }
 }
+
+
+// --- BUDGET SUMMARY EMAIL TRIGGER ---
+
+/**
+ * ฟังก์ชันสำหรับสร้าง Trigger ให้ส่งเมลทุกวันจันทร์ เวลา 09:00 น.
+ * วิธีใช้: กดเลือกฟังก์ชันนี้แล้วกด Run หนึ่งครั้งเพื่อเริ่มระบบ
+ */
+function setupBudgetSummaryTrigger() {
+  // ลบ Trigger เดิมกันซ้ำ
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'sendWeeklyBudgetSummary') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  
+  // สร้าง Trigger ใหม่: ทุกสัปดาห์ วันจันทร์ เวลา 09:00
+  ScriptApp.newTrigger('sendWeeklyBudgetSummary')
+      .timeBased()
+      .onWeekDay(ScriptApp.WeekDay.MONDAY)
+      .atHour(9)
+      .create();
+      
+  console.log("✅ Budget Summary Trigger setup complete.");
+}
+
+/**
+ * ฟังก์ชันหลักสำหรับส่งเมลสรุปยอด Budget
+ */
+function sendWeeklyBudgetSummary() {
+  console.log("[BudgetSummary] Starting report generation...");
+  
+  // 1. โหลดข้อมูลทั้งหมด
+  const projects = getSheetData('Projects');
+  const requests = getSheetData('Requests');
+  const assets = getSheetData('Assets');
+  const users = getSheetData('Users');
+  
+  if (!projects || projects.length === 0) {
+    console.log("[BudgetSummary] No projects found.");
+    return;
+  }
+
+  // 2. คำนวณยอดเงินของแต่ละ Project / Code
+  const reportData = projects.map(proj => {
+    // เตรียมโครงสร้างข้อมูล
+    const subJobs = (proj.subJobs || []).map(s => ({ ...s, type: 'SubJob', used: 0, pending: 0 }));
+    const epCodes = (proj.epCodes || []).map(e => ({ ...e, type: 'EPCode', used: 0, pending: 0 }));
+    
+    // ฟังก์ชันคำนวณยอดเงิน (Logic เดียวกับ getBudgetInfoForEmail_FullDetail)
+    const calculateItemValue = (req, item) => {
+        const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
+        const relatedAssets = assets.filter(a => a.currentRequestId === req.id && a.name === item.name);
+        const receivedLogs = item.receivedLog || [];
+        
+        let val = 0;
+        let cnt = 0;
+
+        // A. Assets (แม่นยำสุด)
+        if (relatedAssets.length > 0) {
+            val += relatedAssets.reduce((s, asset) => {
+                const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                return s + (price * duration);
+            }, 0);
+            cnt = relatedAssets.length;
+        } 
+        // B. Logs (รองลงมา)
+        else if (receivedLogs.length > 0) {
+            val += receivedLogs.reduce((s, log) => {
+                const duration = isRent ? (log.duration || 1) : 1;
+                return s + (log.qty * log.price * duration);
+            }, 0);
+            cnt = item.receivedTotal || 0;
+        }
+
+        // C. Estimate (ส่วนที่เหลือ)
+        const rem = Math.max(0, item.qty - cnt);
+        const dur = isRent ? (item.duration || 1) : 1;
+        const estPrice = item.unitPrice || 0;
+        val += (rem * estPrice * dur);
+        
+        return val;
+    };
+
+    // วนลูป Request ทั้งหมดเพื่อเติมตัวเลข
+    requests.forEach(req => {
+        // กรองเฉพาะ request ของ project นี้ และเป็นประเภทที่มี budget
+        if (req.job !== proj.name) return;
+        if (!['Local', 'HO'].includes(req.type)) return;
+        
+        const isCompleted = req.status === 'Completed';
+        const isPending = !['Draft', 'Rejected', 'Returned', 'Completed'].includes(req.status);
+        
+        if (!isCompleted && !isPending) return;
+
+        req.items.forEach(item => {
+            const amount = calculateItemValue(req, item);
+            
+            // เติมยอดลง SubJob
+            if (item.subJob) {
+                const target = subJobs.find(s => s.code === item.subJob);
+                if (target) {
+                    if (isCompleted) target.used += amount;
+                    else target.pending += amount;
+                }
+            }
+            // เติมยอดลง EPCode
+            if (item.epCode) {
+                const target = epCodes.find(e => e.code === item.epCode);
+                if (target) {
+                    if (isCompleted) target.used += amount;
+                    else target.pending += amount;
+                }
+            }
+        });
+    });
+
+    return {
+      name: proj.name,
+      subJobs: subJobs.sort((a,b) => a.code.localeCompare(b.code)),
+      epCodes: epCodes.sort((a,b) => a.code.localeCompare(b.code))
+    };
+  });
+
+  // 3. สร้าง HTML Template
+  let htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .header { background-color: #1e3a8a; padding: 25px; color: white; text-align: center; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .header p { margin: 5px 0 0; opacity: 0.8; font-size: 14px; }
+        .content { padding: 20px; }
+        .project-card { border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 25px; overflow: hidden; }
+        .project-header { background-color: #f8fafc; padding: 12px 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #1e293b; font-size: 16px; border-left: 5px solid #2563eb; }
+        .table-container { padding: 0 15px 15px 15px; }
+        .budget-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; }
+        .budget-table th { background-color: #eff6ff; color: #1e40af; text-align: left; padding: 8px; font-weight: bold; border-bottom: 2px solid #bfdbfe; }
+        .budget-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; color: #334155; }
+        .budget-table tr:last-child td { border-bottom: none; }
+        .bar-bg { width: 80px; height: 6px; background-color: #e2e8f0; border-radius: 3px; overflow: hidden; display: flex; }
+        .bar-used { background-color: #10b981; height: 100%; }
+        .bar-pending { background-color: #f59e0b; height: 100%; }
+        .num { font-family: 'Courier New', monospace; font-weight: bold; }
+        .text-red { color: #dc2626; font-weight: bold; }
+        .text-green { color: #16a34a; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-right: 5px; }
+        .badge-sub { background: #e0e7ff; color: #3730a3; }
+        .badge-ep { background: #f3e8ff; color: #6b21a8; }
+        .footer { background-color: #f1f5f9; padding: 15px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>สรุปยอดงบประมาณประจำสัปดาห์</h1>
+          <p>ข้อมูล ณ วันที่ ${new Date().toLocaleString('th-TH')}</p>
+        </div>
+        <div class="content">
+  `;
+
+  reportData.forEach(proj => {
+    // ข้ามโครงการที่ไม่มีงบประมาณเลย
+    if (proj.subJobs.length === 0 && proj.epCodes.length === 0) return;
+
+    htmlContent += `
+      <div class="project-card">
+        <div class="project-header">${proj.name}</div>
+        <div class="table-container">
+    `;
+
+    // รวม List ทั้งสองแบบเพื่อแสดงผล
+    const allItems = [
+       ...proj.subJobs.map(i => ({...i, badge: 'SubJob'})),
+       ...proj.epCodes.map(i => ({...i, badge: 'EPCode'}))
+    ];
+
+    if (allItems.length > 0) {
+      htmlContent += `
+        <table class="budget-table">
+          <thead>
+            <tr>
+              <th width="35%">รหัส / รายการ</th>
+              <th width="20%" style="text-align:right">งบประมาณ</th>
+              <th width="20%" style="text-align:right">ใช้จริง + รออนุมัติ</th>
+              <th width="15%" style="text-align:right">คงเหลือ</th>
+              <th width="10%" style="text-align:center">%</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      allItems.forEach(item => {
+         const budget = item.budget || 0;
+         if (budget === 0) return; // ซ่อนรายการที่งบเป็น 0 เพื่อความสะอาด
+
+         const totalUsed = item.used + item.pending;
+         const remaining = budget - totalUsed;
+         const pctUsed = Math.min((item.used / budget) * 100, 100);
+         const pctPending = Math.min((item.pending / budget) * 100, 100 - pctUsed);
+         const totalPct = ((totalUsed / budget) * 100);
+         const isOver = totalUsed > budget;
+
+         const badgeClass = item.badge === 'SubJob' ? 'badge-sub' : 'badge-ep';
+
+         htmlContent += `
+            <tr>
+              <td>
+                <span class="badge ${badgeClass}">${item.badge}</span> 
+                <strong>${item.code}</strong><br/>
+                <span style="color:#94a3b8; font-size:10px;">${item.description || ''}</span>
+              </td>
+              <td class="num" style="text-align:right; color:#64748b;">${budget.toLocaleString()}</td>
+              <td class="num" style="text-align:right;">
+                 <div>${totalUsed.toLocaleString()}</div>
+                 <div style="font-size:9px; color:#64748b;">(Used: ${item.used.toLocaleString()}, Wait: ${item.pending.toLocaleString()})</div>
+              </td>
+              <td class="num" style="text-align:right; ${remaining < 0 ? 'color:#dc2626;' : 'color:#16a34a;'}">
+                 ${remaining.toLocaleString()}
+              </td>
+              <td style="text-align:center;">
+                 <div class="bar-bg">
+                    <div class="bar-used" style="width:${pctUsed}%"></div>
+                    <div class="bar-pending" style="width:${pctPending}%"></div>
+                 </div>
+                 <div style="font-size:10px; margin-top:2px; font-weight:bold; ${isOver ? 'color:red;' : 'color:#64748b;'}">
+                    ${totalPct.toFixed(1)}%
+                 </div>
+              </td>
+            </tr>
+         `;
+      });
+
+      htmlContent += `</tbody></table>`;
+    } else {
+      htmlContent += `<p style="text-align:center; color:#999; padding:20px;">ไม่มีข้อมูล Code งบประมาณ</p>`;
+    }
+
+    htmlContent += `</div></div>`;
+  });
+
+  htmlContent += `
+        </div>
+        <div class="footer">
+           ระบบ PurchaseHub System | อีเมลอัตโนมัติ กรุณาอย่าตอบกลับ
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // 4. หาอีเมลผู้รับ (Filter ตาม Role ที่กำหนด)
+  // Target Permissions: 2(Admin), 3(Sub-Admin), 8(Head), 9(PM), 10(Verify)
+  const targetPerms = [2, 3, 8, 9, 10];
+  
+  const recipientEmails = users.filter(u => {
+      // 1. Super Admin ได้รับเสมอ
+      if (u.isSuperAdmin) return true;
+      
+      // 2. เช็ค Status
+      if (u.status !== 'Activated') return false;
+
+      // 3. เช็คสิทธิ์ในทุก Project (Permission 2,3,8,9,10)
+      if (u.permissions) {
+          return Object.values(u.permissions).some(perms => 
+              perms.some(p => targetPerms.includes(Number(p)))
+          );
+      }
+      return false;
+  }).map(u => u.email).filter(e => e && e.includes('@')); // เอาเฉพาะ Email ที่ถูกต้อง
+
+  // ลบ Email ซ้ำ
+  const uniqueRecipients = [...new Set(recipientEmails)];
+
+  console.log(`[BudgetSummary] Recipients: ${uniqueRecipients.join(', ')}`);
+
+  if (uniqueRecipients.length > 0) {
+    try {
+        // ส่ง Bcc เพื่อความเป็นส่วนตัวและไม่ให้ List ยาวเกินไป
+        GmailApp.sendEmail(
+            uniqueRecipients[0], // ส่งหาคนแรก
+            `[PurchaseHub] รายงานสรุปงบประมาณ (Weekly Budget Report)`,
+            "อุปกรณ์ของคุณไม่รองรับ HTML กรุณาดูผ่านแอปอีเมลที่ทันสมัย", 
+            {
+                htmlBody: htmlContent,
+                bcc: uniqueRecipients.slice(1).join(',') // คนที่เหลือใส่ Bcc
+            }
+        );
+        console.log("✅ Email sent successfully.");
+    } catch (e) {
+        console.error("❌ Failed to send email: " + e.toString());
+    }
+  } else {
+      console.log("⚠️ No recipients found matching the criteria.");
+  }
+}
