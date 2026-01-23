@@ -188,7 +188,7 @@ const ROLES = {
         // ❌ ตัดออก: กล่อง, แพ็ค, ลัง, โหล, รีม (เพื่อให้แตกเป็นหน่วยย่อยเสมอ)
     ];
 
-    
+
     const PRIORITIES = {
         'Normal': { label: 'ปกติ', color: 'bg-blue-100 text-blue-700 border-blue-200' },
         'Urgent': { label: 'ด่วน', color: 'bg-orange-100 text-orange-700 border-orange-200' },
@@ -10832,139 +10832,122 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
             <div className="p-0 overflow-y-auto flex-1 bg-gray-50/50 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
                 
              {/* Tab 1: Info (แก้ไข: ปิดการแก้ไขอีเมล) */}
+           {/* Tab 1: Info (แก้ไข: ปรับสิทธิ์ตามต้องการ) */}
                 {userDetailTab === 'info' && (
                      <div className="p-6">
                          <div className="bg-white p-6 rounded-xl shadow-sm border space-y-6">
-                             
+                  
                              {/* Basic Info Header */}
                              <div className="flex justify-between items-center border-b pb-2 mb-4">
-                                <h4 className="font-bold text-gray-800 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
-                                {/* ปุ่มบันทึก */}
-                                {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2)) && (
-// ค้นหาปุ่มที่มี onClick={async () => { ...saveUserData... }} ในหน้า info
-// แทนที่ Logic เดิมด้วยโค้ดด้านล่างนี้:
+                                 <h4 className="font-bold text-gray-800 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
+                                {/* ⭐ แก้ไข 1: ปุ่มบันทึก - ให้เฉพาะ SuperAdmin, Admin(2), Sub-Admin(3) เห็น */}
+                                {(user.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
+                                    <button 
+                                        onClick={async () => {
+                                            // ... (Logic การบันทึกเดิม คงไว้เหมือนเดิม) ...
+                                            // 1. ดึงข้อมูล User เดิม
+                                            const originalUser = allUsers.find(u => u.id === viewingUser.id);
+                                            if (!originalUser) return;
 
-<button 
-// ค้นหา <button> ที่มีข้อความ "บันทึกการแก้ไข" ในส่วน userDetailTab === 'info'
-// แล้วแทนที่ onClick ด้วย function นี้ครับ:
+                                            // Validation
+                                            if (!viewingUser.empId || !viewingUser.firstName || !viewingUser.lastName) {
+                                                showToast('กรุณากรอกข้อมูลให้ครบถ้วน (รหัส, ชื่อ, นามสกุล)', 'error');
+                                                return;
+                                            }
 
-onClick={async () => {
-    // 1. ดึงข้อมูล User เดิม (ก่อนแก้ไข) จาก State รวม
-    const originalUser = allUsers.find(u => u.id === viewingUser.id);
-    if (!originalUser) return;
+                                            setIsLoading(true);
+                                            try {
+                                                const changeDetails = [];
+                                                let newSignatureUrl = viewingUser.signature;
+                                                let sigChanged = false;
 
-    // Validation เบื้องต้น
-    if (!viewingUser.empId || !viewingUser.firstName || !viewingUser.lastName) {
-        showToast('กรุณากรอกข้อมูลให้ครบถ้วน (รหัส, ชื่อ, นามสกุล)', 'error');
-        return;
-    }
+                                                // --- A. จัดการลายเซ็น ---
+                                                if (sigMode === 'Draw' && hasDrawn) {
+                                                    const canvas = sigCanvasRef.current;
+                                                    const dataUrl = canvas.toDataURL('image/png');
+                                                    const res = await new Promise((resolve, reject) => {
+                                                        google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                                                            .uploadUserSignature(dataUrl, `SIG_${viewingUser.empId}_${Date.now()}.png`);
+                                                    });
+                                                    if (res.url) {
+                                                        newSignatureUrl = res.url;
+                                                        changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
+                                                        sigChanged = true;
+                                                    }
+                                                } else if (sigMode === 'Upload' && signatureFile) {
+                                                    const base64 = await fileToBase64(signatureFile);
+                                                    const res = await new Promise((resolve, reject) => {
+                                                        google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+                                                            .uploadUserSignature(base64, `SIG_${viewingUser.empId}_${Date.now()}_${signatureFile.name}`);
+                                                    });
+                                                    if (res.url) {
+                                                        newSignatureUrl = res.url;
+                                                        changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
+                                                        sigChanged = true;
+                                                    }
+                                                }
 
-    setIsLoading(true);
-    try {
-        const changeDetails = [];
-        let newSignatureUrl = viewingUser.signature;
-        let sigChanged = false;
+                                                // --- B. ตรวจสอบการเปลี่ยนแปลงข้อมูล ---
+                                                if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
+                                                if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
+                                                if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
+                                                
+                                                if (changeDetails.length === 0 && !sigChanged) {
+                                                    setIsLoading(false);
+                                                    showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
+                                                    return;
+                                                }
 
-        // --- A. จัดการลายเซ็น (Signature) ---
-        if (sigMode === 'Draw' && hasDrawn) {
-            const canvas = sigCanvasRef.current;
-            const dataUrl = canvas.toDataURL('image/png');
-            const res = await new Promise((resolve, reject) => {
-                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-                    .uploadUserSignature(dataUrl, `SIG_${viewingUser.empId}_${Date.now()}.png`);
-            });
-            if (res.url) {
-                newSignatureUrl = res.url;
-                changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
-                sigChanged = true;
-            }
-        } else if (sigMode === 'Upload' && signatureFile) {
-            const base64 = await fileToBase64(signatureFile);
-            const res = await new Promise((resolve, reject) => {
-                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-                    .uploadUserSignature(base64, `SIG_${viewingUser.empId}_${Date.now()}_${signatureFile.name}`);
-            });
-            if (res.url) {
-                newSignatureUrl = res.url;
-                changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
-                sigChanged = true;
-            }
-        }
+                                                // เตรียมข้อมูลบันทึก
+                                                const userToSave = { ...viewingUser, signature: newSignatureUrl };
+                                                
+                                                // 1. บันทึกข้อมูลหลัก
+                                                const saveRes = await new Promise(resolve => {
+                                                    google.script.run.withSuccessHandler(resolve).saveUserData(userToSave);
+                                                });
+                                                
+                                                if (!saveRes.success) {
+                                                    setIsLoading(false);
+                                                    showToast(saveRes.message, 'error');
+                                                    return;
+                                                }
 
-        // --- B. ตรวจสอบการเปลี่ยนแปลงข้อมูล (Text) ---
-        if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
-        if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
-        if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
+                                                // 2. บันทึก Log
+                                                const logImages = sigChanged ? [{name: 'New Signature', type: 'image/png', url: newSignatureUrl}] : [];
+                                                await addInvLog('Edit Profile', `${viewingUser.empId} ${viewingUser.firstName}`, `Updated Profile`, `แก้ไขข้อมูล:\n- ${changeDetails.join('\n- ')}`, logImages, null, null);
 
-        if (changeDetails.length === 0 && !sigChanged) {
-            setIsLoading(false);
-            showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
-            return;
-        }
+                                                // 3. Global Update (ถ้าชื่อ/รหัสเปลี่ยน)
+                                                const isIdentityChanged = (originalUser.empId !== viewingUser.empId) || (originalUser.firstName !== viewingUser.firstName) || (originalUser.lastName !== viewingUser.lastName);
 
-        // เตรียมข้อมูลบันทึก
-        const userToSave = { ...viewingUser, signature: newSignatureUrl };
+                                                if (isIdentityChanged) {
+                                                     const oldData = { empId: originalUser.empId, firstName: originalUser.firstName, lastName: originalUser.lastName };
+                                                     const newData = { empId: viewingUser.empId, firstName: viewingUser.firstName, lastName: viewingUser.lastName };
+                                                     const updateRes = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldData, newData));
+                                                     showToast(updateRes.message);
+                                                } else {
+                                                     showToast('บันทึกข้อมูลเรียบร้อย');
+                                                }
+                                                
+                                                // 4. อัปเดตหน้าจอ
+                                                setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
+                                                setViewingUser(userToSave);
+                                                if (user.id === viewingUser.id) setUser(userToSave);
+                                                
+                                                if(sigCanvasRef.current) clearSignature();
+                                                setSignatureFile(null);
+                                                setHasDrawn(false);
 
-        // 1. บันทึกข้อมูลหลัก (Users Sheet) + เช็ค EmpID ซ้ำ
-        const saveRes = await new Promise(resolve => {
-            google.script.run.withSuccessHandler(resolve).saveUserData(userToSave);
-        });
-
-        if (!saveRes.success) {
-            setIsLoading(false);
-            showToast(saveRes.message, 'error'); // แจ้งเตือนถ้า EmpID ซ้ำ
-            return;
-        }
-
-        // 2. บันทึก Log การแก้ไข Profile (กรณีแก้ลายเซ็นหรือข้อมูล)
-        // [Cite: User Request - บันทึกประวัติการทำงาน]
-        const logImages = sigChanged ? [{name: 'New Signature', type: 'image/png', url: newSignatureUrl}] : [];
-        await addInvLog(
-            'Edit Profile', 
-            `${viewingUser.empId} ${viewingUser.firstName}`, 
-            `Updated Profile`, 
-            `แก้ไขข้อมูล:\n- ${changeDetails.join('\n- ')}`, 
-            logImages, 
-            null, null
-        );
-
-        // 3. ⭐ Global Update: อัปเดตประวัติย้อนหลัง (ถ้าชื่อ/รหัสเปลี่ยน)
-        const isIdentityChanged = (originalUser.empId !== viewingUser.empId) || 
-                                  (originalUser.firstName !== viewingUser.firstName) || 
-                                  (originalUser.lastName !== viewingUser.lastName);
-
-        if (isIdentityChanged) {
-             const oldData = { empId: originalUser.empId, firstName: originalUser.firstName, lastName: originalUser.lastName };
-             const newData = { empId: viewingUser.empId, firstName: viewingUser.firstName, lastName: viewingUser.lastName };
-             
-             // เรียกฟังก์ชันใหม่ที่แก้ Code.gs
-             const updateRes = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldData, newData));
-             showToast(updateRes.message); // แสดงผลจำนวนรายการที่แก้ได้
-        } else {
-             showToast('บันทึกข้อมูลเรียบร้อย');
-        }
-        
-        // 4. อัปเดตหน้าจอ
-        setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
-        setViewingUser(userToSave);
-        if (user.id === viewingUser.id) setUser(userToSave); // ถ้าแก้ตัวเองให้อัปเดต session ด้วย
-        
-        // Clear Temp Data
-        if(sigCanvasRef.current) clearSignature();
-        setSignatureFile(null);
-        setHasDrawn(false);
-
-    } catch (err) {
-        console.error(err);
-        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
-    } finally {
-        setIsLoading(false);
-    }
-}}
-    className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
->
-    <Save size={14}/> บันทึกการแก้ไข
-</button>
+                                            } catch (err) {
+                                                console.error(err);
+                                                showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+                                            } finally {
+                                                setIsLoading(false);
+                                            }
+                                        }}
+                                        className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
+                                    >
+                                        <Save size={14}/> บันทึกการแก้ไข
+                                    </button>
                                 )}
                              </div>
 
@@ -10977,18 +10960,18 @@ onClick={async () => {
                                         className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                                         value={viewingUser.empId}
                                         onChange={e => setViewingUser({...viewingUser, empId: e.target.value})}
-                                        disabled={!(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2))}
+                                        /* ⭐ แก้ไข 2: ช่อง Input - ลบ owner ออก, เพิ่ม hasPermission(3) */
+                                        disabled={!(user.isSuperAdmin || hasPermission(2) || hasPermission(3))}
                                     />
                                 </div>
                                 
-                                {/* ⭐ ส่วนของอีเมล (แก้ไขให้เป็น Disabled/Read-only) */}
                                 <div>
                                     <label className="text-xs font-bold text-gray-500 mb-1 block">อีเมล (Email)</label>
                                     <input 
                                         type="email" 
                                         className="w-full p-2.5 border rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed focus:outline-none"
                                         value={viewingUser.email}
-                                        disabled // ล็อกไว้ไม่ให้แก้ไข
+                                        disabled // อีเมลล็อกถาวร
                                     />
                                 </div>
 
@@ -10999,9 +10982,11 @@ onClick={async () => {
                                         className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                                         value={viewingUser.firstName}
                                         onChange={e => setViewingUser({...viewingUser, firstName: e.target.value})}
-                                        disabled={!(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2))}
+                                        /* ⭐ แก้ไข 2: ช่อง Input */
+                                        disabled={!(user.isSuperAdmin || hasPermission(2) || hasPermission(3))}
                                     />
                                 </div>
+                                
                                 <div>
                                     <label className="text-xs font-bold text-gray-500 mb-1 block">นามสกุล (Last Name)</label>
                                     <input 
@@ -11009,16 +10994,17 @@ onClick={async () => {
                                         className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                                         value={viewingUser.lastName}
                                         onChange={e => setViewingUser({...viewingUser, lastName: e.target.value})}
-                                        disabled={!(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2))}
+                                        /* ⭐ แก้ไข 2: ช่อง Input */
+                                        disabled={!(user.isSuperAdmin || hasPermission(2) || hasPermission(3))}
                                     />
                                 </div>
                                 
-                                {/* Status (Admin Only) */}
+                                {/* Status (Admin Only - สิทธิ์ 2/3 ก็แก้สถานะได้ถ้าต้องการ หรือจะคงไว้แค่ Admin) */}
                                 <div>
                                     <label className="text-xs font-bold text-gray-500 mb-1 block">สถานะ (Status)</label>
                                     <div className={`p-2.5 border rounded-lg font-bold flex justify-between items-center ${viewingUser.status==='Activated'?'text-green-600 bg-green-50 border-green-100':'text-red-600 bg-red-50 border-red-100'}`}>
                                         {viewingUser.status}
-                                        
+                                      
                                         {(user?.isSuperAdmin || hasPermission(2)) && (
                                             <button 
                                                 onClick={async () => {
@@ -11027,8 +11013,6 @@ onClick={async () => {
                                                     if(confirm(`ยืนยันการเปลี่ยนสถานะเป็น ${newStatus}?`)) {
                                                         const updated = {...viewingUser, status: newStatus};
                                                         google.script.run.saveUserData(updated);
-                                                        
-                                                        // Update State
                                                         setAllUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
                                                         setViewingUser(updated);
                                                         showToast(`เปลี่ยนสถานะเป็น ${newStatus} เรียบร้อย`);
@@ -11054,8 +11038,8 @@ onClick={async () => {
         {viewingUser.signature && (
             <div className="mb-4 flex flex-col items-center animate-in fade-in">
                 
-                {/* ⭐ [แก้ไข] เพิ่มเงื่อนไข: ถ้าเป็นเจ้าของบัญชี (หรือ Super Admin) ให้เห็นปุ่มกดดูไฟล์ได้ */}
-                {(user.id === viewingUser.id || user.isSuperAdmin) ? (
+                {/* ⭐ แก้ไข 3: ปุ่มดูไฟล์ลายเซ็น - ให้ User, Admin(2), Sub-Admin(3) เห็น */}
+                {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) ? (
                     <div className="text-center">
                         <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-2 rounded-lg flex items-center gap-2 mb-3 shadow-sm mx-auto w-fit">
                             <CheckCircle size={16} className="text-blue-600"/> 
@@ -11071,10 +11055,10 @@ onClick={async () => {
                         </button>
                     </div>
                 ) : (
-                    /* ⭐ ถ้าเป็นคนอื่นดู ให้เห็นแค่สถานะ (เพื่อความปลอดภัย) */
+                    /* ถ้าเป็นคนอื่นดู (ที่ไม่ใช่ Admin/SubAdmin) ให้เห็นแค่สถานะ */
                     <>
                         <div className="bg-green-50 border border-green-200 text-green-700 px-6 py-3 rounded-xl flex items-center gap-3 shadow-sm">
-                            <div className="bg-white p-1.5 rounded-full border border-green-100">
+                             <div className="bg-white p-1.5 rounded-full border border-green-100">
                                 <ShieldCheck size={20} className="text-green-600"/>
                             </div>
                             <div>
@@ -11082,16 +11066,13 @@ onClick={async () => {
                                 <p className="text-[10px] opacity-80">พร้อมใช้งานสำหรับเอกสาร</p>
                             </div>
                         </div>
-                        <p className="text-[10px] text-gray-400 mt-2 text-center">
-                            * ไม่แสดงตัวอย่างลายเซ็นของผู้อื่นเพื่อความปลอดภัย
-                        </p>
                     </>
                 )}
             </div>
         )}
 
-        {/* ตัวเลือก Draw / Upload (ส่วนนี้เหมือนเดิม) */}
-        {(user.id === viewingUser.id || user.isSuperAdmin) && (
+        {/* ⭐ แก้ไข 4: ปุ่มวาด/อัปโหลด - ให้ User, Admin(2), Sub-Admin(3) ทำได้ */}
+        {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
             <>
                 <div className="flex bg-white rounded-lg border border-gray-200 p-1 mb-3 w-fit mx-auto">
                     <button onClick={() => setSigMode('Draw')} className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${sigMode === 'Draw' ? 'bg-blue-50 text-blue-600' : 'text-gray-500'}`}>วาดลายเซ็น</button>
@@ -11127,12 +11108,11 @@ onClick={async () => {
                                         const reader = new FileReader();
                                         reader.onload = (ev) => setTempSignatureUrl(ev.target.result); 
                                         reader.readAsDataURL(file);
-                                        setSignatureFile(file); 
+                                        setSignatureFile(file);
                                     }
                                 }}
                                 className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                             />
-                            {/* แสดง Preview เฉพาะตอนเลือกไฟล์ใหม่เท่านั้น */}
                             {tempSignatureUrl && <img src={tempSignatureUrl} className="h-20 mt-2 mx-auto border bg-white rounded"/>}
                         </div>
                     )}
