@@ -4023,10 +4023,9 @@ if (req.type === 'Withdraw') {
       const openRejectModal = (reqId) => { setRejectData({ requestId: reqId, reason: '' }); setShowRejectModal(true); };
       const handleConfirmReject = () => { handleUpdateStatus(rejectData.requestId, 'Rejected', `ไม่อนุมัติ: ${rejectData.reason}`); setShowRejectModal(false); showToast('บันทึกการไม่อนุมัติเรียบร้อย'); };
 
-// --- Helper: Update Status & History (UPDATED: User Signature) ---
+// --- Helper: Update Status & History (UPDATED: User Signature & Doc Gen Fix) ---
       const handleUpdateStatus = (id, newStatus, note = '', images = [], attachments = []) => {
         const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
-        
         setRequests(prev => prev.map(r => {
           if (r.id === id) {
             let updateData = { 
@@ -4036,17 +4035,18 @@ if (req.type === 'Withdraw') {
             };
 
             // ⭐ แก้ไข Logic การสร้างเลขที่เอกสาร (Gen Doc Number)
-            // เช็คว่ายังไม่มี Doc No และสถานะเป็น Approved หรือ Ready to Disburse
-            if (!r.docNumber && ['Approved', 'Ready to Disburse'].includes(newStatus)) {
+            // เช็คว่ายังไม่มี Doc No และสถานะเป็น Approved หรือขั้นตอนหลังจากนั้น
+            if (!updateData.docNumber) {
                 
-                const shouldGenerate = 
-                    // 1. Local & HO: สร้างเมื่อสถานะเป็น Approved (คือผ่าน Level 2 หรือ PM อนุมัติแล้ว)
-                    ((r.type === 'Local' || r.type === 'HO') && newStatus === 'Approved') ||
-                    
-                    // 2. Withdraw & Borrow: สร้างเมื่อสถานะเป็น Ready to Disburse (คือผ่านการอนุมัติขั้นเดียว ไม่ว่าจาก L1 หรือ L2)
-                    ((r.type === 'Withdraw' || r.type === 'Borrow') && newStatus === 'Ready to Disburse');
+                // 1. กลุ่ม Local & HO: สร้างเมื่อเป็น Approved หรือสถานะหลังจากนั้น
+                const isLocalHO_Ready = ['Local', 'HO'].includes(r.type) && 
+                    ['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Contract Pending', 'Contract Signed', 'Shipping', 'Partially Received', 'Completed', 'Returned'].includes(newStatus);
+                
+                // 2. กลุ่ม Withdraw & Borrow: สร้างเมื่อเป็น Ready to Disburse หรือสถานะหลังจากนั้น
+                const isWithdrawBorrow_Ready = ['Withdraw', 'Borrow'].includes(r.type) && 
+                    ['Ready to Disburse', 'Completed', 'Returned'].includes(newStatus);
 
-                if (shouldGenerate) {
+                if (isLocalHO_Ready || isWithdrawBorrow_Ready) {
                     const count = getNextDocIndex(requests, r.type, r.purchaseType);
                     updateData.docNumber = generateDocId(r.type, count, r.purchaseType);
                 }
