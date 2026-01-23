@@ -6695,7 +6695,7 @@ filteredRequests.map(req => {
                                             {itm.epCode && <div>E: {itm.epCode}</div>}
                                             {!itm.subJob && !itm.epCode && '-'}
                                         </td>
-                                        <td className="p-3 text-xs text-gray-500">{itm.note || '-'}</td>
+                                        <td className="p-3 text-xs text-gray-500 break-words whitespace-pre-wrap max-w-[200px]">{itm.note || '-'}</td>
                                    </>
                                 )}
 
@@ -7205,8 +7205,8 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                 </td>
 
                 {/* 5. หมายเหตุ & รูป (เพิ่มเช็คสต็อกกลับคืนมา) */}
-                <td className="p-3 text-xs text-gray-500 align-top break-words max-w-[150px]">
-                    <div className="mb-1">{item.note || '-'}</div>
+                <td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
+    <div className="mb-1">{item.note || '-'}</div>
                     
                     {/* ⭐ เพิ่มส่วนแสดงสถานะคงเหลือ (Stock Check) */}
                     <div className="flex flex-col gap-1 mt-1">
