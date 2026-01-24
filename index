@@ -51,7 +51,8 @@
       'Upload',
       'Settings',
       'Lock',
-       EyeOff,
+      'Menu', // ⭐ เพิ่มไอคอน Menu ตรงนี้
+      EyeOff,
       'BellOff', 'Megaphone'// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
     ];
     const lucideReact = {};
@@ -148,7 +149,8 @@ const {
       Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
       Upload,
       Settings,Lock,EyeOff, 
-      BellOff, Megaphone // ⭐ เพิ่มตรงนี้ครับ
+      BellOff, Megaphone,
+      Menu // ⭐ เพิ่มตรงนี้ครับ
     } = lucideReact;
 
     // Manual Aliasing for missing/renamed icons
@@ -354,6 +356,8 @@ const StatusBadge = ({ status, type }) => {
     // --- MAIN APP COMPONENT ---
     const App = () => {
       const [user, setUser] = useState(null);
+      const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
       const [allUsers, setAllUsers] = useState([]); // เก็บรายชื่อ User ทั้งหมด
       const [showPermissionModal, setShowPermissionModal] = useState(false); // เปิด Modal จัดการสิทธิ์
       const [selectedUserForEdit, setSelectedUserForEdit] = useState(null); // User ที่กำลังถูกแก้ไขสิทธิ์
@@ -4791,8 +4795,13 @@ const PublicAnnouncementPopup = () => (
 
     
           {/* Sidebar */}
-          <aside className="w-64 bg-white border-r border-gray-200 hidden md:flex flex-col shadow-lg z-20 no-print">
-            <div className="p-6 border-b border-gray-100"><h1 className="text-2xl font-bold text-blue-700 flex items-center gap-2"><Package className="w-8 h-8" /> Purchase<span className="text-gray-800">Hub</span></h1></div>
+          <aside className={`bg-white border-r border-gray-200 flex flex-col shadow-lg z-20 no-print transition-all duration-300 ease-in-out overflow-hidden ${isSidebarOpen ? 'w-64 translate-x-0' : 'w-0 -translate-x-full border-none'}`}>
+            <div className="p-6 border-b border-gray-100 min-w-[256px]"> {/* min-w เพื่อป้องกันข้อความแตกตอนหด */}
+                <h1 className="text-2xl font-bold text-blue-700 flex items-center gap-2">
+                    <Package className="w-8 h-8" /> Purchase<span className="text-gray-800">Hub</span>
+                </h1>
+            </div>
+            <div className="min-w-[256px] flex-1 flex flex-col">
             <div className="px-4 pt-4 pb-2">
                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block ml-1">เลือกโครงการ (Project)</label>
                 <div className="relative">
@@ -4873,17 +4882,31 @@ const PublicAnnouncementPopup = () => (
                     <LogOut className="w-4 h-4"/> ออกจากระบบ
                 </button>
             </div>
+            </div>
           </aside>
     
           <main className="flex-1 flex flex-col overflow-hidden relative no-print">
             {/* Header */}
             <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shadow-sm z-10">
-              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                 {activeTab === 'dashboard' && 'ภาพรวมระบบ'}
-                 {activeTab === 'orders' && `รายการที่ต้องทำ (${currentUserRole === ROLES.USER ? 'งานของฉัน' : 'รอการดำเนินการ'})`}
-                 {activeTab === 'inventory' && 'คลังสินค้า (Inventory)'}
-                 {activeTab === 'assets' && 'ทะเบียนทรัพย์สิน (Assets)'}
-              </h2>
+              <div className="flex items-center gap-4">
+                  {/* ⭐ ปุ่มเมนูสามขีด */}
+                  <button 
+                      onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                      className="p-2 rounded-lg hover:bg-gray-100 text-gray-600 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-200"
+                  >
+                      <Menu className="w-6 h-6" />
+                  </button>
+
+                  <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                     {/* ข้อความ Title เดิม */}
+                     {activeTab === 'dashboard' && 'ภาพรวมระบบ'}
+                     {activeTab === 'orders' && `รายการที่ต้องทำ (${currentUserRole === ROLES.USER ? 'งานของฉัน' : 'รอการดำเนินการ'})`}
+                     {activeTab === 'inventory' && 'คลังสินค้า (Inventory)'}
+                     {activeTab === 'assets' && 'ทะเบียนทรัพย์สิน (Assets)'}
+                     {/* ... (Tab อื่นๆ ถ้ามี) ... */}
+                  </h2>
+              </div>
+
             <div className="flex items-center gap-4">
             <button 
                      onClick={handleRefresh} 
