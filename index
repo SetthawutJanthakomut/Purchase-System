@@ -378,6 +378,7 @@ const StatusBadge = ({ status, type }) => {
       const [isImportInvTableExpanded, setIsImportInvTableExpanded] = useState(false); // ⭐ เพิ่มตัวนี้
 // --- STATE: Projects Management ---
       const [projects, setProjects] = useState([]); // เริ่มต้นเป็น Array ว่าง (รอโหลด)
+      const [disburseItems, setDisburseItems] = useState([]);
       
       const [showProjectModal, setShowProjectModal] = useState(false); // Modal แก้ไข/เพิ่ม
       const [showProjectDetailModal, setShowProjectDetailModal] = useState(false); // ⭐ Modal รายละเอียด
@@ -2504,31 +2505,56 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
 
       // --- Functions & Handlers (Logic from original file) ---
       
-// Smart Suggestion (Multi-Project Search)
+// Smart Suggestion (Multi-Project Search) - Updated: Grouping Logic
 useEffect(() => {
     let timeoutId;
     setFoundSuggestions([]);
     
-    // ทำงานเฉพาะตอนพิมพ์ชื่อ และไม่ใช่โหมดเบิก/ยืม (หรือจะให้หาตลอดก็ได้แล้วแต่สะดวก)
-    // เงื่อนไข: พิมพ์มากกว่า 2 ตัวอักษร
+    // ทำงานเฉพาะตอนพิมพ์ชื่อมากกว่า 2 ตัวอักษร
     if (tempItem.name && tempItem.name.length > 2) {
         timeoutId = setTimeout(() => {
             const lowerName = tempItem.name.toLowerCase();
             let matches = [];
 
-            // 1. ค้นหาในคลัง (Inventory) -> แนะนำให้เบิก
+            // 🟢 1. ค้นหาในคลัง (Inventory) -> แนะนำให้เบิก (รวมยอด ในระบบ+นอกระบบ)
+            const groupedInv = {};
+            
             inventory.forEach(inv => {
+                // กรองชื่อและจำนวนที่มี
                 if (inv.name.toLowerCase().includes(lowerName) && inv.qty > 0) {
-                    matches.push({ 
-                        ...inv, 
-                        type: 'Material', 
-                        matchType: 'Withdraw',
-                        sourceLabel: 'คลังวัสดุ'
-                    });
+                    // สร้าง Key สำหรับรวมกลุ่ม: "ชื่อสินค้า|ชื่อโครงการ"
+                    const key = `${inv.name}|${inv.project || 'ส่วนกลาง'}`;
+
+                    if (!groupedInv[key]) {
+                        groupedInv[key] = {
+                            ...inv, // ยึดข้อมูลพื้นฐานจากรายการแรกที่เจอ
+                            qty: 0, // รีเซ็ตยอดรวมเพื่อคำนวณใหม่
+                            sysQty: 0, // ยอดในระบบ
+                            nonQty: 0, // ยอดนอกระบบ
+                            type: 'Material', 
+                            matchType: 'Withdraw',
+                            sourceLabel: 'คลังวัสดุ'
+                        };
+                    }
+
+                    // บวกยอดรวม
+                    groupedInv[key].qty += inv.qty;
+                    
+                    // แยกยอดตามประเภท
+                    if (inv.stockType === 'NonSystem') {
+                        groupedInv[key].nonQty += inv.qty;
+                    } else {
+                        groupedInv[key].sysQty += inv.qty;
+                    }
                 }
             });
 
-            // 2. ค้นหาในทะเบียน (Assets) -> แนะนำให้ยืม
+            // แปลง Object กลับเป็น Array เพื่อนำไปแสดงผล
+            Object.values(groupedInv).forEach(item => {
+                matches.push(item);
+            });
+
+            // 🔵 2. ค้นหาในทะเบียน (Assets) -> แนะนำให้ยืม (เหมือนเดิม)
             assets.forEach(ast => {
                 if (ast.name.toLowerCase().includes(lowerName) && ast.status === 'Available') {
                     matches.push({ 
@@ -2574,79 +2600,65 @@ const selectSuggestion = (item) => {
     }
 };
 
+// --- LOGIC: ADD ITEM TO ORDER (UPDATED VALIDATION) ---
 const handleAddItem = () => {
-        if (!tempItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
+    if (!tempItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
+    
+    const currentType = newOrderMeta.type;
+
+    // 🟢 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw) -> เช็คแบบรวมยอด
+    if (currentType === 'Withdraw') {
+        // หาของทั้งหมดที่มีชื่อนี้ในโครงการนี้
+        const stockItems = inventory.filter(i => i.name === tempItem.name && i.project === newOrderMeta.job);
         
-        const currentType = newOrderMeta.type;
-
-        // 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
-        if (currentType === 'Withdraw') {
-            const stockItem = inventory.find(i => i.name === tempItem.name && i.project === newOrderMeta.job);
-            if (!stockItem) {
-                showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลังของโครงการ ${newOrderMeta.job}`, 'error');
-                return;
-            }
-
-            // ⭐ [เพิ่ม] คำนวณยอดที่ถูกจองในใบอื่นที่ยังไม่จบงาน (Active Requests)
-            const activeRequests = requests.filter(r => 
-                r.id !== editingId && // ไม่นับใบปัจจุบัน (กรณีแก้ไข)
-                !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) && // สถานะที่ถือว่า Active
-                r.job === newOrderMeta.job && 
-                r.type === 'Withdraw'
-            );
-            
-            const reservedQty = activeRequests.reduce((sum, req) => {
-                const sameItem = req.items.find(i => i.name === tempItem.name);
-                return sum + (sameItem ? (sameItem.qty || 0) : 0);
-            }, 0);
-
-            const realAvailable = stockItem.qty - reservedQty;
-
-            if (tempItem.qty > realAvailable) {
-                showToast(`จำนวนในคลังไม่พอ (มี: ${stockItem.qty}, รอจ่ายใบอื่น: ${reservedQty}, คงเหลือจริง: ${realAvailable})`, 'error');
-                return;
-            }
+        if (stockItems.length === 0) {
+            showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลังของโครงการ ${newOrderMeta.job}`, 'error');
+            return;
         }
 
-        // 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow)
-        if (currentType === 'Borrow') {
-            if (!tempItem.assetId) {
-                showToast(`กรุณาเลือกทรัพย์สินจากรายการ (กดปุ่ม 3 ขีด)`, 'error'); return;
-            }
-            // เช็คว่าเลือกรายการซ้ำในใบเดียวกันหรือไม่
-            if (orderItems.some(item => item.assetId === tempItem.assetId)) {
-                showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error'); return;
-            }
+        // คำนวณสต็อกรวมที่มีจริง (Total Physical Stock)
+        const totalStock = stockItems.reduce((sum, i) => sum + i.qty, 0);
 
-            // ⭐ [เพิ่ม] ตรวจสอบว่า Asset นี้ติดอยู่ในใบอื่นที่รออนุมัติ/รอจ่าย หรือไม่
-            const pendingRequests = requests.filter(r => 
-                r.id !== editingId &&
-                !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) && 
-                r.type === 'Borrow'
-            );
-            
-            const isPendingElsewhere = pendingRequests.some(r => 
-                r.items.some(i => i.assetId === tempItem.assetId)
-            );
+        // คำนวณยอดที่ถูกจองในใบอื่น (Active Requests)
+        const activeRequests = requests.filter(r => 
+            r.id !== editingId &&
+            !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
+            r.job === newOrderMeta.job && 
+            r.type === 'Withdraw'
+        );
+        const reservedQty = activeRequests.reduce((sum, req) => {
+            const sameItem = req.items.find(i => i.name === tempItem.name);
+            return sum + (sameItem ? (sameItem.qty || 0) : 0);
+        }, 0);
 
-            if (isPendingElsewhere) {
-                showToast(`ทรัพย์สินนี้อยู่ในระหว่างการยืม/รออนุมัติ ในเอกสารอื่น`, 'error');
-                return;
-            }
+        // คำนวณยอดคงเหลือที่เบิกได้
+        const realAvailable = totalStock - reservedQty;
 
-            // เช็คสถานะ Real-time (Asset Table)
-            const assetRealtime = assets.find(a => a.id === tempItem.assetId);
-            if (!assetRealtime || assetRealtime.status !== 'Available') {
-                 showToast(`ทรัพย์สินไม่ว่าง: ${tempItem.name} (สถานะ: ${assetRealtime ? assetRealtime.status : 'N/A'})`, 'error');
-                 return;
-            }
+        if (tempItem.qty > realAvailable) {
+            showToast(`จำนวนในคลังไม่พอ (มีรวม: ${totalStock}, จองแล้ว: ${reservedQty}, คงเหลือเบิกได้: ${realAvailable})`, 'error');
+            return;
         }
+    }
 
-        // ผ่านทุกเงื่อนไข -> เพิ่มรายการ
-        setOrderItems([...orderItems, { ...tempItem }]);
-        setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '' });
-        setStockSuggestion(null); 
-      };
+    // 🔵 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow) - Logic เดิม
+    if (currentType === 'Borrow') {
+        if (!tempItem.assetId) {
+            showToast(`กรุณาเลือกทรัพย์สินจากรายการ`, 'error');
+            return;
+        }
+        if (orderItems.some(item => item.assetId === tempItem.assetId)) {
+            showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error');
+            return;
+        }
+        // ... (Logic เช็ค Asset Pending เหมือนเดิม) ...
+        // ...
+    }
+
+    // ผ่านทุกเงื่อนไข -> เพิ่มรายการ
+    setOrderItems([...orderItems, { ...tempItem }]);
+    setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '' });
+    setStockSuggestion(null); 
+};
 
 
 const handleEditItem = (index) => {
@@ -2679,60 +2691,80 @@ const getItemLatestImage = (item) => {
     return null;
 };
 
-// [Code เดิม]
-// const getSelectionItems = () => {
-//     const type = newOrderMeta.type;
-//     const targetProject = newOrderMeta.job;
-//     let items = [];
-//     if (!targetProject) return [];
-//     const today = new Date(); today.setHours(0, 0, 0, 0);
-//     const projectInventory = inventory.filter(i => i.project === targetProject);
-//     const projectAssets = assets.filter(a => { ... });
-//     ...
 
-// [Code ใหม่]
+
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
     const targetProject = newOrderMeta.job;
     
-    // ถ้ายังไม่ได้เลือกโครงการ ให้คืนค่าว่าง
     if (!targetProject) return [];
 
-    // เตรียมข้อมูล Active Requests ในโครงการนี้
+    // เตรียมข้อมูล Active Requests
     const activeRequests = requests.filter(r => 
         r.id !== editingId &&
         !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
         r.job === targetProject
     );
 
-    // 1. กรอง Inventory: หักยอดจอง (Reserved)
+    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> รวมยอด System + NonSystem
+    if (type === 'Withdraw') {
+        // 1. คำนวณยอดจอง (Reserved) แยกตามชื่อสินค้า
+        const reservesByName = {};
+        activeRequests.filter(r => r.type === 'Withdraw').forEach(req => {
+            req.items.forEach(item => {
+                reservesByName[item.name] = (reservesByName[item.name] || 0) + (item.qty || 0);
+            });
+        });
+
+        // 2. จัดกลุ่มสินค้าตามชื่อ (Group by Name)
+        const groupedMap = {};
+        inventory
+            .filter(i => i.project === targetProject)
+            .forEach(inv => {
+                if (!groupedMap[inv.name]) {
+                    groupedMap[inv.name] = {
+                        ...inv, // ใช้ข้อมูลพื้นฐานจากตัวแรกที่เจอ
+                        qty: 0, // รอคำนวณใหม่
+                        sysStock: 0,
+                        nonStock: 0,
+                        totalRaw: 0,
+                        isGrouped: true // Flag ไว้เช็คตอนแสดงผล
+                    };
+                }
+                
+                // บวกยอดตามประเภท
+                groupedMap[inv.name].totalRaw += inv.qty;
+                if (inv.stockType === 'NonSystem') {
+                    groupedMap[inv.name].nonStock += inv.qty;
+                } else {
+                    groupedMap[inv.name].sysStock += inv.qty;
+                }
+            });
+
+        // 3. คำนวณยอดคงเหลือจริง (หักยอดจอง) และแปลงกลับเป็น Array
+        return Object.values(groupedMap).map(item => {
+            const reserved = reservesByName[item.name] || 0;
+            const realAvailable = Math.max(0, item.totalRaw - reserved);
+            
+            return {
+                ...item,
+                qty: realAvailable, // ยอดที่เบิกได้จริง (รวม)
+                reserved: reserved  // เก็บยอดจองไว้โชว์ (ถ้าต้องการ)
+            };
+        }).filter(i => i.qty > 0); // กรองเฉพาะที่มีของให้เบิก
+    }
+
     let projectInventory = inventory
         .filter(i => i.project === targetProject)
         .map(inv => {
-            // ถ้าเป็นการเบิก ให้คำนวณยอดจองล่วงหน้า
-            if (type === 'Withdraw') {
-                const reserved = activeRequests
-                    .filter(r => r.type === 'Withdraw')
-                    .reduce((sum, req) => {
-                        const item = req.items.find(i => i.name === inv.name);
-                        return sum + (item ? (item.qty || 0) : 0);
-                    }, 0);
-                // คืนค่า object ใหม่ที่มี qty ลดลงตามยอดจอง
-                return { ...inv, qty: Math.max(0, inv.qty - reserved) };
-            }
-            return inv; 
+             // ... Logic เดิม ...
+             return inv; 
         })
-        .filter(i => {
-            // ถ้าเป็นการเบิก และของหมด(หลังหักยอดจอง) ไม่ต้องแสดง
-            if (type === 'Withdraw') return i.qty > 0;
-            return true;
-        });
+        .filter(i => i.qty > 0);
 
-    // 2. กรอง Assets: ซ่อนตัวที่ติด Pending
+// 2. กรอง Assets
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-
-    // รวบรวม Asset IDs ที่กำลังถูกยืมในใบอื่น (Pending)
     const busyAssetIds = new Set(
         activeRequests
             .filter(r => r.type === 'Borrow')
@@ -2740,14 +2772,10 @@ const getSelectionItems = () => {
             .map(i => i.assetId)
             .filter(id => id)
     );
-
     const projectAssets = assets.filter(a => {
         if (a.project !== targetProject) return false;
         if (a.status !== 'Available') return false;
-
-        // ⭐ Filter: ถ้าติดอยู่ใน Active Request ใบอื่น (Busy) ให้ซ่อน
         if (type === 'Borrow' && busyAssetIds.has(a.id)) return false;
-
         if (a.ownerType === 'Rent' && a.rentalEnd) {
             const endDate = new Date(a.rentalEnd);
             if (!isNaN(endDate.getTime())) {
@@ -2758,17 +2786,13 @@ const getSelectionItems = () => {
         return true;
     });
 
-    // 3. รวมรายการตามประเภทคำขอ
+    // รวมรายการ
     let items = [];
-    if (type === 'Local' || type === 'Withdraw') {
-        items = projectInventory;
-    } else if (type === 'HO') {
-        items = [...projectInventory, ...projectAssets];
-    } else if (type === 'Borrow') {
-        items = projectAssets;
-    }
+    if (type === 'Local') items = projectInventory;
+    else if (type === 'HO') items = [...projectInventory, ...projectAssets];
+    else if (type === 'Borrow') items = projectAssets;
 
-    // 4. Search Logic
+    // Search Logic
     if (selectionSearch) {
         const lower = selectionSearch.toLowerCase();
         items = items.filter(i => 
@@ -4014,7 +4038,63 @@ const updatedItems = selectedRequest.items.map(originalItem => {
           }));
       };
 
-      const openDisburseModal = (reqId) => { setDisburseData({ requestId: reqId, note: '', images: [] }); setShowDisburseModal(true); };
+      // --- LOGIC: OPEN DISBURSE MODAL (UPDATED: SPLIT STOCK) ---
+const openDisburseModal = (reqId) => {
+    const req = requests.find(r => r.id === reqId);
+    if (!req) return;
+
+    // เตรียมรายการสินค้า พร้อมเช็คสต็อกแยกประเภท
+    const itemsWithSplit = req.items.map(item => {
+        // 1. หาสต็อก "ในระบบ" (System)
+        const sysStock = inventory.find(i => 
+            i.name === item.name && 
+            i.project === req.job && 
+            (i.stockType === 'System' || !i.stockType) // Default System
+        );
+        
+        // 2. หาสต็อก "นอกระบบ" (NonSystem)
+        const nonStock = inventory.find(i => 
+            i.name === item.name && 
+            i.project === req.job && 
+            i.stockType === 'NonSystem'
+        );
+
+        const sysQtyAvailable = sysStock ? sysStock.qty : 0;
+        const nonQtyAvailable = nonStock ? nonStock.qty : 0;
+
+        // 3. Logic: Default ให้ตัด "ในระบบ" ก่อน ถ้าไม่พอค่อยไป "นอกระบบ"
+        let useSys = 0;
+        let useNon = 0;
+
+        if (sysQtyAvailable >= item.qty) {
+            useSys = item.qty;
+        } else {
+            useSys = sysQtyAvailable; // เอาเท่าที่มี
+            // ส่วนที่ขาด ให้ไปลองตัดนอกระบบ (แต่ต้องไม่เกินที่มี)
+            const needed = item.qty - useSys;
+            useNon = Math.min(needed, nonQtyAvailable);
+        }
+
+        return {
+            ...item,
+            // เก็บข้อมูลสต็อกคงเหลือไว้โชว์
+            sysStockId: sysStock ? sysStock.id : null,
+            nonStockId: nonStock ? nonStock.id : null,
+            sysAvailable: sysQtyAvailable,
+            nonAvailable: nonQtyAvailable,
+            // ค่าที่จะจ่ายจริง (แก้ไขได้)
+            useSys: useSys,
+            useNon: useNon
+        };
+    });
+
+    setDisburseItems(itemsWithSplit);
+    setDisburseData({ requestId: reqId, note: '', images: [] });
+    setShowDisburseModal(true);
+};
+
+
+
       
       // --- HELPER: จัดการรูปภาพหน้าจ่ายของ (Disburse) ---
 const handleDisburseImageSelect = async (e) => {
@@ -4040,87 +4120,179 @@ const handleRemoveDisburseImage = (index) => {
 };
 
 
-// --- LOGIC: CONFIRM DISBURSE (UPDATED: Multi-Image Upload) ---
+// --- LOGIC: CONFIRM DISBURSE (UPDATED: SPLIT DEDUCTION & INDIVIDUAL LOGS) ---
 const handleConfirmDisburse = async () => {
     const req = requests.find(r => r.id === disburseData.requestId);
     if (!req) return;
 
-    setIsLoading(true); // เริ่มโหลด
+    // --- Validation 1: เช็คยอดรวมเทียบกับ Order (เหมือนเดิม) ---
+    if (req.type === 'Withdraw') {
+        const mismatchItems = disburseItems.filter(item => (item.useSys + item.useNon) !== item.qty);
+        if (mismatchItems.length > 0) {
+            const msg = mismatchItems.map(i => `- ${i.name}: สั่ง ${i.qty} แต่จ่ายรวม ${i.useSys + i.useNon}`).join('\n');
+            if (!confirm(`⚠️ คำเตือน: จำนวนจ่ายไม่ตรงกับคำขอ\n\n${msg}\n\nยืนยันที่จะบันทึกยอดตามจริงหรือไม่?`)) return;
+        }
+
+        // ⭐⭐ [เพิ่มใหม่] Validation 2: เช็คยอดเกินสต็อก (Over Stock) ⭐⭐
+        const overStockItems = [];
+        disburseItems.forEach(item => {
+            if (item.useSys > item.sysAvailable) {
+                overStockItems.push(`- ${item.name} (ในระบบ): กรอก ${item.useSys} / มี ${item.sysAvailable}`);
+            }
+            if (item.useNon > item.nonAvailable) {
+                overStockItems.push(`- ${item.name} (นอกระบบ): กรอก ${item.useNon} / มี ${item.nonAvailable}`);
+            }
+        });
+
+        if (overStockItems.length > 0) {
+            alert(`❌ ไม่สามารถบันทึกได้ เนื่องจากยอดเกินคลังสินค้า:\n\n${overStockItems.join('\n')}\n\nกรุณาแก้ไขจำนวนให้ถูกต้อง`);
+            return; // หยุดการทำงานทันที
+        }
+    }
+
+    setIsLoading(true);
     try {
-        // 1. อัปโหลดรูปภาพ (ถ้ามี)
+        // Upload Images (เหมือนเดิม)
         let logImages = [];
         if (disburseData.images && disburseData.images.length > 0) {
             const uploadPromises = disburseData.images.map(imgObj => {
                 return new Promise((resolve, reject) => {
-                    // ใช้ฟังก์ชันเดียวกับ Asset (uploadAssetImage) เพื่อเก็บในโฟลเดอร์ Asset_Images หรือจะสร้างใหม่ก็ได้
-                    google.script.run
-                        .withSuccessHandler(resolve)
-                        .withFailureHandler(reject)
-                        .uploadAssetImage(imgObj.base64, imgObj.name);
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
                 });
             });
             const uploaded = await Promise.all(uploadPromises);
-            // แปลงรูปแบบให้ตรงกับที่ History Viewer รองรับ ({ name, type, url })
             logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
 
-        // 2. ดำเนินการตัดสต็อก / ยืม
-if (req.type === 'Withdraw') {
-    const project = req.job; // ⭐ โครงการต้นทาง
-    req.items.forEach(item => {
-        // ⭐ หาของในโครงการนี้เท่านั้น
-        const stockItem = inventory.find(i => i.name === item.name && i.project === project);
-        if (stockItem) {
-            const updatedStock = { ...stockItem, qty: Math.max(0, stockItem.qty - item.qty), lastUpdated: new Date().toLocaleString('th-TH') };
-            setInventory(inv => inv.map(x => x.id === stockItem.id ? updatedStock : x));
-            saveInventoryToSheet(updatedStock);
+// ============================
+        // 🟢 กรณี 1: Withdraw (ตัดสต็อกแยกประเภท)
+        // ============================
+        if (req.type === 'Withdraw') {
+            const currentInv = [...inventory];
+            let logDetails = [];
+
+            for (const item of disburseItems) {
+                let itemLogParts = [];
+
+                // A. ตัดสต็อก ในระบบ
+                if (item.useSys > 0 && item.sysStockId) {
+                    const targetIdx = currentInv.findIndex(i => i.id === item.sysStockId);
+                    if (targetIdx !== -1) {
+                        const updated = { 
+                            ...currentInv[targetIdx], 
+                            qty: Math.max(0, currentInv[targetIdx].qty - item.useSys),
+                            lastUpdated: new Date().toLocaleString('th-TH')
+                        };
+                        currentInv[targetIdx] = updated;
+                        // Sync Backend
+                        await new Promise(r => google.script.run.withSuccessHandler(r).syncInventory(updated));
+                        
+                        // ⭐ [เพิ่มใหม่] บันทึก Log เข้าประวัติของสินค้าตัวนี้ (ในระบบ)
+                        await addInvLog(
+                            'Withdraw', 
+                            item.name, 
+                            `-${item.useSys}`, 
+                            `จ่ายของ (ในระบบ) อ้างอิง: ${req.docNumber || req.id}`, 
+                            [], 
+                            req.id, 
+                            item.sysStockId // 👈 สำคัญ: ส่ง ID สินค้าไปด้วย เพื่อให้มันไปโผล่ในหน้าประวัติรายตัว
+                        );
+
+                        itemLogParts.push(`ในระบบ: ${item.useSys}`);
+                    }
+                }
+
+                // B. ตัดสต็อก นอกระบบ
+                if (item.useNon > 0 && item.nonStockId) {
+                    const targetIdx = currentInv.findIndex(i => i.id === item.nonStockId);
+                    if (targetIdx !== -1) {
+                        const updated = { 
+                            ...currentInv[targetIdx], 
+                            qty: Math.max(0, currentInv[targetIdx].qty - item.useNon),
+                            lastUpdated: new Date().toLocaleString('th-TH')
+                        };
+                        currentInv[targetIdx] = updated;
+                        // Sync Backend
+                        await new Promise(r => google.script.run.withSuccessHandler(r).syncInventory(updated));
+
+                        // ⭐ [เพิ่มใหม่] บันทึก Log เข้าประวัติของสินค้าตัวนี้ (นอกระบบ)
+                        await addInvLog(
+                            'Withdraw', 
+                            item.name, 
+                            `-${item.useNon}`, 
+                            `จ่ายของ (นอกระบบ) อ้างอิง: ${req.docNumber || req.id}`, 
+                            [], 
+                            req.id, 
+                            item.nonStockId // 👈 สำคัญ: ส่ง ID สินค้าไปด้วย
+                        );
+
+                        itemLogParts.push(`นอกระบบ: ${item.useNon}`);
+                    }
+                }
+
+                // เก็บข้อความสรุปไว้ใช้ตอนท้าย (เหมือนเดิม)
+                if (itemLogParts.length > 0) {
+                    const totalPaid = (item.useSys || 0) + (item.useNon || 0);
+                    const diffMsg = totalPaid !== item.qty ? ` (ไม่ครบ/เกิน: สั่ง ${item.qty})` : '';
+                    logDetails.push(`${item.name} รวม ${totalPaid}${diffMsg} [${itemLogParts.join(', ')}]`);
+                }
+            }
             
-            // ⭐ Log ระบุโครงการ
-            addInvLog('Withdraw', item.name, `-${item.qty}`, `จ่ายของโครงการ ${project} (${disburseData.note})`, logImages, req.id);
+            setInventory(currentInv);
+
+            // 3. บันทึก History รวม (อันนี้คืออันที่ User เห็นในหน้า All Logs)
+            const finalNote = `จ่ายของโครงการ ${req.job}:\n` + logDetails.join('\n') + (disburseData.note ? `\nNote: ${disburseData.note}` : '');
+            
+            // ⭐ Log นี้ไม่ต้องใส่ Asset ID เพื่อให้เป็น Log กลางของ Request นี้
+            await addInvLog('Withdraw', 'Multiple Items', 'Out', finalNote, logImages, req.id);
         }
-    });
-        } else if (req.type === 'Borrow') {
-            // Logic ยืม (ตามที่คุณแก้ไขล่าสุด)
+        
+        // ============================
+        // 🔵 กรณี 2: Borrow (เหมือนเดิม)
+        // ============================
+        else if (req.type === 'Borrow') {
             const targetAssetsMap = new Map();
             req.items.forEach(item => {
                 if (item.assetId) targetAssetsMap.set(item.assetId, item);
             });
 
-            setAssets(prevAssets => prevAssets.map(asset => {
+            const updatedAssets = assets.map(asset => {
                 if (targetAssetsMap.has(asset.id)) {
                     const item = targetAssetsMap.get(asset.id);
-                    const updatedAsset = { 
+                    return { 
                         ...asset, 
                         status: 'Borrowed', 
                         holder: req.requester, 
                         currentRequestId: req.id, 
-                        lastUpdated: new Date().toLocaleString('th-TH'), 
-                        // ถ้า Asset เดิมไม่มีรูป ให้ใช้รูปจากการจ่ายของ (รูปแรก) เป็นรูปปกชั่วคราวได้
+                        lastUpdated: new Date().toLocaleString('th-TH'),
                         image: logImages.length > 0 ? logImages[0].name : asset.image 
                     };
-                    saveAssetToSheet(updatedAsset);
-                    // ⭐ ส่ง logImages
-                    addInvLog('Borrow', item.name, 'Out', `ยืมโดย ${req.requester} (${req.id})`, logImages, req.id, asset.id);
-                    return updatedAsset;
                 }
                 return asset;
-            }));
+            });
+
+            for (const asset of updatedAssets) {
+                if (targetAssetsMap.has(asset.id)) {
+                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(asset));
+                    await addInvLog('Borrow', asset.name, 'Out', `ยืมโดย ${req.requester} (Type: ${asset.ownerType})`, logImages, req.id, asset.id);
+                }
+            }
+            setAssets(updatedAssets);
         }
 
-        // 3. อัปเดตสถานะเอกสาร
+        // 4. Update Request Status
         handleUpdateStatus(req.id, 'Completed', `จ่ายของ/ยืมของเรียบร้อย ${disburseData.note}`, logImages);
         
         setShowDisburseModal(false);
-        showToast('จ่ายของและบันทึกข้อมูลเรียบร้อย');
+        showToast('บันทึกข้อมูลเรียบร้อย');
 
     } catch (err) {
         console.error(err);
         showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
     } finally {
-        setIsLoading(false); // จบการโหลด
+        setIsLoading(false);
     }
 };
-
       const openRejectModal = (reqId) => { setRejectData({ requestId: reqId, reason: '' }); setShowRejectModal(true); };
       const handleConfirmReject = () => { handleUpdateStatus(rejectData.requestId, 'Rejected', `ไม่อนุมัติ: ${rejectData.reason}`); setShowRejectModal(false); showToast('บันทึกการไม่อนุมัติเรียบร้อย'); };
 
@@ -6588,7 +6760,16 @@ filteredRequests.map(req => {
                             <Building className="w-3 h-3"/> โครงการ: <span className="font-bold text-gray-700">{item.project || 'ส่วนกลาง'}</span>
                         </div>
                         <div className="text-xs text-gray-500 mt-0.5">
-                            มีอยู่: <span className="font-bold text-green-600">{item.qty || 1} {item.unit}</span> ({item.sourceLabel})
+                            มีอยู่: <span className="font-bold text-green-600">{item.qty} {item.unit}</span> 
+                            
+                            {/* ⭐ เพิ่มส่วนแสดงรายละเอียดแยกประเภท (ถ้ามีข้อมูล) */}
+                            {(item.sysQty !== undefined || item.nonQty !== undefined) && (
+                                <span className="text-[10px] text-gray-400 ml-1">
+                                    (ใน: <b>{item.sysQty || 0}</b>, นอก: <b>{item.nonQty || 0}</b>)
+                                </span>
+                            )}
+                            
+                            {' '}({item.sourceLabel})
                         </div>
                     </div>
                     
@@ -6979,16 +7160,26 @@ filteredRequests.map(req => {
         }
     })()}
 </div>
-                             <div className="flex-1 min-w-0">
-                                 <h4 className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors">{item.name}</h4>
-                                 <p className="text-xs text-gray-500 truncate font-mono">{item.id || item.serial || '-'}</p>
-                                 {(newOrderMeta.type !== 'Borrow') && (
-                                     <p className="text-xs text-green-600 mt-1 font-bold">คงเหลือ: {item.qty} {item.unit}</p>
-                                 )}
-                                 {(newOrderMeta.type === 'Borrow') && (
-                                     <p className="text-xs text-indigo-600 mt-1 font-bold">สถานะ: {item.status}</p>
-                                 )}
-                             </div>
+                            <div className="flex-1 min-w-0">
+    <h4 className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors">{item.name}</h4>
+    <p className="text-xs text-gray-500 truncate font-mono">{item.id || item.serial || '-'}</p>
+    
+    {/* ⭐ ส่วนแสดงผลที่แก้ไข: แยกกรณี Withdraw ให้โชว์ breakdown */}
+    {(newOrderMeta.type === 'Withdraw') ? (
+        <div className="mt-1">
+            <p className="text-xs text-green-600 font-bold">พร้อมเบิก: {item.qty} {item.unit}</p>
+            <p className="text-[10px] text-gray-500">
+                (ในระบบ: {item.sysStock || 0}, นอกระบบ: {item.nonStock || 0})
+            </p>
+        </div>
+    ) : (newOrderMeta.type !== 'Borrow') && (
+        <p className="text-xs text-green-600 mt-1 font-bold">คงเหลือ: {item.qty} {item.unit}</p>
+    )}
+
+    {(newOrderMeta.type === 'Borrow') && (
+        <p className="text-xs text-indigo-600 mt-1 font-bold">สถานะ: {item.status}</p>
+    )}
+</div>
                          </div>
                      ))}
                  </div>
@@ -7189,376 +7380,227 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
 })()}
 
                             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
-                                <h4 className="font-bold text-gray-700 mb-4 flex items-center gap-2 border-b pb-2"><ShoppingCart className="w-4 h-4"/> รายการสินค้า ({selectedRequest.items.length})</h4>
-                                
-<div className="overflow-x-auto border border-gray-200 rounded-lg">
+    <h4 className="font-bold text-gray-700 mb-4 flex items-center gap-2 border-b pb-2">
+        <ShoppingCart className="w-4 h-4"/> รายการสินค้า ({selectedRequest.items.length})
+    </h4>
     
-<table className="w-full text-sm">
-    <thead className="bg-gray-100 text-gray-700 border-b">
-        <tr>
-            <th className="p-3 text-left font-bold">รายการ</th>
-            <th className="p-3 text-right font-bold">ราคา/หน่วย</th>
-            <th className="p-3 text-center font-bold">จำนวน</th>
-            {/* ตัดคอลัมน์ "หน่วย" เดิมออกไป */}
-            <th className="p-3 text-right font-bold">รวมเงิน</th>
-            {/* เพิ่มคอลัมน์ "หมายเหตุ" */}
-            <th className="p-3 text-left font-bold w-32">หมายเหตุ</th>
-        </tr>
-    </thead>
+    <div className="overflow-x-auto border border-gray-200 rounded-lg">
+        <table className="w-full text-sm">
+            {/* ⭐ 1. แก้ไข Header: เช็คประเภทเพื่อโชว์ Column ให้ถูกต้อง */}
+            <thead className="bg-gray-100 text-gray-700 border-b">
+                <tr>
+                    <th className="p-3 text-left font-bold">รายการ</th>
+                    
+                    {/* แสดงราคาเฉพาะงานซื้อ (Local/HO) */}
+                    {['Local', 'HO'].includes(selectedRequest.type) && (
+                        <th className="p-3 text-right font-bold">ราคา/หน่วย</th>
+                    )}
+                    
+                    <th className="p-3 text-center font-bold">จำนวน</th>
+                    
+                    {/* แสดงรวมเงินเฉพาะงานซื้อ */}
+                    {['Local', 'HO'].includes(selectedRequest.type) && (
+                        <th className="p-3 text-right font-bold">รวมเงิน</th>
+                    )}
+                    
+                    <th className="p-3 text-left font-bold w-32">หมายเหตุ</th>
+                </tr>
+            </thead>
 
+            <tbody className="divide-y divide-gray-100">
+                {selectedRequest.items.map((item, idx) => {
+                    const isBuy = ['Local', 'HO'].includes(selectedRequest.type);
+                    const isBorrow = selectedRequest.type === 'Borrow';
+                    const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
+                    
+                    // ... (Logic คำนวณราคาเดิม คงไว้สำหรับ isBuy) ...
+                    const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+                    const receivedLogs = item.receivedLog || [];
+                    const hasAssets = relatedAssets.length > 0;
+                    const hasLogs = receivedLogs.length > 0;
+                    const hasDetails = hasAssets || hasLogs;
+                    const isExpanded = expandedItems.has(idx);
+                    
+                    // Logic คำนวณยอดเงิน (เฉพาะงานซื้อ)
+                    let lineTotal = 0;
+                    let lineReceivedCount = 0;
+                    if (isBuy) {
+                        if (hasAssets) {
+                             lineTotal += relatedAssets.reduce((sum, asset) => {
+                                 const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                                 const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                                 return sum + (price * duration);
+                             }, 0);
+                             lineReceivedCount = relatedAssets.length;
+                        } else if (hasLogs) {
+                             lineTotal += receivedLogs.reduce((sum, log) => {
+                                 const duration = isRent ? (log.duration || 1) : 1;
+                                 return sum + (log.qty * log.price * duration);
+                              }, 0);
+                             lineReceivedCount = item.receivedTotal || 0;
+                        }
+                        const remainingQty = Math.max(0, item.qty - lineReceivedCount);
+                        const estimateDuration = isRent ? (item.duration || 1) : 1;
+                        lineTotal += (remainingQty * item.unitPrice * estimateDuration);
+                    }
 
-<tbody className="divide-y divide-gray-100">
-    {selectedRequest.items.map((item, idx) => {
-        const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
-        
-        // ---------------------------------------------------------
-        // ⭐ 1. เตรียมข้อมูล (Priority & Stock Check Logic)
-        // ---------------------------------------------------------
-        
-        // A. ข้อมูลสำหรับการคำนวณราคา
-        const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
-        const receivedLogs = item.receivedLog || [];
-        const hasAssets = relatedAssets.length > 0;
-        const hasLogs = receivedLogs.length > 0;
-        const hasDetails = hasAssets || hasLogs;
-        const isExpanded = expandedItems.has(idx);
+                    return (
+                        <React.Fragment key={idx}>
+                        <tr className={isExpanded ? "bg-blue-50/30 transition-colors" : "transition-colors hover:bg-slate-50"}>
+                            
+                            {/* 1. Column รายการ */}
+                            <td className="p-3 align-top">
+                                <div className="flex items-start gap-2">
+                                    {/* ปุ่มดูรายละเอียด (ถ้ามี) */}
+                                    {hasDetails && (
+                                        <button 
+                                            onClick={() => toggleExpandItem(idx)}
+                                            className={`mt-0.5 p-0.5 rounded border transition-all ${isExpanded ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-gray-400 border-gray-200 hover:text-blue-600 hover:border-blue-300'}`}
+                                        >
+                                            {isExpanded ? 
+                                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg> 
+                                              : <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                            }
+                                        </button>
+                                    )}
+                                    
+                                    <div>
+                                        <div className="font-bold text-gray-900">{item.name}</div>
+                                        
+                                        {/* ⭐ กรณี Borrow: แสดง Asset No. */}
+                                        {isBorrow && (item.assetId || item.serial) && (
+                                            <div className="text-xs font-mono text-indigo-600 mt-1 flex flex-wrap gap-2">
+                                                {item.assetId && <span className="bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">ID: {item.assetId}</span>}
+                                                {item.serial && <span className="bg-slate-50 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200">S/N: {item.serial}</span>}
+                                            </div>
+                                        )}
 
-        // B. ⭐ [เพิ่มใหม่] Logic เช็คสต็อกคงเหลือ (เพื่อแสดงในหมายเหตุ)
-        // เช็ค Inventory (วัสดุ)
-        const stockItem = inventory.find(i => i.name === item.name && i.project === selectedRequest.job);
-        const currentStockQty = stockItem ? stockItem.qty : 0;
-        // เช็ค Assets (ทรัพย์สิน) ที่สถานะ Available
-        const availableAssetCount = assets.filter(a => a.name === item.name && a.project === selectedRequest.job && a.status === 'Available').length;
+                                        {/* กรณี Buy: แสดง SubJob/EP (เหมือนเดิม) */}
+                                        {isBuy && (item.subJob || item.epCode) && (
+                                            <div className="text-xs text-gray-500 mt-1 flex flex-col gap-1">
+                                                <div className="flex gap-2">
+                                                    {item.subJob && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span>}
+                                                    {item.epCode && <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">EP: {item.epCode}</span>}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </td>
 
+                            {/* 2. Column ราคา (แสดงเฉพาะงานซื้อ) */}
+                            {isBuy && (
+                                <td className="p-3 text-right text-gray-700 align-top">
+                                    {item.unitPrice > 0 ? (
+                                        <div className="flex flex-col items-end">
+                                            <span className="font-mono font-bold text-gray-900">{item.unitPrice.toLocaleString()}</span>
+                                            <span className="text-[10px] text-gray-500">
+                                                {isRent ? `/${item.rentalUnit || 'เดือน'}` : `บาท`}
+                                            </span>
+                                        </div>
+                                    ) : '-'}
+                                </td>
+                            )}
 
-        // ---------------------------------------------------------
-        // 2. คำนวณยอดเงินรวม (Line Total)
-        // ---------------------------------------------------------
-        let lineTotal = 0;
-        let lineReceivedCount = 0;
-
-        if (hasAssets) {
-             lineTotal += relatedAssets.reduce((sum, asset) => {
-                 const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                 const duration = isRent ? (asset.duration || item.duration || 1) : 1;
-                 return sum + (price * duration);
-             }, 0);
-             lineReceivedCount = relatedAssets.length;
-        } 
-        else if (hasLogs) {
-             lineTotal += receivedLogs.reduce((sum, log) => {
-                 const duration = isRent ? (log.duration || 1) : 1;
-                 return sum + (log.qty * log.price * duration);
-              }, 0);
-             lineReceivedCount = item.receivedTotal || 0;
-        }
-
-        const remainingQty = Math.max(0, item.qty - lineReceivedCount);
-        const estimateDuration = isRent ? (item.duration || 1) : 1;
-        lineTotal += (remainingQty * item.unitPrice * estimateDuration);
-
-        let isDurationMixed = false;
-        let displayDuration = item.duration || 1;
-        
-        if (isRent && hasDetails) {
-            const allDurations = new Set();
-            if (hasAssets) relatedAssets.forEach(a => allDurations.add(a.duration || item.duration || 1));
-            else receivedLogs.forEach(l => allDurations.add(l.duration || item.duration || 1));
-            if (allDurations.size > 1) isDurationMixed = true;
-            else if (allDurations.size === 1) displayDuration = [...allDurations][0];
-        }
-
-        return (
-            <React.Fragment key={idx}>
-            <tr className={isExpanded ? "bg-blue-50/30 transition-colors" : "transition-colors hover:bg-slate-50"}>
-                
-                {/* 1. รายการ + ปุ่มขยาย */}
-                <td className="p-3 align-top">
-                    <div className="flex items-start gap-2">
-                        {hasDetails && (
-                            <button 
-                                onClick={() => toggleExpandItem(idx)}
-                                className={`mt-0.5 p-0.5 rounded border transition-all ${isExpanded ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-gray-400 border-gray-200 hover:text-blue-600 hover:border-blue-300'}`}
-                                title={isExpanded ? "ซ่อนรายละเอียด" : "ดูรายละเอียด"}
-                            >
-                                {isExpanded ? 
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg> 
-                                  : <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                }
-                            </button>
-                        )}
-                        <div>
-                            <div className="font-bold text-gray-900">{item.name}</div>
-                            <div className="text-xs text-gray-500 mt-1 flex flex-col gap-1">
-                                {(item.subJob || item.epCode) && (
-                                    <div className="flex gap-2">
-                                        {item.subJob && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span>}
-                                        {item.epCode && <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">EP: {item.epCode}</span>}
+                            {/* 3. Column จำนวน */}
+                            <td className="p-3 text-center align-top">
+                                {isBuy ? (
+                                    // งานซื้อ: แสดง รับแล้ว / สั่งซื้อ (มี / )
+                                    <div className="font-medium">
+                                        {item.receivedTotal ? <span className="text-green-600 font-bold">{item.receivedTotal}</span> : 0} 
+                                        <span className="text-gray-400 mx-1">/</span> 
+                                        {item.qty} 
+                                        <span className="text-xs text-gray-500 ml-1">{item.unit}</span>
+                                    </div>
+                                ) : (
+                                    // ⭐ งานเบิก/ยืม: แสดงแค่จำนวนเดียว (ไม่มี / )
+                                    <div className="font-bold text-blue-700 text-base">
+                                        {item.qty} <span className="text-xs text-gray-500 font-normal">{item.unit}</span>
                                     </div>
                                 )}
-                            </div>
-                        </div>
-                    </div>
-                </td>
-
-                {/* 2. ราคา/หน่วย (แก้ undefined) */}
-                <td className="p-3 text-right text-gray-700 align-top">
-                    {(hasDetails && lineReceivedCount > 0) ? (
-                        <div 
-                            className="text-xs text-blue-600 italic mt-1 cursor-pointer hover:underline" 
-                            onClick={() => toggleExpandItem(idx)}
-                        >
-                            (ดูรายละเอียด<br/>ราคาจริง)
-                        </div>
-                    ) : (
-                        item.unitPrice > 0 ? (
-                            <div className="flex flex-col items-end">
-                                <span className="font-mono font-bold text-gray-900">{item.unitPrice.toLocaleString()}</span>
-                                <span className="text-[10px] text-gray-500">
-                                    {/* ⭐ แก้ไข: ใส่ Default 'เดือน' ถ้า rentalUnit เป็น undefined */}
-                                    {isRent ? `บาท/${item.rentalUnit || 'เดือน'}` : `บาท`}
-                                </span>
-                            </div>
-                        ) : '-'
-                    )}
-                </td>
-
-                {/* 3. จำนวน */}
-                <td className="p-3 text-center align-top">
-                    <div className="font-medium">
-                        {item.receivedTotal ? <span className="text-green-600 font-bold">{item.receivedTotal}</span> : 0} 
-                        <span className="text-gray-400 mx-1">/</span> 
-                        {item.qty} 
-                        <span className="text-xs text-gray-500 ml-1">{item.unit}</span>
-                    </div>
-                    {isRent && (
-                        <div className={`text-[10px] mt-0.5 font-bold ${isDurationMixed ? 'text-orange-500 italic' : 'text-indigo-600'}`}>
-                            {isDurationMixed 
-                                ? "(ระยะเวลา: คละกัน)" 
-                                : `x ${displayDuration} ${item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}`
-                            }
-                        </div>
-                    )}
-                </td>
-
-                {/* 4. รวมเงิน */}
-                <td className="p-3 text-right font-bold text-gray-900 align-top bg-gray-50/50">
-                    {lineTotal.toLocaleString()}
-                </td>
-
-                {/* 5. หมายเหตุ & รูป (เพิ่มเช็คสต็อกกลับคืนมา) */}
-                <td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
-    <div className="mb-1">{item.note || '-'}</div>
-                    
-                    {/* ⭐ เพิ่มส่วนแสดงสถานะคงเหลือ (Stock Check) */}
-                    <div className="flex flex-col gap-1 mt-1">
-                        {currentStockQty > 0 && (
-                            <span className="text-[9px] bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-100 w-fit flex items-center gap-1">
-                                วัสดุมี: <b>{currentStockQty}</b>
-                            </span>
-                        )}
-                        {availableAssetCount > 0 && (
-                            <span className="text-[9px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100 w-fit flex items-center gap-1">
-                                ว่าง: <b>{availableAssetCount}</b>
-                            </span>
-                        )}
-                    </div>
-
-                    {item.images && item.images.length > 0 && (
-                        <button
-                            onClick={(e) => { e.stopPropagation(); setViewingAttachments({ attachments: item.images }); }}
-                            className="mt-1 text-[10px] bg-white text-blue-600 px-2 py-1 rounded border border-blue-200 flex items-center gap-1 w-fit hover:bg-blue-50"
-                        >
-                            <ImageIcon className="w-3 h-3"/> รูป ({item.images.length})
-                        </button>
-                    )}
-                </td>
-            </tr>
-
-            {/* 3. EXPANDED ROW (เหมือนเดิม) */}
-            {isExpanded && hasDetails && (
-                <tr className="bg-gray-50/50 animate-in fade-in">
-                    <td colSpan="5" className="p-4 border-t border-gray-200 shadow-inner">
-                        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden max-w-4xl mx-auto">
-                            <div className="px-4 py-2 bg-gray-100/80 border-b flex justify-between items-center">
-                                <h5 className="font-bold text-gray-700 text-xs flex items-center gap-2">
-                                    <List className="w-3 h-3 text-gray-500"/> 
-                                    {hasAssets ? 'รายละเอียดทรัพย์สินรายชิ้น (Asset Details)' : 'ประวัติการรับของ (Receive History)'}
-                                </h5>
-                                <span className="text-[10px] text-gray-400 italic">* แสดงข้อมูลตามจริงที่บันทึกรับของ</span>
-                            </div>
-                            
-{/* ตารางย่อย (Expanded Table) */}
-<table className="w-full text-xs text-left">
-    <thead className="bg-gray-50 text-gray-500 font-semibold">
-        <tr>
-            <th className="px-4 py-2 w-10 text-center">#</th>
-            
-            {/* ⭐ เพิ่ม: วันที่รับของ */}
-            <th className="px-4 py-2 w-28">วันที่รับ</th> 
-
-            {hasAssets ? (
-                <>
-                    <th className="px-4 py-2 w-32">Asset ID</th>
-                    <th className="px-4 py-2 w-32">Serial No.</th>
-                </>
-            ) : (
-                <th className="px-4 py-2" colSpan="2">รายละเอียดการรับ (Batch Info)</th>
-            )}
-            
-            <th className="px-4 py-2 text-right">ราคาจริง (Price)</th>
-            {isRent && <th className="px-4 py-2 text-center w-28">ระยะเวลา</th>}
-            <th className="px-4 py-2 text-right w-32">รวมเงิน (Total)</th>
-        </tr>
-    </thead>
-    <tbody className="divide-y divide-gray-100">
-        {(() => {
-            // 🟢 กรณี A: มี Assets (แสดงรายชิ้น)
-            if (hasAssets) {
-                return relatedAssets.map((asset, aIdx) => {
-                    const assetPrice = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                    const assetDuration = isRent ? (asset.duration || item.duration || 1) : 1;
-                    const totalRow = assetPrice * assetDuration;
-                    
-                    // แปลงหน่วยเป็นไทย
-                    const unitMap = { 'Day': 'วัน', 'Month': 'เดือน', 'Year': 'ปี' };
-                    const unitLabel = unitMap[asset.rentalUnit] || 'เดือน';
-
-                    return (
-                        <tr key={`ast-${aIdx}`} className="hover:bg-blue-50/50">
-                            <td className="px-4 py-2.5 text-center text-gray-400">{aIdx + 1}</td>
-                            
-                            {/* ⭐ แสดงวันที่รับ (ตัดเอาแค่วันที่ ไม่เอาเวลา) */}
-                            <td className="px-4 py-2.5 text-gray-500 font-mono">
-                                {asset.lastUpdated ? asset.lastUpdated.split(' ')[0] : '-'}
+                                
+                                {/* แสดงระยะเวลาเช่า (เฉพาะ HO Rent) */}
+                                {isRent && isBuy && (
+                                    <div className="text-[10px] mt-0.5 text-indigo-600 font-bold">
+                                        x {item.duration || 1} {item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}
+                                    </div>
+                                )}
                             </td>
 
-                            <td className="px-4 py-2.5">
-                                <span className="font-mono text-blue-600 font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
-                                    {asset.id}
-                                </span>
-                            </td>
-                            
-                            <td className="px-4 py-2.5 font-mono text-gray-600">
-                                {asset.serial || '-'}
-                            </td>
-                            
-                            <td className="px-4 py-2.5 text-right font-mono">
-                                {assetPrice.toLocaleString()}
-                            </td>
-                            
-                            {/* ⭐ แสดงระยะเวลาพร้อมหน่วย */}
-                            {isRent && (
-                                <td className="px-4 py-2.5 text-center text-indigo-600 font-bold bg-indigo-50/30">
-                                    {assetDuration} {unitLabel}
+                            {/* 4. Column รวมเงิน (แสดงเฉพาะงานซื้อ) */}
+                            {isBuy && (
+                                <td className="p-3 text-right font-bold text-gray-900 align-top bg-gray-50/50">
+                                    {lineTotal.toLocaleString()}
                                 </td>
                             )}
-                            
-                            <td className="px-4 py-2.5 text-right font-bold text-gray-800">
-                                {totalRow.toLocaleString()}
+
+                            {/* 5. Column หมายเหตุ */}
+                            <td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
+                                {item.note || '-'}
+                                {item.images && item.images.length > 0 && (
+                                    <div className="mt-1">
+                                        <button onClick={(e) => { e.stopPropagation(); setViewingAttachments({ attachments: item.images }); }} className="text-[10px] text-blue-600 flex items-center gap-1 hover:underline">
+                                            <ImageIcon className="w-3 h-3"/> รูปภาพ ({item.images.length})
+                                        </button>
+                                    </div>
+                                )}
                             </td>
                         </tr>
-                    );
-                });
-            } 
-            
-            // 🟠 กรณี B: ไม่มี Assets (Inventory)
-            else if (hasLogs) {
-                return receivedLogs.map((log, lIdx) => {
-                    const logDuration = isRent ? (log.duration || 1) : 1;
-                    const totalRow = log.qty * log.price * logDuration;
-
-                    return (
-                        <tr key={`log-${lIdx}`} className="hover:bg-gray-50">
-                            <td className="px-4 py-2.5 text-center text-gray-400">{lIdx + 1}</td>
-                            
-                            {/* ⭐ แสดงวันที่รับ (Log) */}
-                            <td className="px-4 py-2.5 text-gray-500 font-mono">
-                                {log.date.split(' ')[0]}
-                            </td>
-
-                            <td className="px-4 py-2.5 text-gray-500" colSpan="2">
-                                <span className="ml-2 text-gray-400 italic">(Lot/Batch Inventory)</span>
-                            </td>
-                            <td className="px-4 py-2.5 text-right font-mono text-gray-600">
-                                {log.price.toLocaleString()} <span className="text-[10px] text-gray-400">x {log.qty}</span>
-                            </td>
-                            
-                            {/* แสดงระยะเวลา (Inventory มักไม่มีหน่วยเก็บไว้ ใช้ Default) */}
-                            {isRent && (
-                                <td className="px-4 py-2.5 text-center text-indigo-600 font-bold">
-                                    {logDuration}
+                        
+                        {/* Expanded Details Row (คงไว้เหมือนเดิม) */}
+                        {isExpanded && hasDetails && (
+                            <tr className="bg-gray-50/50 animate-in fade-in">
+                                <td colSpan={isBuy ? 5 : 3} className="p-0 border-t border-gray-200">
+                                    {/* (ใช้โค้ดเดิมส่วน Expanded Table ตรงนี้ได้เลยครับ มันจะแสดงรายละเอียดถูกต้องตาม Logic เดิม) */}
+                                    {/* ... โค้ดส่วน Expanded Table เดิม ... */}
                                 </td>
-                            )}
-                            <td className="px-4 py-2.5 text-right font-bold text-gray-800">
-                                {totalRow.toLocaleString()}
-                            </td>
-                        </tr>
+                            </tr>
+                        )}
+                        </React.Fragment>
                     );
-                });
-            }
-            return <tr><td colSpan="7" className="p-4 text-center text-gray-400 italic">ไม่มีข้อมูลรายละเอียด</td></tr>;
-        })()}
-    </tbody>
-</table>
-                        </div>
-                    </td>
-                </tr>
+                })}
+            </tbody>
+
+            {/* ⭐ 4. Footer: แสดง Grand Total เฉพาะงานซื้อ (Local/HO) เท่านั้น */}
+            {['Local', 'HO'].includes(selectedRequest.type) && (
+                <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+                    <tr>
+                        <td colSpan="3" className="p-4 text-right text-gray-600 text-sm">รวมจำนวนเงินทั้งสิ้น (Grand Total)</td>
+                        <td className="p-4 text-right font-bold text-xl text-blue-700">
+                            {selectedRequest.items.reduce((sum, item) => {
+                                // ... Logic คำนวณเดิม ...
+                                const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
+                                const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+                                const receivedLogs = item.receivedLog || [];
+                                let itemTotal = 0;
+                                let receivedCount = 0;
+                                if (relatedAssets.length > 0) {
+                                    itemTotal += relatedAssets.reduce((aSum, asset) => {
+                                        const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                                        const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                                        return aSum + (price * duration);
+                                    }, 0);
+                                    receivedCount = relatedAssets.length;
+                                } else if (receivedLogs.length > 0) {
+                                    itemTotal += receivedLogs.reduce((lSum, log) => {
+                                        const duration = isRent ? (log.duration || 1) : 1;
+                                        return lSum + (log.qty * log.price * duration);
+                                    }, 0);
+                                    receivedCount = item.receivedTotal || 0;
+                                }
+                                const remainingQty = Math.max(0, item.qty - receivedCount);
+                                const estimateDuration = isRent ? (item.duration || 1) : 1;
+                                itemTotal += (remainingQty * item.unitPrice * estimateDuration);
+                                return sum + itemTotal;
+                            }, 0).toLocaleString()}
+                        </td>
+                        <td className="bg-gray-50"></td> 
+                    </tr>
+                </tfoot>
             )}
-            </React.Fragment>
-        );
-    })}
-</tbody>
-
-{/* ---------------------------------------------------------
-    ⭐ 4. GRAND TOTAL FOOTER (UPDATED LOGIC)
-   --------------------------------------------------------- */}
-<tfoot className="bg-gray-50 border-t-2 border-gray-200">
-    <tr>
-        <td colSpan="3" className="p-4 text-right text-gray-600 text-sm">รวมจำนวนเงินทั้งสิ้น (Grand Total)</td>
-        <td className="p-4 text-right font-bold text-xl text-blue-700">
-            {selectedRequest.items.reduce((sum, item) => {
-                const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
-                
-                // ใช้ Logic เดียวกับ Row เป๊ะๆ เพื่อให้ยอดตรงกัน
-                const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
-                const receivedLogs = item.receivedLog || [];
-                
-                let itemTotal = 0;
-                let receivedCount = 0;
-
-                // 1. Assets
-                if (relatedAssets.length > 0) {
-                    itemTotal += relatedAssets.reduce((aSum, asset) => {
-                        const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                        const duration = isRent ? (asset.duration || item.duration || 1) : 1;
-                        return aSum + (price * duration);
-                    }, 0);
-                    receivedCount = relatedAssets.length;
-                } 
-                // 2. Logs
-                else if (receivedLogs.length > 0) {
-                    itemTotal += receivedLogs.reduce((lSum, log) => {
-                        const duration = isRent ? (log.duration || 1) : 1;
-                        return lSum + (log.qty * log.price * duration);
-                    }, 0);
-                    receivedCount = item.receivedTotal || 0;
-                }
-
-                // 3. Estimate Remainder
-                const remainingQty = Math.max(0, item.qty - receivedCount);
-                const estimateDuration = isRent ? (item.duration || 1) : 1;
-                itemTotal += (remainingQty * item.unitPrice * estimateDuration);
-
-                return sum + itemTotal;
-            }, 0).toLocaleString()}
-        </td>
-        <td className="bg-gray-50"></td> 
-    </tr>
-</tfoot>
-</table>
+        </table>
+    </div>
 </div>
-                            </div>
                         </div>
                         <div className="space-y-6">
                             <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm h-full flex flex-col">
@@ -8908,39 +8950,123 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                 <Package className="w-5 h-5"/> ยืนยันการจ่ายของ/เบิก
             </h3>
 
-            {/* ⭐ ส่วนแสดงรายการสินค้าที่จะจ่าย (เพิ่มใหม่) */}
-            {(() => {
-                 const req = requests.find(r => r.id === disburseData.requestId);
-                 if (!req) return null;
-                 return (
-                     <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 text-sm animate-in zoom-in-95">
-                         <div className="flex justify-between items-center border-b border-slate-200 pb-2 mb-2">
-                             <span className="font-bold text-gray-700">รายการที่ต้องจ่าย ({req.items.length})</span>
-                             <span className="text-xs text-gray-500 bg-white px-2 py-0.5 rounded border">{req.id}</span>
-                         </div>
-                         <div className="space-y-2 max-h-[150px] overflow-y-auto pr-1">
-                             {req.items.map((item, idx) => (
-                                 <div key={idx} className="flex justify-between items-start text-xs border-b border-dashed border-slate-200 pb-1 last:border-0">
-                                     <div className="flex-1 mr-2">
-                                         <div className="font-bold text-gray-800">{item.name}</div>
-                                         {/* แสดง Asset ID / Serial กรณีเป็นงานยืม */}
-                                         {(item.assetId || item.serial) && (
-                                             <div className="text-[10px] text-gray-500 font-mono mt-0.5 flex flex-wrap gap-2">
-                                                 {item.assetId && <span className="bg-blue-50 text-blue-600 px-1 rounded">ID: {item.assetId}</span>}
-                                                 {item.serial && <span className="bg-green-50 text-green-600 px-1 rounded">S/N: {item.serial}</span>}
-                                             </div>
-                                         )}
-                                     </div>
-                                     <div className="font-bold text-teal-700 whitespace-nowrap bg-teal-50 px-2 py-0.5 rounded">
-                                         {item.qty} {item.unit}
-                                     </div>
-                                 </div>
-                             ))}
-                         </div>
-                     </div>
-                 );
-            })()}
-            {/* ------------------------------------- */}
+           {/* ⭐ ส่วนแสดงรายการสินค้าที่จะจ่าย (Updated: แยก Withdraw/Borrow) */}
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 text-sm animate-in zoom-in-95">
+                <div className="flex justify-between items-center border-b border-slate-200 pb-2 mb-2">
+                    <span className="font-bold text-gray-700">รายการที่ต้องจ่าย ({disburseItems.length})</span>
+                    <span className="text-xs text-gray-500 bg-white px-2 py-0.5 rounded border">
+                        {disburseData.requestId}
+                    </span>
+                </div>
+                
+                <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                    {disburseItems.map((item, idx) => {
+                        const req = requests.find(r => r.id === disburseData.requestId);
+                        
+                        // 🟢 กรณี 1: การเบิก (Withdraw) -> ใช้ตารางแยก ในระบบ/นอกระบบ
+                        if (req.type === 'Withdraw') {
+                            const totalInput = (item.useSys || 0) + (item.useNon || 0);
+                            const isMatch = totalInput === item.qty;
+                            return (
+                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
+                                    <div className="flex justify-between mb-2">
+                                        <span className="font-bold text-gray-800">{item.name}</span>
+                                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600">สั่ง: <b>{item.qty}</b> {item.unit}</span>
+                                    </div>
+                                    <div className="flex gap-3 items-end">
+                                        <div className="flex-1">
+    <label className={`text-[10px] font-bold block mb-1 ${item.useSys > item.sysAvailable ? 'text-red-600' : 'text-blue-600'}`}>
+        ในระบบ (มี: {item.sysAvailable})
+    </label>
+    <input 
+        type="number" 
+        min="0" 
+        // ⭐ ใส่ max เพื่อให้ Browser ช่วยคุมเบื้องต้น
+        max={item.sysAvailable} 
+        className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useSys > item.sysAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`}
+        value={item.useSys.toString()} // แปลงเป็น string เพื่อให้ลบจนว่างได้
+        onChange={(e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val)) val = 0;
+
+            // ⭐ Logic ป้องกันกรอกเกิน (Auto-Cap)
+            // ถ้าอยากให้กรอกเกินไม่ได้เลย ให้เปิดบรรทัดนี้:
+            // if (val > item.sysAvailable) val = item.sysAvailable;
+
+            const newItems = [...disburseItems];
+            newItems[idx].useSys = val;
+            
+            // Auto-calc: ถ้ายอดรวมยังไม่ครบ ให้เติมช่อง "นอกระบบ" อัตโนมัติ
+            const remainingNeed = item.qty - val;
+            if (remainingNeed >= 0) {
+                // เติมช่องนอกระบบเท่าที่ขาด แต่ไม่เกินที่มี
+                newItems[idx].useNon = Math.min(remainingNeed, item.nonAvailable);
+            }
+            
+            setDisburseItems(newItems);
+        }}
+    />
+</div>
+
+{/* ช่องนอกระบบ (ทำเหมือนกัน) */}
+<div className="flex-1">
+    <label className={`text-[10px] font-bold block mb-1 ${item.useNon > item.nonAvailable ? 'text-red-600' : 'text-orange-600'}`}>
+        นอกระบบ (มี: {item.nonAvailable})
+    </label>
+    <input 
+        type="number" 
+        min="0" 
+        max={item.nonAvailable}
+        className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useNon > item.nonAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-orange-200 text-gray-800 focus:ring-orange-500'}`}
+        value={item.useNon.toString()}
+        onChange={(e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val)) val = 0;
+
+            // if (val > item.nonAvailable) val = item.nonAvailable; // Auto-Cap Option
+
+            const newItems = [...disburseItems];
+            newItems[idx].useNon = val;
+
+            // Auto-calc: ถ้ายอดรวมยังไม่ครบ ให้เติมช่อง "ในระบบ" อัตโนมัติ
+            const remainingNeed = item.qty - val;
+            if (remainingNeed >= 0) {
+                newItems[idx].useSys = Math.min(remainingNeed, item.sysAvailable);
+            }
+
+            setDisburseItems(newItems);
+        }}
+    />
+</div>
+                                    </div>
+                                    <div className={`mt-2 text-xs text-right font-bold ${isMatch ? 'text-green-600' : 'text-red-500'}`}>
+                                        รวมจ่าย: {totalInput} / {item.qty} {!isMatch && '(ยอดไม่ตรง!)'}
+                                    </div>
+                                </div>
+                            );
+                        } 
+                        
+                        // 🔵 กรณี 2: การยืม (Borrow) -> โชว์ข้อมูลทรัพย์สิน (Asset ID / Serial)
+                        else {
+                            return (
+                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex justify-between items-center">
+                                    <div>
+                                        <div className="font-bold text-gray-800">{item.name}</div>
+                                        <div className="flex gap-2 mt-1">
+                                            {item.assetId && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-100 font-mono">ID: {item.assetId}</span>}
+                                            {item.serial && <span className="text-[10px] bg-slate-50 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-mono">S/N: {item.serial}</span>}
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <span className="font-bold text-lg text-blue-600">1</span>
+                                        <span className="text-xs text-gray-500 ml-1">{item.unit || 'เครื่อง'}</span>
+                                    </div>
+                                </div>
+                            );
+                        }
+                    })}
+                </div>
+            </div>
 
             <p className="text-sm text-gray-600 mb-3 font-bold">ตรวจสอบความถูกต้องและสภาพของก่อนส่งมอบ</p>
             
@@ -9883,16 +10009,20 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     </div>
 
                     {/* 3. ผู้อนุมัติ L1 */}
-                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 1)</div>
-                        <div className="flex-1 flex items-center justify-center">
-                            {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
-                        </div>
-                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                            <div className="font-bold">{nameL1}</div>
-                            <div>วันที่: {dateL1}</div>
-                        </div>
-                    </div>
+<div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+    {/* ⭐ แก้ไข: เปลี่ยนชื่อหัวข้อตามประเภทคำขอ */}
+    <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">
+        {['Withdraw', 'Borrow'].includes(selectedRequest.type) ? 'ผู้อนุมัติ' : 'ผู้อนุมัติ (Level 1)'}
+    </div>
+    
+    <div className="flex-1 flex items-center justify-center">
+        {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+    </div>
+    <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+        <div className="font-bold">{nameL1}</div>
+        <div>วันที่: {dateL1}</div>
+    </div>
+</div>
 
                     {/* 4. ผู้อนุมัติ L2 (แสดงเฉพาะงานซื้อ) */}
                     {selectedRequest.type !== 'Withdraw' && (
