@@ -5099,14 +5099,15 @@ const PublicAnnouncementPopup = () => (
                                                        const isOver = item.used > item.budget;
                                                        return (
                                                            <div 
-                                                                key={i} 
-                                                                className={`group relative flex flex-col justify-end items-center h-full min-w-[40px] flex-1 ${!activeGroup && item.isGroup ? 'cursor-pointer hover:bg-gray-100/50 rounded-t transition-colors' : ''}`}
-                                                                onClick={() => {
-                                                                    if (!activeGroup && item.isGroup) {
-                                                                        setDrillDownState(prev => ({ ...prev, [chart.type]: item.code }));
-                                                                    }
-                                                                }}
-                                                           >
+    key={i} 
+    // ⭐ เพิ่ม hover:z-20 เพื่อให้แท่งที่ชี้ลอยขึ้นมาอยู่ชั้นบนสุด Tooltip จะได้ไม่โดนบัง
+    className={`group relative flex flex-col justify-end items-center h-full min-w-[40px] flex-1 hover:z-20 ${!activeGroup && item.isGroup ? 'cursor-pointer hover:bg-gray-100/50 rounded-t transition-colors' : ''}`}
+    onClick={() => {
+        if (!activeGroup && item.isGroup) {
+            setDrillDownState(prev => ({ ...prev, [chart.type]: item.code }));
+        }
+    }}
+>
                                                                  {/* Percent Label */}
                                                                <div 
                                                                    className="absolute text-center transition-all duration-300 z-10 w-20 pointer-events-none"
@@ -5128,20 +5129,37 @@ const PublicAnnouncementPopup = () => (
                                                                    {item.code} {/* code ในที่นี้คือชื่อ Group หรือชื่อ SubJob */}
                                                                </div>
 
-                                                     {/* Tooltip Large (ปรับตำแหน่งให้อยู่ตรงกลาง) */}
-                                                   <div className="chart-tooltip absolute bottom-full left-1/2 -translate-x-1/2 mb-4 z-50 hidden group-hover:block pointer-events-none">
-                                                       <div className="bg-gray-900 text-white text-sm p-4 rounded-xl shadow-2xl relative min-w-[180px] whitespace-nowrap">
-                                                           <div className="font-bold text-yellow-300 text-lg mb-2 border-b border-gray-600 pb-1">{item.isGroup ? 'Group: ' : ''}{item.code}</div>
-                                                           <div className="grid grid-cols-2 gap-x-4">
-                                                               <span className="text-gray-400">งบ:</span> <span className="text-right font-mono">{item.budget.toLocaleString()}</span>
-                                                               <span className="text-gray-400">ใช้:</span> <span className="text-right font-mono">{item.used.toLocaleString()}</span>
-                                                               <span className="text-gray-400">เหลือ:</span> <span className={`text-right font-mono ${item.budget - item.used < 0 ? 'text-red-400' : 'text-green-400'}`}>{(item.budget - item.used).toLocaleString()}</span>
-                                                           </div>
-                                                           {!activeGroup && <div className="text-[10px] text-gray-400 mt-2 text-center border-t border-gray-700 pt-1">คลิกเพื่อดูรายละเอียด</div>}
-                                                           {/* ลูกศรชี้ลง */}
-                                                           <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-gray-900"></div>
-                                                       </div>
-                                                   </div>
+{/* Tooltip Small (Overlay on Bar) */}
+<div className="chart-tooltip absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 hidden group-hover:block pointer-events-none">
+    <div className="bg-gray-900/95 backdrop-blur text-white p-2.5 rounded-lg shadow-xl relative min-w-[140px] whitespace-nowrap border border-gray-700">
+        {/* Header Title */}
+        <div className="font-bold text-yellow-300 text-xs mb-1.5 border-b border-gray-600 pb-1">
+            {item.isGroup ? 'Group: ' : ''}{item.code}
+        </div>
+        
+        {/* Body Content */}
+        <div className="space-y-0.5 text-[10px]">
+            <div className="flex justify-between gap-3">
+                <span className="text-gray-400">งบ:</span> 
+                <span className="font-mono font-bold">{item.budget.toLocaleString()}</span>
+            </div>
+            
+            <div className="flex justify-between gap-3">
+                <span className="text-gray-400">ใช้:</span> 
+                <span className="font-mono font-bold text-blue-300">{item.used.toLocaleString()}</span>
+            </div>
+            
+            <div className="flex justify-between gap-3">
+                <span className="text-gray-400">เหลือ:</span> 
+                <span className={`font-mono font-bold ${item.budget - item.used < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {(item.budget - item.used).toLocaleString()}
+                </span>
+            </div>
+        </div>
+
+        {!activeGroup && <div className="text-[8px] text-gray-500 mt-1.5 text-center pt-1 border-t border-gray-700/50">*คลิกดูรายละเอียด</div>}
+    </div>
+</div>
                                                            </div>
                                                        );
                                                    })}
@@ -5400,31 +5418,37 @@ const PublicAnnouncementPopup = () => (
                                                    <div className="mt-4 text-xs font-bold text-gray-600 -rotate-45 origin-top-left translate-y-2 whitespace-nowrap">
                                                        {item.code}
                                                    </div>
+{/* Tooltip Expanded (Overlay on Bar) */}
+<div className="chart-tooltip absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 hidden group-hover:block pointer-events-none">
+    <div className="bg-gray-900/95 backdrop-blur text-white p-3 rounded-lg shadow-2xl relative min-w-[170px] whitespace-nowrap border border-gray-700">
+        {/* Header Title */}
+        <div className="font-bold text-yellow-300 text-sm mb-2 border-b border-gray-600 pb-1.5">
+            {item.isGroup ? 'Group: ' : ''}{item.code}
+        </div>
+        
+        {/* Body Content */}
+        <div className="space-y-1 text-xs">
+            <div className="flex justify-between gap-5">
+                <span className="text-gray-400">งบประมาณ:</span> 
+                <span className="font-mono font-bold">{item.budget.toLocaleString()}</span>
+            </div>
+            
+            <div className="flex justify-between gap-5">
+                <span className="text-gray-400">ใช้จริง:</span> 
+                <span className="font-mono font-bold text-blue-300">{item.used.toLocaleString()}</span>
+            </div>
+            
+            <div className="flex justify-between gap-5">
+                <span className="text-gray-400">คงเหลือ:</span> 
+                <span className={`font-mono font-bold ${item.budget - item.used < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {(item.budget - item.used).toLocaleString()}
+                </span>
+            </div>
+        </div>
 
-                                                   {/* Tooltip Large (อัตโนมัติปรับตำแหน่งไม่ให้ล้นขอบ) */}
-                                                   <div className="chart-tooltip absolute bottom-full mb-4 z-50 hidden group-hover:block pointer-events-none" 
-                                                        style={{
-                                                            left: i < 2 ? '0' : i >= displayData.length - 2 ? 'auto' : '50%',
-                                                            right: i >= displayData.length - 2 ? '0' : 'auto',
-                                                            transform: i < 2 ? 'none' : i >= displayData.length - 2 ? 'none' : 'translateX(-50%)'
-                                                        }}>
-                                                       <div className="bg-gray-900 text-white text-sm p-4 rounded-xl shadow-2xl relative min-w-[180px] whitespace-nowrap">
-                                                           <div className="font-bold text-yellow-300 text-lg mb-2 border-b border-gray-600 pb-1">{item.isGroup ? 'Group: ' : ''}{item.code}</div>
-                                                           <div className="grid grid-cols-2 gap-x-4">
-                                                               <span className="text-gray-400">งบ:</span> <span className="text-right font-mono">{item.budget.toLocaleString()}</span>
-                                                               <span className="text-gray-400">ใช้:</span> <span className="text-right font-mono">{item.used.toLocaleString()}</span>
-                                                               <span className="text-gray-400">เหลือ:</span> <span className={`text-right font-mono ${item.budget - item.used < 0 ? 'text-red-400' : 'text-green-400'}`}>{(item.budget - item.used).toLocaleString()}</span>
-                                                           </div>
-                                                           {!activeGroup && <div className="text-[10px] text-gray-400 mt-2 text-center border-t border-gray-700 pt-1">คลิกเพื่อดูรายละเอียด</div>}
-                                                           {/* ลูกศรชี้ลง (ปรับตำแหน่งตามตำแหน่งแท่ง) */}
-                                                           <div className="absolute top-full border-8 border-transparent border-t-gray-900" 
-                                                                style={{
-                                                                    left: i < 2 ? '16px' : i >= displayData.length - 2 ? 'auto' : '50%',
-                                                                    right: i >= displayData.length - 2 ? '16px' : 'auto',
-                                                                    transform: i < 2 || i >= displayData.length - 2 ? 'none' : 'translateX(-50%)'
-                                                                }}></div>
-                                                       </div>
-                                                   </div>
+        {!activeGroup && <div className="text-[9px] text-gray-500 mt-2 text-center pt-1.5 border-t border-gray-700/50">คลิกแท่งกราฟเพื่อดูรายละเอียด</div>}
+    </div>
+</div>
                                                </div>
                                            );
                                       })}
