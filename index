@@ -2695,6 +2695,19 @@ const getItemLatestImage = (item) => {
     return null;
 };
 
+// --- HELPER: ดึงรูปภาพ 'ทั้งหมด' จากประวัติล่าสุด (สำหรับดู Fullscreen) ---
+const getItemLatestImages = (item) => {
+    // ใช้ Logic เดียวกันแต่ return images ทั้ง array
+    const log = invLogs.find(l => {
+        if (!l.images || l.images.length === 0) return false;
+        if (item.id && item.id.startsWith('AST')) {
+             return l.assetId === item.id;
+        }
+        return l.item === item.name;
+    });
+    return log ? log.images : [];
+};
+
 
 
 const getSelectionItems = () => {
@@ -7175,18 +7188,20 @@ filteredRequests.map(req => {
                      {getSelectionItems().map((item, idx) => (
                          <div key={idx} onClick={() => handleSelectFromModal(item)} className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm hover:border-blue-400 hover:shadow-md cursor-pointer transition-all flex gap-3 items-center group">
                              {/* ⭐ ส่วนแสดงรูปภาพ (Updated) */}
-<div 
+ <div 
     className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 border overflow-hidden relative cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all"
     onClick={(e) => {
-        const img = getItemLatestImage(item);
-        if (img) {
-            e.stopPropagation(); // ป้องกันไม่ให้ไป trigger การเลือกรายการ
-            setViewingAttachments({ attachments: [img] }); // เปิดดูรูปขยาย
+        // ⭐ แก้ไข: ดึงรูปทั้งหมดมาแสดง
+        const images = getItemLatestImages(item);
+        if (images.length > 0) {
+            e.stopPropagation();
+            setViewingAttachments({ attachments: images });
         }
     }}
-    title="คลิกเพื่อดูรูปภาพขยาย"
+    title="คลิกเพื่อดูรูปภาพขยายทั้งหมด"
 >
     {(() => {
+        // Preview ยังคงใช้รูปแรกเหมือนเดิม
         const img = getItemLatestImage(item);
         if (img) {
             return (
@@ -7197,6 +7212,12 @@ filteredRequests.map(req => {
                         className="w-full h-full object-cover hover:scale-110 transition-transform duration-300" 
                         onError={(e) => e.target.style.display = 'none'}
                     />
+                    {/* แสดงจำนวนรูปถ้ามีมากกว่า 1 */}
+                    {getItemLatestImages(item).length > 1 && (
+                        <div className="absolute top-0 left-0 bg-black/60 text-white px-1 text-[9px] rounded-br">
+                            +{getItemLatestImages(item).length - 1}
+                        </div>
+                    )}
                     <div className="absolute bottom-0 right-0 bg-black/50 text-white p-0.5 rounded-tl-md">
                         <ImageIcon className="w-3 h-3"/>
                     </div>
@@ -7207,6 +7228,7 @@ filteredRequests.map(req => {
         }
     })()}
 </div>
+
                             <div className="flex-1 min-w-0">
     <h4 className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors">{item.name}</h4>
     <p className="text-xs text-gray-500 truncate font-mono">{item.id || item.serial || '-'}</p>
@@ -9114,88 +9136,126 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     </span>
                 </div>
                 
-                <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+       <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
                     {disburseItems.map((item, idx) => {
                         const req = requests.find(r => r.id === disburseData.requestId);
                         
+                        // ⭐ สร้าง Object สำหรับดึงรูป (ถ้ามี Asset ID ให้ใช้เป็น ID หลักเพื่อความแม่นยำ)
+                        const itemForImage = { ...item, id: item.assetId || item.id };
+
+                        // ⭐ Component แสดงรูปภาพ (Image Block) - Updated
+                        const ImageBlock = (
+                            <div 
+                                className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 border overflow-hidden relative cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all shadow-sm"
+                                onClick={(e) => {
+                                    // ⭐ แก้ไข: ดึงรูปทั้งหมดมาแสดง
+                                    const images = getItemLatestImages(itemForImage);
+                                    if (images.length > 0) {
+                                        e.stopPropagation();
+                                        setViewingAttachments({ attachments: images });
+                                    }
+                                }}
+                                title="คลิกเพื่อดูรูปภาพขยายทั้งหมด"
+                            >
+                                {(() => {
+                                    // Preview ยังคงใช้รูปแรก
+                                    const img = getItemLatestImage(itemForImage);
+                                    // เช็คจำนวนรูปเพื่อแสดง Badge
+                                    const allImages = getItemLatestImages(itemForImage);
+                                    
+                                    if (img) {
+                                        return (
+                                            <>
+                                                <img 
+                                                    src={getDriveImageUrl(img.url || img.base64)} 
+                                                    alt="preview" 
+                                                    className="w-full h-full object-cover hover:scale-110 transition-transform duration-300" 
+                                                    onError={(e) => e.target.style.display = 'none'}
+                                                />
+                                                {/* แสดงจำนวนรูปถ้ามีมากกว่า 1 */}
+                                                {allImages.length > 1 && (
+                                                    <div className="absolute top-0 left-0 bg-black/60 text-white px-1 text-[9px] rounded-br">
+                                                        +{allImages.length - 1}
+                                                    </div>
+                                                )}
+                                                <div className="absolute bottom-0 right-0 bg-black/50 text-white p-0.5 rounded-tl-md">
+                                                    <ImageIcon className="w-3 h-3"/>
+                                                </div>
+                                            </>
+                                        );
+                                    } else {
+                                        return <span className="text-[10px] text-gray-400 font-bold">ไม่มีภาพ</span>;
+                                    }
+                                })()}
+                            </div>
+                        );
+
                         // 🟢 กรณี 1: การเบิก (Withdraw) -> ใช้ตารางแยก ในระบบ/นอกระบบ
                         if (req.type === 'Withdraw') {
                             const totalInput = (item.useSys || 0) + (item.useNon || 0);
                             const isMatch = totalInput === item.qty;
                             return (
-                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
-                                    <div className="flex justify-between mb-2">
-                                        <span className="font-bold text-gray-800">{item.name}</span>
-                                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600">สั่ง: <b>{item.qty}</b> {item.unit}</span>
-                                    </div>
-                                    <div className="flex gap-3 items-end">
-                                        <div className="flex-1">
-    <label className={`text-[10px] font-bold block mb-1 ${item.useSys > item.sysAvailable ? 'text-red-600' : 'text-blue-600'}`}>
-        ในระบบ (มี: {item.sysAvailable})
-    </label>
-    <input 
-        type="number" 
-        min="0" 
-        // ⭐ ใส่ max เพื่อให้ Browser ช่วยคุมเบื้องต้น
-        max={item.sysAvailable} 
-        className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useSys > item.sysAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`}
-        value={item.useSys.toString()} // แปลงเป็น string เพื่อให้ลบจนว่างได้
-        onChange={(e) => {
-            let val = parseInt(e.target.value);
-            if (isNaN(val)) val = 0;
+                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex gap-3">
+                                    {/* ⭐ แสดงรูปด้านซ้าย */}
+                                    {ImageBlock}
 
-            // ⭐ Logic ป้องกันกรอกเกิน (Auto-Cap)
-            // ถ้าอยากให้กรอกเกินไม่ได้เลย ให้เปิดบรรทัดนี้:
-            // if (val > item.sysAvailable) val = item.sysAvailable;
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex justify-between mb-2">
+                                            <span className="font-bold text-gray-800">{item.name}</span>
+                                            <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600 whitespace-nowrap ml-2">สั่ง: <b>{item.qty}</b> {item.unit}</span>
+                                        </div>
+                                        <div className="flex gap-3 items-end">
+                                            <div className="flex-1">
+                                                <label className={`text-[10px] font-bold block mb-1 ${item.useSys > item.sysAvailable ? 'text-red-600' : 'text-blue-600'}`}>
+                                                    ในระบบ (มี: {item.sysAvailable})
+                                                </label>
+                                                <input 
+                                                    type="number" 
+                                                    min="0" 
+                                                    max={item.sysAvailable} 
+                                                    className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useSys > item.sysAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`}
+                                                    value={item.useSys.toString()} 
+                                                    onChange={(e) => {
+                                                        let val = parseInt(e.target.value);
+                                                        if (isNaN(val)) val = 0;
+                                                        const newItems = [...disburseItems];
+                                                        newItems[idx].useSys = val;
+                                                        const remainingNeed = item.qty - val;
+                                                        if (remainingNeed >= 0) {
+                                                            newItems[idx].useNon = Math.min(remainingNeed, item.nonAvailable);
+                                                        }
+                                                        setDisburseItems(newItems);
+                                                    }}
+                                                />
+                                            </div>
 
-            const newItems = [...disburseItems];
-            newItems[idx].useSys = val;
-            
-            // Auto-calc: ถ้ายอดรวมยังไม่ครบ ให้เติมช่อง "นอกระบบ" อัตโนมัติ
-            const remainingNeed = item.qty - val;
-            if (remainingNeed >= 0) {
-                // เติมช่องนอกระบบเท่าที่ขาด แต่ไม่เกินที่มี
-                newItems[idx].useNon = Math.min(remainingNeed, item.nonAvailable);
-            }
-            
-            setDisburseItems(newItems);
-        }}
-    />
-</div>
-
-{/* ช่องนอกระบบ (ทำเหมือนกัน) */}
-<div className="flex-1">
-    <label className={`text-[10px] font-bold block mb-1 ${item.useNon > item.nonAvailable ? 'text-red-600' : 'text-orange-600'}`}>
-        นอกระบบ (มี: {item.nonAvailable})
-    </label>
-    <input 
-        type="number" 
-        min="0" 
-        max={item.nonAvailable}
-        className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useNon > item.nonAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-orange-200 text-gray-800 focus:ring-orange-500'}`}
-        value={item.useNon.toString()}
-        onChange={(e) => {
-            let val = parseInt(e.target.value);
-            if (isNaN(val)) val = 0;
-
-            // if (val > item.nonAvailable) val = item.nonAvailable; // Auto-Cap Option
-
-            const newItems = [...disburseItems];
-            newItems[idx].useNon = val;
-
-            // Auto-calc: ถ้ายอดรวมยังไม่ครบ ให้เติมช่อง "ในระบบ" อัตโนมัติ
-            const remainingNeed = item.qty - val;
-            if (remainingNeed >= 0) {
-                newItems[idx].useSys = Math.min(remainingNeed, item.sysAvailable);
-            }
-
-            setDisburseItems(newItems);
-        }}
-    />
-</div>
-                                    </div>
-                                    <div className={`mt-2 text-xs text-right font-bold ${isMatch ? 'text-green-600' : 'text-red-500'}`}>
-                                        รวมจ่าย: {totalInput} / {item.qty} {!isMatch && '(ยอดไม่ตรง!)'}
+                                            <div className="flex-1">
+                                                <label className={`text-[10px] font-bold block mb-1 ${item.useNon > item.nonAvailable ? 'text-red-600' : 'text-orange-600'}`}>
+                                                    นอกระบบ (มี: {item.nonAvailable})
+                                                </label>
+                                                <input 
+                                                    type="number" 
+                                                    min="0" 
+                                                    max={item.nonAvailable}
+                                                    className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useNon > item.nonAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-orange-200 text-gray-800 focus:ring-orange-500'}`}
+                                                    value={item.useNon.toString()}
+                                                    onChange={(e) => {
+                                                        let val = parseInt(e.target.value);
+                                                        if (isNaN(val)) val = 0;
+                                                        const newItems = [...disburseItems];
+                                                        newItems[idx].useNon = val;
+                                                        const remainingNeed = item.qty - val;
+                                                        if (remainingNeed >= 0) {
+                                                            newItems[idx].useSys = Math.min(remainingNeed, item.sysAvailable);
+                                                        }
+                                                        setDisburseItems(newItems);
+                                                    }}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className={`mt-2 text-xs text-right font-bold ${isMatch ? 'text-green-600' : 'text-red-500'}`}>
+                                            รวมจ่าย: {totalInput} / {item.qty} {!isMatch && '(ยอดไม่ตรง!)'}
+                                        </div>
                                     </div>
                                 </div>
                             );
@@ -9204,23 +9264,29 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                         // 🔵 กรณี 2: การยืม (Borrow) -> โชว์ข้อมูลทรัพย์สิน (Asset ID / Serial)
                         else {
                             return (
-                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex justify-between items-center">
-                                    <div>
-                                        <div className="font-bold text-gray-800">{item.name}</div>
-                                        <div className="flex gap-2 mt-1">
-                                            {item.assetId && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-100 font-mono">ID: {item.assetId}</span>}
-                                            {item.serial && <span className="text-[10px] bg-slate-50 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-mono">S/N: {item.serial}</span>}
+                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex items-center gap-3">
+                                    {/* ⭐ แสดงรูปด้านซ้าย */}
+                                    {ImageBlock}
+
+                                    <div className="flex-1 flex justify-between items-center">
+                                        <div>
+                                            <div className="font-bold text-gray-800">{item.name}</div>
+                                            <div className="flex gap-2 mt-1">
+                                                {item.assetId && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-100 font-mono">ID: {item.assetId}</span>}
+                                                {item.serial && <span className="text-[10px] bg-slate-50 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-mono">S/N: {item.serial}</span>}
+                                            </div>
                                         </div>
-                                    </div>
-                                    <div className="text-right">
-                                        <span className="font-bold text-lg text-blue-600">1</span>
-                                        <span className="text-xs text-gray-500 ml-1">{item.unit || 'เครื่อง'}</span>
+                                        <div className="text-right">
+                                            <span className="font-bold text-lg text-blue-600">1</span>
+                                            <span className="text-xs text-gray-500 ml-1">{item.unit || 'เครื่อง'}</span>
+                                        </div>
                                     </div>
                                 </div>
                             );
                         }
                     })}
                 </div>
+
             </div>
 
             <p className="text-sm text-gray-600 mb-3 font-bold">ตรวจสอบความถูกต้องและสภาพของก่อนส่งมอบ</p>
@@ -11126,7 +11192,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                              <div className="flex justify-between items-center border-b pb-2 mb-4">
                                  <h4 className="font-bold text-gray-800 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
                                 {/* ⭐ แก้ไข 1: ปุ่มบันทึก - ให้เฉพาะ SuperAdmin, Admin(2), Sub-Admin(3) เห็น */}
-                                {(user.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
+                                {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
                                     <button 
                                         onClick={async () => {
                                             // ... (Logic การบันทึกเดิม คงไว้เหมือนเดิม) ...
@@ -11236,80 +11302,113 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                                 )}
                              </div>
 
-                             {/* Form Inputs */}
+      {/* Form Inputs */}
                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">รหัสพนักงาน (Emp ID)</label>
-                                    <input 
-                                        type="text" 
-                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                        value={viewingUser.empId}
-                                        onChange={e => setViewingUser({...viewingUser, empId: e.target.value})}
-                                        /* ⭐ แก้ไข 2: ช่อง Input - ลบ owner ออก, เพิ่ม hasPermission(3) */
-                                        disabled={!(user.isSuperAdmin || hasPermission(2) || hasPermission(3))}
-                                    />
-                                </div>
-                                
-                                <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">อีเมล (Email)</label>
-                                    <input 
-                                        type="email" 
-                                        className="w-full p-2.5 border rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed focus:outline-none"
-                                        value={viewingUser.email}
-                                        disabled // อีเมลล็อกถาวร
-                                    />
-                                </div>
+                                {/* สร้างตัวแปรเช็คสิทธิ์แก้ไขข้อมูลพื้นฐาน (เฉพาะ Admin/Sub-Admin) */}
+                                {(() => {
+                                    const canEditBasicInfo = user.isSuperAdmin || hasPermission(2) || hasPermission(3);
+                                    
+                                    return (
+                                        <>
+                                            {/* 1. รหัสพนักงาน (Emp ID) */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 mb-1 block">รหัสพนักงาน (Emp ID)</label>
+                                                {canEditBasicInfo ? (
+                                                    <input 
+                                                        type="text" 
+                                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                                        value={viewingUser.empId}
+                                                        onChange={e => setViewingUser({...viewingUser, empId: e.target.value})}
+                                                    />
+                                                ) : (
+                                                    <div className="w-full p-2.5 bg-gray-50 rounded-lg text-sm font-bold text-gray-800 border border-transparent">
+                                                        {viewingUser.empId}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            
+                                            {/* 2. อีเมล (Email) */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 mb-1 block">อีเมล (Email)</label>
+                                                {/* อีเมลปกติมักจะไม่ให้แก้ หรือแก้ได้เฉพาะ Admin ก็ใช้ Logic เดียวกัน */}
+                                                {canEditBasicInfo ? (
+                                                    <input 
+                                                        type="email" 
+                                                        className="w-full p-2.5 border rounded-lg bg-gray-100 text-gray-500 focus:outline-none"
+                                                        value={viewingUser.email}
+                                                        disabled // อีเมลล็อกถาวรแม้จะเป็น Admin (ตาม Code เดิม) หรือถ้าอยากให้แก้ได้ให้เอา disabled ออก
+                                                    />
+                                                ) : (
+                                                    <div className="w-full p-2.5 bg-gray-50 rounded-lg text-sm font-bold text-gray-800 border border-transparent">
+                                                        {viewingUser.email}
+                                                    </div>
+                                                )}
+                                            </div>
 
-                                <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อ (First Name)</label>
-                                    <input 
-                                        type="text" 
-                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                        value={viewingUser.firstName}
-                                        onChange={e => setViewingUser({...viewingUser, firstName: e.target.value})}
-                                        /* ⭐ แก้ไข 2: ช่อง Input */
-                                        disabled={!(user.isSuperAdmin || hasPermission(2) || hasPermission(3))}
-                                    />
-                                </div>
-                                
-                                <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">นามสกุล (Last Name)</label>
-                                    <input 
-                                        type="text" 
-                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                        value={viewingUser.lastName}
-                                        onChange={e => setViewingUser({...viewingUser, lastName: e.target.value})}
-                                        /* ⭐ แก้ไข 2: ช่อง Input */
-                                        disabled={!(user.isSuperAdmin || hasPermission(2) || hasPermission(3))}
-                                    />
-                                </div>
-                                
-                                {/* Status (Admin Only - สิทธิ์ 2/3 ก็แก้สถานะได้ถ้าต้องการ หรือจะคงไว้แค่ Admin) */}
-                                <div>
-                                    <label className="text-xs font-bold text-gray-500 mb-1 block">สถานะ (Status)</label>
-                                    <div className={`p-2.5 border rounded-lg font-bold flex justify-between items-center ${viewingUser.status==='Activated'?'text-green-600 bg-green-50 border-green-100':'text-red-600 bg-red-50 border-red-100'}`}>
-                                        {viewingUser.status}
-                                      
-                                        {(user?.isSuperAdmin || hasPermission(2)) && (
-                                            <button 
-                                                onClick={async () => {
-                                                    const isActive = viewingUser.status === 'Activated'; 
-                                                    const newStatus = isActive ? 'Deactivated' : 'Activated';
-                                                    if(confirm(`ยืนยันการเปลี่ยนสถานะเป็น ${newStatus}?`)) {
-                                                        const updated = {...viewingUser, status: newStatus};
-                                                        google.script.run.saveUserData(updated);
-                                                        setAllUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
-                                                        setViewingUser(updated);
-                                                        showToast(`เปลี่ยนสถานะเป็น ${newStatus} เรียบร้อย`);
-                                                    }
-                                                }}
-                                                className="text-xs underline cursor-pointer hover:text-gray-800"
-                                            >
-                                                เปลี่ยนสถานะ
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
+                                            {/* 3. ชื่อ (First Name) */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อ (First Name)</label>
+                                                {canEditBasicInfo ? (
+                                                    <input 
+                                                        type="text" 
+                                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                                        value={viewingUser.firstName}
+                                                        onChange={e => setViewingUser({...viewingUser, firstName: e.target.value})}
+                                                    />
+                                                ) : (
+                                                    <div className="w-full p-2.5 bg-gray-50 rounded-lg text-sm font-bold text-gray-800 border border-transparent">
+                                                        {viewingUser.firstName}
+                                                    </div>
+                                                )}
+                                            </div>
+                                          
+                                            {/* 4. นามสกุล (Last Name) */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 mb-1 block">นามสกุล (Last Name)</label>
+                                                {canEditBasicInfo ? (
+                                                    <input 
+                                                        type="text" 
+                                                        className="w-full p-2.5 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                                        value={viewingUser.lastName}
+                                                        onChange={e => setViewingUser({...viewingUser, lastName: e.target.value})}
+                                                    />
+                                                ) : (
+                                                    <div className="w-full p-2.5 bg-gray-50 rounded-lg text-sm font-bold text-gray-800 border border-transparent">
+                                                        {viewingUser.lastName}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            
+                                            {/* 5. สถานะ (Status) */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 mb-1 block">สถานะ (Status)</label>
+                                                <div className={`p-2.5 rounded-lg font-bold flex justify-between items-center ${viewingUser.status==='Activated'?'text-green-600 bg-green-50 border border-green-100':'text-red-600 bg-red-50 border border-red-100'}`}>
+                                                    {viewingUser.status}
+                                                    
+                                                    {/* ปุ่มเปลี่ยนสถานะ เฉพาะ Admin/Sub-Admin */}
+                                                    {(user?.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
+                                                        <button 
+                                                            onClick={async () => {
+                                                                const isActive = viewingUser.status === 'Activated'; 
+                                                                const newStatus = isActive ? 'Deactivated' : 'Activated';
+                                                                if(confirm(`ยืนยันการเปลี่ยนสถานะเป็น ${newStatus}?`)) {
+                                                                    const updated = {...viewingUser, status: newStatus};
+                                                                    google.script.run.saveUserData(updated);
+                                                                    setAllUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
+                                                                    setViewingUser(updated);
+                                                                    showToast(`เปลี่ยนสถานะเป็น ${newStatus} เรียบร้อย`);
+                                                                }
+                                                            }}
+                                                            className="text-xs underline cursor-pointer hover:text-gray-800"
+                                                        >
+                                                            เปลี่ยนสถานะ
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </>
+                                    );
+                                })()}
                             </div>
 
 {/* --- ส่วนลายเซ็น (Signature) --- */}
@@ -11320,10 +11419,21 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
     
     <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
         
+        {/* ⭐ กรณีไม่มีลายเซ็น: แสดงข้อความแจ้งเตือน */}
+        {!viewingUser.signature && (
+            <div className="text-center py-6 flex flex-col items-center justify-center text-gray-400 border-2 border-dashed border-gray-300 rounded-xl bg-gray-50/50 mb-4">
+                <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mb-2 shadow-sm">
+                    <XCircle size={24} className="text-gray-400" />
+                </div>
+                <p className="text-sm font-bold text-gray-500">ไม่มีลายเซ็น (No Signature)</p>
+                <p className="text-xs text-gray-400 mt-1">ผู้ใช้นี้ยังไม่ได้บันทึกลายเซ็นในระบบ</p>
+            </div>
+        )}
+
+        {/* ⭐ กรณีมีลายเซ็น: แสดงสถานะ/ปุ่มดูไฟล์ */}
         {viewingUser.signature && (
             <div className="mb-4 flex flex-col items-center animate-in fade-in">
-                
-                {/* ⭐ แก้ไข 3: ปุ่มดูไฟล์ลายเซ็น - ให้ User, Admin(2), Sub-Admin(3) เห็น */}
+                {/* ปุ่มดูไฟล์ลายเซ็น - ให้ User, Admin(2), Sub-Admin(3) เห็น */}
                 {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) ? (
                     <div className="text-center">
                         <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-2 rounded-lg flex items-center gap-2 mb-3 shadow-sm mx-auto w-fit">
@@ -11343,7 +11453,7 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
                     /* ถ้าเป็นคนอื่นดู (ที่ไม่ใช่ Admin/SubAdmin) ให้เห็นแค่สถานะ */
                     <>
                         <div className="bg-green-50 border border-green-200 text-green-700 px-6 py-3 rounded-xl flex items-center gap-3 shadow-sm">
-                             <div className="bg-white p-1.5 rounded-full border border-green-100">
+                            <div className="bg-white p-1.5 rounded-full border border-green-100">
                                 <ShieldCheck size={20} className="text-green-600"/>
                             </div>
                             <div>
@@ -11356,10 +11466,10 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
             </div>
         )}
 
-        {/* ⭐ แก้ไข 4: ปุ่มวาด/อัปโหลด - ให้ User, Admin(2), Sub-Admin(3) ทำได้ */}
+        {/* ⭐ ส่วนจัดการ (วาด/อัปโหลด) - แสดงเฉพาะเจ้าของหรือ Admin */}
         {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
             <>
-                <div className="flex bg-white rounded-lg border border-gray-200 p-1 mb-3 w-fit mx-auto">
+                <div className="flex bg-white rounded-lg border border-gray-200 p-1 mb-3 w-fit mx-auto mt-4">
                     <button onClick={() => setSigMode('Draw')} className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${sigMode === 'Draw' ? 'bg-blue-50 text-blue-600' : 'text-gray-500'}`}>วาดลายเซ็น</button>
                     <button onClick={() => setSigMode('Upload')} className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${sigMode === 'Upload' ? 'bg-blue-50 text-blue-600' : 'text-gray-500'}`}>อัปโหลดไฟล์</button>
                 </div>
