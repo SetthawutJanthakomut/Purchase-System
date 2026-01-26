@@ -4676,12 +4676,31 @@ const handleSubmitContract = async () => {
               });
           });
 
-          subJobData.sort((a,b) => a.code.localeCompare(b.code));
+        subJobData.sort((a,b) => a.code.localeCompare(b.code));
           epCodeData.sort((a,b) => a.code.localeCompare(b.code));
 
-          return { subJobData, epCodeData };
-      }, [projects, requests, globalProjectFilter, assets]);
+          // ⭐ 3. Project Summary (สำหรับหน้า All Projects)
+          const projectSummary = projects.map(p => {
+              let pBudget = 0;
+              let pUsed = 0;
 
+              // รวมยอด SubJob
+              (p.subJobs || []).forEach(sj => {
+                  pBudget += (sj.budget || 0);
+                  pUsed += calculateUsedForProject(p.name, sj.code, 'SubJob');
+              });
+
+              // รวมยอด EPCode
+              (p.epCodes || []).forEach(ep => {
+                  pBudget += (ep.budget || 0);
+                  pUsed += calculateUsedForProject(p.name, ep.code, 'EPCode');
+              });
+
+              return { name: p.name, budget: pBudget, used: pUsed };
+          }).sort((a, b) => b.budget - a.budget); // เรียงตามงบมากไปน้อย
+
+          return { subJobData, epCodeData, projectSummary };
+      }, [projects, requests, globalProjectFilter, assets]);
 // --- HELPER: แปลง Google Drive URL เป็น Image Link ---
       const getDriveImageUrl = (src) => {
           if (!src) return null;
@@ -5167,12 +5186,97 @@ const PublicAnnouncementPopup = () => (
                                            </div>
                                       </div>
                                    )})}
+                               
                                </div>
-                       ) : (
-                               <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-300 mt-6">
-                                   <CreditCard className="w-12 h-12 mx-auto mb-3 text-gray-300"/>
-                                   <p className="text-gray-500 font-medium">เลือกโครงการเฉพาะเจาะจงเพื่อดูกราฟรายละเอียด (SubJob / EP Code)</p>
-                                   <p className="text-xs text-gray-400 mt-1">(ขณะนี้เลือก: ทุกโครงการ)</p>
+      
+                  ) : (
+                               // ⭐ กราฟรวมทุกโครงการ (Overview Chart)
+                               <div className="mt-6">
+                                   <div className="flex justify-between items-end mb-2">
+                                       <h4 className="font-bold text-gray-700 text-sm flex items-center gap-2">ภาพรวมงบประมาณรายโครงการ (Project Overview)</h4>
+                                       <div className="text-[10px] text-gray-400 flex gap-2">
+                                           <span className="flex items-center gap-1"><div className="w-2 h-2 bg-gray-300 rounded-sm"></div> งบประมาณ</span>
+                                           <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm bg-teal-600"></div> ใช้จริง</span>
+                                       </div>
+                                   </div>
+
+                                   <div className="relative border-b border-l border-gray-200 bg-gray-50/30 rounded-bl-lg">
+                                       {/* Grid Lines */}
+                                       <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-30">
+                                           <div className="border-t border-dashed border-gray-300 w-full h-full"></div>
+                                           <div className="border-t border-dashed border-gray-300 w-full h-full"></div>
+                                       </div>
+
+                                       <div className="relative h-64 w-full flex items-end gap-6 overflow-x-auto pb-4 px-4 pt-16 custom-scrollbar">
+                                           {budgetChartData.projectSummary.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-gray-300 text-sm">ไม่มีข้อมูลโครงการ</div>}
+                                           
+                                           {budgetChartData.projectSummary.map((proj, i) => {
+                                               // หาค่า Max เพื่อคำนวณความสูงกราฟ
+                                               const maxVal = Math.max(...budgetChartData.projectSummary.map(d => Math.max(d.budget, d.used))) || 1;
+                                               const budgetH = (proj.budget / maxVal) * 100;
+                                               const usedH = (proj.used / maxVal) * 100;
+                                               const percent = proj.budget > 0 ? (proj.used / proj.budget) * 100 : 0;
+                                               const isOver = proj.used > proj.budget;
+
+                                               return (
+                                                   <div 
+                                                       key={i} 
+                                                       className="group relative flex flex-col justify-end items-center h-full min-w-[60px] flex-1 hover:z-20 cursor-pointer hover:bg-gray-100/50 rounded-t transition-colors"
+                                                       onClick={() => setGlobalProjectFilter(proj.name)} // ⭐ คลิกแล้วเปลี่ยน Filter ไปที่โครงการนั้น
+                                                   >
+                                                       {/* Percent Label */}
+<div 
+    // ⭐ ลบ opacity-0 และ group-hover ออก เพื่อให้โชว์ตลอดเวลา
+    className="absolute text-center z-10 w-24 pointer-events-none mb-2"
+    // ⭐ ปรับตำแหน่ง bottom ให้ลอยเหนือแท่งกราฟพอดี
+    style={{ bottom: `${Math.max(budgetH, usedH)}%` }} 
+>
+     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isOver ? 'text-red-600' : 'text-teal-700'}`}>
+         {percent.toFixed(0)}%
+     </span>
+</div>
+
+                                                       {/* Bar */}
+                                                       <div className="relative w-10 h-full flex items-end justify-center pointer-events-none">
+                                                           <div className="absolute bottom-0 w-full bg-gray-300 rounded-t-sm transition-all" style={{ height: `${budgetH}%`, minHeight: '4px' }}></div>
+                                                           <div className={`absolute bottom-0 w-3/5 rounded-t-sm transition-all opacity-90 ${isOver ? 'bg-red-500' : 'bg-teal-600'}`} style={{ height: `${usedH}%`, minHeight: '1px' }}></div>
+                                                       </div>
+
+                                                       {/* Label */}
+                                                       <div className="mt-3 text-[10px] font-bold text-gray-500 -rotate-45 origin-top-left translate-y-2 whitespace-nowrap w-0 overflow-visible group-hover:text-teal-700 transition-colors">
+                                                           {proj.name}
+                                                       </div>
+
+                                                       {/* Tooltip */}
+                                                       <div className="chart-tooltip absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 hidden group-hover:block pointer-events-none">
+                                                           <div className="bg-gray-900/95 backdrop-blur text-white p-2.5 rounded-lg shadow-xl relative min-w-[150px] whitespace-nowrap border border-gray-700">
+                                                               <div className="font-bold text-yellow-300 text-xs mb-1.5 border-b border-gray-600 pb-1">
+                                                                   {proj.name}
+                                                               </div>
+                                                               <div className="space-y-0.5 text-[10px]">
+                                                                   <div className="flex justify-between gap-3">
+                                                                       <span className="text-gray-400">งบรวม:</span> 
+                                                                       <span className="font-mono font-bold">{proj.budget.toLocaleString()}</span>
+                                                                   </div>
+                                                                   <div className="flex justify-between gap-3">
+                                                                       <span className="text-gray-400">ใช้รวม:</span> 
+                                                                       <span className="font-mono font-bold text-blue-300">{proj.used.toLocaleString()}</span>
+                                                                   </div>
+                                                                   <div className="flex justify-between gap-3">
+                                                                       <span className="text-gray-400">คงเหลือ:</span> 
+                                                                       <span className={`font-mono font-bold ${proj.budget - proj.used < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                                                           {(proj.budget - proj.used).toLocaleString()}
+                                                                       </span>
+                                                                   </div>
+                                                               </div>
+                                                               <div className="text-[8px] text-gray-500 mt-1.5 text-center pt-1 border-t border-gray-700/50">*คลิกเพื่อดูรายละเอียด</div>
+                                                           </div>
+                                                       </div>
+                                                   </div>
+                                               );
+                                           })}
+                                       </div>
+                                   </div>
                                </div>
                            )}
                        </div>
