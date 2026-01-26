@@ -399,6 +399,7 @@ const [viewingUser, setViewingUser] = useState(null); // เก็บ User ท�
 const [userDetailTab, setUserDetailTab] = useState('info'); // info, purchase, withdraw, borrow
 const [detailSearch, setDetailSearch] = useState(''); // ช่องค้นหาในหน้า Detail
 const [userSearch, setUserSearch] = useState(''); // ⭐ เพิ่ม State สำหรับค้นหา User
+const [expandedBudgetGroups, setExpandedBudgetGroups] = useState({});
 
 const [announcements, setAnnouncements] = useState([]); 
     const [publicAnnounces, setPublicAnnounces] = useState([]); // สำหรับแสดงผลหน้าแรก
@@ -7596,19 +7597,103 @@ filteredRequests.map(req => {
                                 );
                             })()}
 
-{/* ⭐ INSERT: ส่วนแสดงงบประมาณ (Budget Tracking) - 3 สี ⭐ */}
+{/* ⭐ INSERT: ส่วนแสดงงบประมาณ (Budget Tracking) - Grouping Mode ⭐ */}
 {(() => {
-if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
-    const items = selectedRequest.items || [];
-    const uniqueSubJobs = [...new Set(items.map(i => i.subJob).filter(val => val))];
-    const uniqueEPCodes = [...new Set(items.map(i => i.epCode).filter(val => val))];
+    if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
     
-    if (uniqueSubJobs.length === 0 && uniqueEPCodes.length === 0) return null;
+    const items = selectedRequest.items || [];
+    const targetProjectName = selectedRequest.job;
+    const projectData = projects.find(p => p.name === targetProjectName);
+    
+    if (!projectData) return null;
 
-    const budgetList = [
-        ...uniqueSubJobs.map(c => ({code: c, type: 'SubJob'})),
-        ...uniqueEPCodes.map(c => ({code: c, type: 'EPCode'}))
-    ];
+    // 1. จัดกลุ่ม Code ที่มีในรายการ
+    const groups = {}; 
+
+    const processCodes = (codeList, type) => {
+        const uniqueCodes = [...new Set(codeList.filter(c => c))];
+        uniqueCodes.forEach(code => {
+            // หา Group จาก Project Data
+            const defs = type === 'SubJob' ? projectData.subJobs : projectData.epCodes;
+            const target = defs?.find(d => d.code === code);
+            const groupName = target?.group || 'Others'; 
+            
+            const groupKey = `${type}|${groupName}`;
+            if (!groups[groupKey]) {
+                groups[groupKey] = {
+                    type,
+                    name: groupName,
+                    codes: []
+                };
+            }
+            groups[groupKey].codes.push(code);
+        });
+    };
+
+    processCodes(items.map(i => i.subJob), 'SubJob');
+    processCodes(items.map(i => i.epCode), 'EPCode');
+
+    const groupKeys = Object.keys(groups).sort();
+    if (groupKeys.length === 0) return null;
+
+    // Helper Function: วาด Progress Bar (ใช้ร่วมกันทั้ง Group และ Code)
+    const renderProgressBar = (stats, label, badgeColor, isGroup, groupKey) => {
+        if (!stats || stats.budget === 0) return null;
+
+        const totalUsed = stats.used + stats.pending + stats.current;
+        const isOver = totalUsed > stats.budget;
+        const remaining = stats.budget - totalUsed;
+
+        // คำนวณ %
+        const usedPercent = Math.min((stats.used / stats.budget) * 100, 100);
+        const pendingPercent = Math.min((stats.pending / stats.budget) * 100, 100 - usedPercent);
+        const currentPercent = Math.min((stats.current / stats.budget) * 100, 100 - usedPercent - pendingPercent);
+
+        return (
+            <div className={`p-3 rounded-xl border transition-all ${isGroup ? 'bg-slate-50 border-slate-200' : 'bg-white border-slate-100 ml-6 mt-2 border-l-4 border-l-slate-300'}`}>
+                <div className="flex justify-between items-center mb-2">
+                    <div className="flex items-center gap-2">
+                        {/* ปุ่มขยาย (เฉพาะ Group) */}
+                        {isGroup && (
+                            <button 
+                                onClick={() => setExpandedBudgetGroups(prev => ({...prev, [groupKey]: !prev[groupKey]}))}
+                                className="p-1 hover:bg-gray-200 rounded-full transition-colors text-gray-500"
+                            >
+                                <ChevronRight size={16} className={`transition-transform duration-200 ${expandedBudgetGroups[groupKey] ? 'rotate-90' : ''}`}/>
+                            </button>
+                        )}
+                        
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${badgeColor}`}>
+                            {label}
+                        </span>
+                        
+                        {!isGroup && <span className="font-bold text-gray-800 text-sm">{label}</span>} {/* ถ้าเป็น Code ให้โชว์ชื่อ Code ซ้ำอีกทีชัดๆ */}
+                        
+                        <span className="text-xs text-gray-500">(งบ: {stats.budget.toLocaleString()})</span>
+                    </div>
+                    <div className={`text-sm font-bold ${isOver ? 'text-red-600' : 'text-gray-700'}`}>
+                        ใช้รวม {totalUsed.toLocaleString()} {isOver && <span className="text-xs bg-red-100 px-2 py-0.5 rounded ml-1 text-red-600">เกินงบ!</span>}
+                    </div>
+                </div>
+                
+                {/* Progress Bar Container */}
+                <div className="h-4 w-full bg-gray-200 rounded-full overflow-hidden flex relative shadow-inner">
+                    <div className="h-full bg-green-500 flex items-center justify-center text-[9px] text-white font-bold" style={{ width: `${usedPercent}%` }} title={`ใช้แล้ว: ${stats.used.toLocaleString()}`}></div>
+                    <div className="h-full bg-yellow-400 flex items-center justify-center text-[9px] text-yellow-900 font-bold" style={{ width: `${pendingPercent}%` }} title={`รออนุมัติ: ${stats.pending.toLocaleString()}`}></div>
+                    <div className="h-full bg-orange-500 flex items-center justify-center text-[9px] text-white font-bold" style={{ width: `${currentPercent}%` }} title={`ใบนี้: ${stats.current.toLocaleString()}`}></div>
+                    {isOver && <div className="absolute right-0 top-0 h-full w-1 bg-red-600 animate-pulse"></div>}
+                </div>
+                
+                {/* Legend (แสดงเฉพาะ Group หรือ Item ก็ได้ - ที่นี่แสดงหมดเพื่อความชัดเจน) */}
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-gray-500 mt-2">
+                    <span className="flex items-center gap-1"><div className="w-2 h-2 bg-green-500 rounded-full"></div> ใช้แล้ว ({stats.used.toLocaleString()})</span>
+                    <span className="flex items-center gap-1"><div className="w-2 h-2 bg-yellow-400 rounded-full"></div> รออนุมัติ ({stats.pending.toLocaleString()})</span>
+                    <span className="flex items-center gap-1"><div className="w-2 h-2 bg-orange-500 rounded-full"></div> ใบนี้ ({stats.current.toLocaleString()})</span>
+                    <span className="ml-auto font-bold">คงเหลือ: <span className={remaining < 0 ? 'text-red-500' : 'text-green-600'}>{remaining.toLocaleString()}</span></span>
+                </div>
+            </div>
+        );
+    };
 
     return (
         <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm animate-in fade-in mb-6">
@@ -7620,79 +7705,50 @@ if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
             </h4>
             
             <div className="space-y-4">
-                {budgetList.map((item, idx) => {
-                    const stats = getBudgetStats(selectedRequest, item.code, item.type);
-                    if (!stats || stats.budget === 0) return null;
-
-                    const totalUsed = stats.used + stats.pending + stats.current;
-                    const isOver = totalUsed > stats.budget;
+                {groupKeys.map((key) => {
+                    const group = groups[key];
+                    const badgeColor = group.type === 'SubJob' ? 'bg-indigo-100 text-indigo-700' : 'bg-purple-100 text-purple-700';
                     
-                    // คำนวณ % แต่ละส่วน (รวมกันไม่เกิน 100%)
-                    const usedPercent = Math.min((stats.used / stats.budget) * 100, 100);
-                    const pendingPercent = Math.min((stats.pending / stats.budget) * 100, 100 - usedPercent);
-                    const currentPercent = Math.min((stats.current / stats.budget) * 100, 100 - usedPercent - pendingPercent);
+                    // 2. คำนวณยอดรวมของกลุ่ม
+                    const groupStats = group.codes.reduce((acc, code) => {
+                        const s = getBudgetStats(selectedRequest, code, group.type);
+                        acc.budget += s.budget;
+                        acc.used += s.used;
+                        acc.pending += s.pending;
+                        acc.current += s.current;
+                        return acc;
+                    }, { budget: 0, used: 0, pending: 0, current: 0 });
 
                     return (
-                        <div key={idx} className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                            <div className="flex justify-between items-center mb-2">
-                                <div className="flex items-center gap-2">
-                                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${item.type === 'SubJob' ? 'bg-indigo-100 text-indigo-700' : 'bg-purple-100 text-purple-700'}`}>
-                                        {item.type}
-                                    </span>
-                                    <span className="font-bold text-gray-800 text-sm">{item.code}</span>
-                                    <span className="text-xs text-gray-500">(งบ: {stats.budget.toLocaleString()})</span>
-                                </div>
-                                <div className={`text-sm font-bold ${isOver ? 'text-red-600' : 'text-gray-700'}`}>
-                                    ใช้รวม {totalUsed.toLocaleString()} {isOver && <span className="text-xs bg-red-100 px-2 py-0.5 rounded ml-1 text-red-600">เกินงบ!</span>}
-                                </div>
-                            </div>
-                            
-                            {/* Progress Bar Container */}
-                            <div className="h-4 w-full bg-gray-200 rounded-full overflow-hidden flex relative shadow-inner">
-                                {/* 1. Used (History) - Green */}
-                                <div 
-                                    className="h-full bg-green-500 flex items-center justify-center text-[9px] text-white font-bold" 
-                                    style={{ width: `${usedPercent}%` }} 
-                                    title={`ใช้แล้ว (จบงาน): ${stats.used.toLocaleString()}`}
-                                >
-                                </div>
-                                
-                                {/* 2. Pending (Others) - Yellow */}
-                                <div 
-                                    className="h-full bg-yellow-400 flex items-center justify-center text-[9px] text-yellow-900 font-bold" 
-                                    style={{ width: `${pendingPercent}%` }} 
-                                    title={`รออนุมัติ (ใบอื่น): ${stats.pending.toLocaleString()}`}
-                                >
-                                </div>
+                        <div key={key} className="animate-in fade-in">
+                            {/* แสดงผลระดับ Group */}
+                            {renderProgressBar(
+                                groupStats, 
+                                `${group.type}: ${group.name}`, 
+                                badgeColor, 
+                                true, 
+                                key
+                            )}
 
-                                {/* 3. Current (This) - Orange */}
-                                <div 
-                                    className="h-full bg-orange-500 flex items-center justify-center text-[9px] text-white font-bold" 
-                                    style={{ width: `${currentPercent}%` }} 
-                                    title={`ใบนี้: ${stats.current.toLocaleString()}`}
-                                >
+                            {/* แสดงผลระดับ Code (เมื่อกดขยาย) */}
+                            {expandedBudgetGroups[key] && (
+                                <div className="space-y-2 animate-in slide-in-from-top-2 duration-300">
+                                    {group.codes.map(code => {
+                                        const codeStats = getBudgetStats(selectedRequest, code, group.type);
+                                        return (
+                                            <div key={code}>
+                                                {renderProgressBar(
+                                                    codeStats, 
+                                                    code, // ใช้ code เป็น Label
+                                                    'bg-gray-100 text-gray-600 border border-gray-300', // สี Badge ของลูก
+                                                    false, 
+                                                    null
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
-                                
-                                {/* Threshold Line */}
-                                {isOver && <div className="absolute right-0 top-0 h-full w-1 bg-red-600 animate-pulse"></div>}
-                            </div>
-                            
-                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-gray-500 mt-2">
-                                <span className="flex items-center gap-1" title="จบงานแล้ว">
-                                    <div className="w-2 h-2 bg-green-500 rounded-full"></div> ใช้แล้ว ({stats.used.toLocaleString()})
-                                </span>
-                                <span className="flex items-center gap-1" title="ใบอื่นที่กำลังเดินเรื่อง">
-                                    <div className="w-2 h-2 bg-yellow-400 rounded-full"></div> รออนุมัติ ({stats.pending.toLocaleString()})
-                                </span>
-                                <span className="flex items-center gap-1" title="ใบปัจจุบัน">
-                                    <div className="w-2 h-2 bg-orange-500 rounded-full"></div> ใบนี้ ({stats.current.toLocaleString()})
-                                </span>
-                                <span className="ml-auto font-bold">
-                                    คงเหลือ: <span className={stats.budget - totalUsed < 0 ? 'text-red-500' : 'text-green-600'}>
-                                        {(stats.budget - totalUsed).toLocaleString()}
-                                    </span>
-                                </span>
-                            </div>
+                            )}
                         </div>
                     );
                 })}
