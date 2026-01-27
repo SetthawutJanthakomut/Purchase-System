@@ -12816,20 +12816,25 @@ filteredRequests.map(req => {
 )}
 
 
-{/* --- CHECKLIST / AUDIT MODAL (แก้ไข: ย้าย Print Area ออกนอก Modal เพื่อให้พิมพ์ได้หลายหน้า) --- */}
+{/* --- CHECKLIST / AUDIT MODAL (Updated: Column Widths & Lease Data) --- */}
 {showChecklistModal && (
-    <> {/* ⭐ ใช้ Fragment ครอบแทน div เพื่อให้มี element ลูกหลายตัวได้ */}
-        
-        {/* 1. CSS สำหรับพิมพ์ (รองรับหลายหน้า + หัวตารางซ้ำ) */}
+    <>
+        {/* 1. CSS สำหรับพิมพ์ */}
         <style>{`
             @media print {
                 @page { size: A4; margin: 10mm; }
                 body * { visibility: hidden; }
                 
-                /* แสดงเฉพาะ Print Area */
+                html, body { 
+                    height: auto !important; 
+                    overflow: visible !important; 
+                    background: white !important; 
+                    margin: 0 !important;
+                    padding: 0 !important;
+                }
+                
                 #print-area, #print-area * { visibility: visible; }
                 
-                /* จัดตำแหน่งให้เริ่มจากมุมซ้ายบนของกระดาษ */
                 #print-area {
                     position: absolute;
                     left: 0;
@@ -12840,20 +12845,16 @@ filteredRequests.map(req => {
                     background: white;
                 }
                 
-                /* บังคับให้ตารางแสดงหัวทุกหน้า */
                 table { width: 100%; border-collapse: collapse; }
                 thead { display: table-header-group; }
                 tr { break-inside: avoid; page-break-inside: avoid; }
                 
-                /* เส้นขอบ */
                 td, th { border: 1px solid black !important; padding: 4px; font-size: 10pt; }
-                
-                /* ซ่อนส่วนควบคุมอื่นๆ */
                 .no-print { display: none !important; }
             }
         `}</style>
 
-        {/* 2. ส่วนหน้าจอ UI (Modal) - ใส่ class no-print เพื่อซ่อนตอนพิมพ์ */}
+        {/* 2. Modal UI */}
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in no-print">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
                 
@@ -12865,7 +12866,13 @@ filteredRequests.map(req => {
                         </h3>
                         <p className="text-sm text-gray-500">เลือกเงื่อนไขเพื่อพิมพ์ใบตรวจนับ</p>
                     </div>
-                    <button onClick={() => setShowChecklistModal(false)} className="text-gray-400 hover:text-gray-600 p-2 rounded-full hover:bg-gray-100"><X className="w-6 h-6"/></button>
+                    {/* ปุ่มปิดแบบ SVG */}
+                    <button onClick={() => setShowChecklistModal(false)} className="text-gray-400 hover:text-gray-600 p-2 rounded-full hover:bg-gray-100 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                    </button>
                 </div>
 
                 <div className="flex-1 flex overflow-hidden">
@@ -12971,7 +12978,7 @@ filteredRequests.map(req => {
             </div>
         </div>
 
-        {/* 3. ส่วนเนื้อหาที่จะพิมพ์ (อยู่นอก Modal แล้ว ทำให้ไม่ถูกตัดหน้า) */}
+        {/* 3. ส่วนเนื้อหาที่จะพิมพ์ */}
         <div id="print-area" className="hidden print:block bg-white text-black p-8">
             <div className="text-center mb-6">
                 <h1 className="text-2xl font-bold mb-1">ใบตรวจนับ{checklistMode === 'Inventory' ? 'วัสดุคงคลัง (Inventory Audit)' : 'ทรัพย์สิน (Asset Audit)'}</h1>
@@ -12992,9 +12999,11 @@ filteredRequests.map(req => {
                         <tr className="bg-gray-100 font-bold">
                             <th className="border border-black p-2 w-10 text-center">#</th>
                             <th className="border border-black p-2 w-24">รหัส</th>
+                            {/* ⭐ 1. ชื่อสินค้า (Auto Width) จะขยายอัตโนมัติ */}
                             <th className="border border-black p-2">ชื่อสินค้า</th>
-                            <th className="border border-black p-2 w-32">โครงการ</th>
-                            <th className="border border-black p-2 w-24 text-right">คงเหลือในระบบ</th>
+                            {/* ⭐ 2. รหัสโครงการ (Reduced Width) เหลือ w-20 */}
+                            <th className="border border-black p-2 w-20">รหัสโครงการ</th>
+                            <th className="border border-black p-2 w-24 text-right">คงเหลือ</th>
                             <th className="border border-black p-2 w-24 text-center">นับจริง</th>
                             <th className="border border-black p-2 w-24 text-center">อัปเดตล่าสุด</th>
                             <th className="border border-black p-2 w-40 text-center">หมายเหตุ</th>
@@ -13004,12 +13013,12 @@ filteredRequests.map(req => {
                             <th className="border border-black p-2 w-8 text-center"><CheckSquare size={14}/></th>
                             <th className="border border-black p-2 w-24">รหัสทรัพย์สิน</th>
                             <th className="border border-black p-2">รายการ</th>
-                            <th className="border border-black p-2 w-32">โครงการ</th>
+                            <th className="border border-black p-2 w-24">รหัสโครงการ</th>
                             <th className="border border-black p-2 w-24">Serial No.</th>
+                            <th className="border border-black p-2 w-24 text-center">ระยะเวลาเช่า</th>
                             <th className="border border-black p-2 w-20 text-center">สถานะ</th>
                             <th className="border border-black p-2 w-32">ผู้ถือครอง</th>
                             <th className="border border-black p-2 w-24 text-center">อัปเดตล่าสุด</th>
-                            <th className="border border-black p-2 w-32 text-center">หมายเหตุ</th>
                         </tr>
                     )}
                 </thead>
@@ -13021,7 +13030,9 @@ filteredRequests.map(req => {
                                     <td className="border border-black p-2 text-center">{idx + 1}</td>
                                     <td className="border border-black p-2 font-mono">{item.id}</td>
                                     <td className="border border-black p-2 font-bold">{item.name}</td>
-                                    <td className="border border-black p-2">{item.project || '-'}</td>
+                                    <td className="border border-black p-2 text-center">
+                                        {projects.find(p => p.name === item.project)?.id || '-'}
+                                    </td>
                                     <td className="border border-black p-2 text-right">{item.qty} {item.unit}</td>
                                     <td className="border border-black p-2"></td>
                                     <td className="border border-black p-2 text-center">{item.lastUpdated?.split(' ')[0]}</td>
@@ -13032,12 +13043,17 @@ filteredRequests.map(req => {
                                     <td className="border border-black p-2 text-center"><div className="w-4 h-4 border border-black mx-auto"></div></td>
                                     <td className="border border-black p-2 font-mono">{item.id}</td>
                                     <td className="border border-black p-2 font-bold">{item.name}</td>
-                                    <td className="border border-black p-2">{item.project || '-'}</td>
+                                    <td className="border border-black p-2 text-center">
+                                        {projects.find(p => p.name === item.project)?.id || '-'}
+                                    </td>
                                     <td className="border border-black p-2">{item.serial || '-'}</td>
+                                    {/* ⭐ 3. พยายามดึงข้อมูลระยะเวลาเช่าจากหลายๆ key */}
+                                    <td className="border border-black p-2 text-center">
+                                        {item.leasePeriod || item.lease_duration || item.rentDuration || item.period || '-'}
+                                    </td>
                                     <td className="border border-black p-2 text-center">{item.status}</td>
                                     <td className="border border-black p-2">{item.holder || '-'}</td>
                                     <td className="border border-black p-2 text-center">{item.lastUpdated?.split(' ')[0]}</td>
-                                    <td className="border border-black p-2"></td>
                                 </>
                             )}
                         </tr>
