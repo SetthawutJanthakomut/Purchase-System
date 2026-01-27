@@ -296,11 +296,11 @@ function getBudgetInfoForEmail_FullDetail(req) {
   // 1. กรองเฉพาะ HO / Local เท่านั้น
   if (!['Local', 'HO'].includes(req.type)) return '';
   
-  // 2. หา SubJob / EP Code ที่เกี่ยวข้องในใบนี้
+  // 2. หา SubJob / Mat. Code ที่เกี่ยวข้องในใบนี้
   const uniqueSubJobs = [...new Set(req.items.map(i => i.subJob).filter(val => val))];
-  const uniqueEPCodes = [...new Set(req.items.map(i => i.epCode).filter(val => val))];
+  const uniqueMatCodes = [...new Set(req.items.map(i => i.MatCode).filter(val => val))];
 
-  if (uniqueSubJobs.length === 0 && uniqueEPCodes.length === 0) return '';
+  if (uniqueSubJobs.length === 0 && uniqueMatCodes.length === 0) return '';
 
   // โหลดข้อมูลเพื่อคำนวณ
   const projects = getSheetData('Projects');
@@ -313,7 +313,7 @@ function getBudgetInfoForEmail_FullDetail(req) {
   
   const budgetList = [
       ...uniqueSubJobs.map(c => ({code: c, type: 'SubJob'})),
-      ...uniqueEPCodes.map(c => ({code: c, type: 'EPCode'}))
+      ...uniqueMatCodes.map(c => ({code: c, type: 'MatCode'}))
   ];
 
   let html = `
@@ -326,7 +326,7 @@ function getBudgetInfoForEmail_FullDetail(req) {
 
   // ฟังก์ชันคำนวณยอดเงิน (Logic เดียวกับหน้าเว็บ)
   const calculateTotal = (r, code, type) => {
-      const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code);
+      const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.MatCode) === code);
       const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
 
       return items.reduce((sum, item) => {
@@ -369,7 +369,7 @@ function getBudgetInfoForEmail_FullDetail(req) {
 
   budgetList.forEach(item => {
       // ค้นหางบประมาณตั้งต้น
-      const list = item.type === 'SubJob' ? projectData.subJobs : projectData.epCodes;
+      const list = item.type === 'SubJob' ? projectData.subJobs : projectData.MatCodes;
       const target = list ? list.find(x => x.code === item.code) : null;
       const budget = target ? (target.budget || 0) : 0;
 
@@ -510,7 +510,7 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
           <div style="font-weight: bold; color: #333; font-size: 14px;">${item.name}</div>
           <div style="font-size: 12px; color: #666; margin-top: 4px;">
             ${item.subJob ? `<span style="background:#e3f2fd; color:#1565c0; padding:2px 4px; border-radius:3px;">Sub: ${item.subJob}</span>` : ''} 
-            ${item.epCode ? `<span style="background:#f3e5f5; color:#7b1fa2; padding:2px 4px; border-radius:3px;">EP: ${item.epCode}</span>` : ''}
+            ${item.MatCode ? `<span style="background:#f3e5f5; color:#7b1fa2; padding:2px 4px; border-radius:3px;">EP: ${item.MatCode}</span>` : ''}
           </div>
           <div style="margin-top: 5px; font-size: 12px; color: #555;">
              ${item.note ? `${item.note}<br/>` : ''}
@@ -1490,7 +1490,7 @@ function sendWeeklyBudgetSummary() {
   const reportData = projects.map(proj => {
     // เตรียมโครงสร้างข้อมูล
     const subJobs = (proj.subJobs || []).map(s => ({ ...s, type: 'SubJob', used: 0, pending: 0 }));
-    const epCodes = (proj.epCodes || []).map(e => ({ ...e, type: 'EPCode', used: 0, pending: 0 }));
+    const MatCodes = (proj.MatCodes || []).map(e => ({ ...e, type: 'MatCode', used: 0, pending: 0 }));
     
     // ฟังก์ชันคำนวณยอดเงิน (Logic เดียวกับ getBudgetInfoForEmail_FullDetail)
     const calculateItemValue = (req, item) => {
@@ -1550,9 +1550,9 @@ function sendWeeklyBudgetSummary() {
                     else target.pending += amount;
                 }
             }
-            // เติมยอดลง EPCode
-            if (item.epCode) {
-                const target = epCodes.find(e => e.code === item.epCode);
+            // เติมยอดลง MatCode
+            if (item.MatCode) {
+                const target = MatCodes.find(e => e.code === item.MatCode);
                 if (target) {
                     if (isCompleted) target.used += amount;
                     else target.pending += amount;
@@ -1564,7 +1564,7 @@ function sendWeeklyBudgetSummary() {
     return {
       name: proj.name,
       subJobs: subJobs.sort((a,b) => a.code.localeCompare(b.code)),
-      epCodes: epCodes.sort((a,b) => a.code.localeCompare(b.code))
+      MatCodes: MatCodes.sort((a,b) => a.code.localeCompare(b.code))
     };
   });
 
@@ -1610,7 +1610,7 @@ function sendWeeklyBudgetSummary() {
 
   reportData.forEach(proj => {
     // ข้ามโครงการที่ไม่มีงบประมาณเลย
-    if (proj.subJobs.length === 0 && proj.epCodes.length === 0) return;
+    if (proj.subJobs.length === 0 && proj.MatCodes.length === 0) return;
 
     htmlContent += `
       <div class="project-card">
@@ -1621,7 +1621,7 @@ function sendWeeklyBudgetSummary() {
     // รวม List ทั้งสองแบบเพื่อแสดงผล
     const allItems = [
        ...proj.subJobs.map(i => ({...i, badge: 'SubJob'})),
-       ...proj.epCodes.map(i => ({...i, badge: 'EPCode'}))
+       ...proj.MatCodes.map(i => ({...i, badge: 'MatCode'}))
     ];
 
     if (allItems.length > 0) {
