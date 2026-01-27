@@ -85,7 +85,9 @@
         25: 'รับคืนทรัพย์สิน (Return Asset)',
         26: 'จัดการโครงการ (Project Settings)',
         27: 'กู้คืนข้อมูล (Restore)',
-        28: 'จัดการประกาศ (Manage Announcement)'
+        28: 'จัดการประกาศ (Manage Announcement)',
+        // ⭐ เพิ่มสิทธิ์ใหม่
+        29: 'แก้ไขต้นทุน/รหัส (Cost Control)' 
     };
 
     // Helper: แปลง PascalCase -> kebab-case
@@ -1868,6 +1870,9 @@ useEffect(() => {
       const [showSelectionModal, setShowSelectionModal] = useState(false);
       const [expandedItems, setExpandedItems] = useState(new Set());
       const [isForceClose, setIsForceClose] = useState(false);
+const [isCostEditMode, setIsCostEditMode] = useState(false);
+      const [tempCostRequest, setTempCostRequest] = useState(null);
+
       const [expandedChart, setExpandedChart] = useState(null);
       const [drillDownState, setDrillDownState] = useState({ SubJob: null, matCode: null });
       
@@ -1985,6 +1990,82 @@ const handleSaveAnnouncement = () => {
       };
 
 
+// --- LOGIC: COST EDITING ---
+      const handleStartCostEdit = () => {
+          // คัดลอกข้อมูล Request ปัจจุบันมาใส่ตัวแปรชั่วคราวเพื่อแก้ไข
+          setTempCostRequest(JSON.parse(JSON.stringify(selectedRequest)));
+          setIsCostEditMode(true);
+      };
+
+      const handleCancelCostEdit = () => {
+          setTempCostRequest(null);
+          setIsCostEditMode(false);
+      };
+
+      const handleSaveCostEdit = async () => {
+          if (!tempCostRequest) return;
+          setIsLoading(true);
+
+          try {
+              const changes = [];
+              const oldReq = selectedRequest;
+              const newReq = tempCostRequest;
+
+              // 1. ตรวจสอบการเปลี่ยนแปลงของ SubJob และ Mat. Code
+              newReq.items.forEach((newItem, idx) => {
+                  const oldItem = oldReq.items[idx];
+                  if (newItem.subJob !== oldItem.subJob) {
+                      changes.push(`${newItem.name}: SubJob (${oldItem.subJob || '-'} -> ${newItem.subJob})`);
+                  }
+                  if (newItem.matCode !== oldItem.matCode) {
+                      changes.push(`${newItem.name}: Mat. (${oldItem.matCode || '-'} -> ${newItem.matCode})`);
+                  }
+
+                  // 2. ตรวจสอบการเปลี่ยนแปลงราคาใน Receive History
+                  if (newItem.receivedLog && newItem.receivedLog.length > 0) {
+                      newItem.receivedLog.forEach((newLog, logIdx) => {
+                          const oldLog = oldItem.receivedLog[logIdx];
+                          if (newLog.price !== oldLog.price) {
+                              changes.push(`${newItem.name} (Lot ${logIdx + 1}): Price (${oldLog.price.toLocaleString()} -> ${newLog.price.toLocaleString()})`);
+                          }
+                      });
+                  }
+              });
+
+              if (changes.length === 0) {
+                  showToast('ไม่มีข้อมูลเปลี่ยนแปลง', 'info');
+                  setIsCostEditMode(false);
+                  setIsLoading(false);
+                  return;
+              }
+
+              // 3. บันทึกข้อมูลและประวัติ
+              const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+              const logNote = `แก้ไขข้อมูล Cost/Code:\n- ${changes.join('\n- ')}`;
+              
+              const updatedReq = {
+                  ...newReq,
+                  history: [...newReq.history, createLog('Edit Cost', userSignature, logNote)]
+              };
+
+              // Sync ลง Sheet
+              saveRequestToSheet(updatedReq);
+              
+              // Update State
+              setRequests(prev => prev.map(r => r.id === updatedReq.id ? updatedReq : r));
+              setSelectedRequest(updatedReq);
+              
+              setIsCostEditMode(false);
+              setTempCostRequest(null);
+              showToast('บันทึกการแก้ไข Cost เรียบร้อย');
+
+          } catch (err) {
+              console.error(err);
+              showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+          } finally {
+              setIsLoading(false);
+          }
+      };
 // --- LOGIC: IMPORT ASSETS (CSV) - SMART PARSER ---
 const handleFileImport = (e) => {
     const file = e.target.files[0];
@@ -4885,11 +4966,10 @@ const PublicAnnouncementPopup = () => (
             .print-only { display: none; }
           `}</style>
     
-          {/* Notification */}
-         {/* Notification - เพิ่ม Z-Index เป็น 200 */}
+          {/* Notification - แก้ไข Z-Index เป็น 9999 และใช้ fixed เพื่อให้อยู่บนสุดเสมอ */}
           {notification && (
-            <div className="absolute top-4 right-4 z-[200] px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 bg-gray-900 text-white animate-in slide-in-from-top-5 no-print">
-               {notification.type === 'error' ? <AlertCircle className="w-5 h-5"/> : <Bell className="w-5 h-5"/>}
+           <div className="fixed top-4 right-4 z-[9999] px-4 py-3 rounded-lg shadow-2xl flex items-center gap-3 bg-gray-900 text-white animate-in slide-in-from-top-5 no-print border border-gray-700">
+               {notification.type === 'error' ? <AlertCircle className="w-5 h-5 text-red-400"/> : <Bell className="w-5 h-5 text-green-400"/>}
                <p className="text-sm font-medium">{notification.message}</p>
             </div>
           )}
@@ -5048,8 +5128,11 @@ const PublicAnnouncementPopup = () => (
                    `}</style>
 
                    {/* 1. ⭐ Budget Tracking Charts (ย้ายขึ้นมาเป็นอันดับ 1) */}
-                   {dashboardView === 'Purchase' && (budgetChartData.subJobData.length > 0 || budgetChartData.matCodeData.length > 0) && (
-                       <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm animate-in fade-in">
+{/* ⭐ เพิ่มเงื่อนไขเช็คสิทธิ์ (Admin(2), 8, 9, 26, 29) */}
+{dashboardView === 'Purchase' && 
+ (hasPermission(2) || hasPermission(8) || hasPermission(9) || hasPermission(26) || hasPermission(29)) && 
+ (budgetChartData.subJobData.length > 0 || budgetChartData.matCodeData.length > 0) && (
+   <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm animate-in fade-in">
                            
                            {/* Header & Summary */}
                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b border-gray-100 pb-4 gap-4">
@@ -7600,7 +7683,30 @@ filteredRequests.map(req => {
                          <p className="text-sm text-gray-500 mt-1">วันที่: {selectedRequest.created} | ผู้ขอ: {selectedRequest.requester}</p>
                      </div>
                      
-                     <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+
+{/* --- [START] ส่วนที่เพิ่มใหม่: ปุ่มจัดการ Cost --- */}
+                        {/* 1. ปุ่มแก้ไข (แสดงเมื่อมีสิทธิ์ 29 และไม่อยู่ในโหมดแก้ไข) */}
+                        {!isCostEditMode && hasPermission(29) && (
+                            <button 
+                                onClick={handleStartCostEdit}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-yellow-50 text-yellow-700 border border-yellow-200 text-xs font-bold rounded-lg hover:bg-yellow-100 transition-colors shadow-sm"
+                            >
+                                <Edit className="w-4 h-4"/> แก้ไข Cost
+                            </button>
+                        )}
+
+                        {/* 2. ปุ่มบันทึก/ยกเลิก (แสดงเมื่ออยู่ในโหมดแก้ไข) */}
+                        {isCostEditMode && (
+                            <>
+                                <button onClick={handleSaveCostEdit} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 shadow-md animate-in fade-in">
+                                    <Save className="w-4 h-4"/> บันทึก
+                                </button>
+                                <button onClick={handleCancelCostEdit} className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-bold rounded-lg hover:bg-gray-200 animate-in fade-in">
+                                    ยกเลิก
+                                </button>
+                            </>
+                        )}
 
 {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(selectedRequest.status) && 
  (selectedRequest.type === 'Local' || 
@@ -7672,6 +7778,15 @@ filteredRequests.map(req => {
 {(() => {
     // 1. ตรวจสอบเงื่อนไขพื้นฐาน
     if (!['Local', 'HO'].includes(selectedRequest.type)) return null;
+
+    // ⭐ ตรวจสอบสิทธิ์การมองเห็น (Admin(2), 8, 9, 26, 29) เฉพาะในโครงการนี้
+    const canViewBudget = hasPermission(2, selectedRequest.job) || 
+                          hasPermission(8, selectedRequest.job) || 
+                          hasPermission(9, selectedRequest.job) || 
+                          hasPermission(26, selectedRequest.job) || 
+                          hasPermission(29, selectedRequest.job);
+
+    if (!canViewBudget) return null; // ถ้าไม่มีสิทธิ์ ให้ซ่อนส่วนนี้ไปเลย
     
     const items = selectedRequest.items || [];
     const targetProjectName = selectedRequest.job;
@@ -7755,8 +7870,9 @@ filteredRequests.map(req => {
                         )}
                         
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${badgeColor} border border-opacity-20`}>
-                            {isGroup ? label.split('|')[0] : 'Code'}
-                        </span>
+    {/* ⭐ แก้ไข: เปลี่ยน matCode เป็น Mat. Code */}
+    {isGroup ? (label.split('|')[0] === 'matCode' ? 'Mat. Code' : label.split('|')[0]) : 'Code'}
+</span>
                         
                         <span className="font-bold text-gray-800 text-sm">
                             {isGroup ? label.split('|')[1] : label}
@@ -7881,12 +7997,18 @@ filteredRequests.map(req => {
                 </tr>
             </thead>
 
-     <tbody className="divide-y divide-gray-100">
-                {selectedRequest.items.map((item, idx) => {
+    <tbody className="divide-y divide-gray-100">
+                {/* ⭐ ใช้ข้อมูลจาก tempCostRequest ถ้ากำลังแก้ไข Cost */}
+                {(isCostEditMode ? tempCostRequest.items : selectedRequest.items).map((item, idx) => {
                     const isBuy = ['Local', 'HO'].includes(selectedRequest.type);
                     const isBorrow = selectedRequest.type === 'Borrow';
                     const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
                     
+                    // เตรียมข้อมูล Project เพื่อดึงตัวเลือก SubJob/MatCode
+                    const currentJob = isCostEditMode ? tempCostRequest.job : selectedRequest.job;
+                    const projectData = projects.find(p => p.name === currentJob);
+
+                    // ... (ตัวแปรคำนวณราคาเดิม) ...
                     const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
                     const receivedLogs = item.receivedLog || [];
                     const hasAssets = relatedAssets.length > 0;
@@ -7894,7 +8016,6 @@ filteredRequests.map(req => {
                     const hasDetails = hasAssets || hasLogs;
                     const isExpanded = expandedItems.has(idx);
                     
-                    // Logic คำนวณยอดเงิน (เฉพาะงานซื้อ)
                     let lineTotal = 0;
                     let lineReceivedCount = 0;
                     if (isBuy) {
@@ -7903,7 +8024,7 @@ filteredRequests.map(req => {
                                  const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
                                  const duration = isRent ? (asset.duration || item.duration || 1) : 1;
                                  return sum + (price * duration);
-                             }, 0);
+                              }, 0);
                              lineReceivedCount = relatedAssets.length;
                         } else if (hasLogs) {
                              lineTotal += receivedLogs.reduce((sum, log) => {
@@ -7924,9 +8045,8 @@ filteredRequests.map(req => {
                             {/* 1. Column รายการ */}
                             <td className="p-3 align-top">
                                 <div className="flex items-start gap-2">
-                                    {/* ปุ่มดูรายละเอียด (ถ้ามี) */}
                                     {hasDetails && (
-                                        <button 
+                                       <button 
                                             onClick={() => toggleExpandItem(idx)}
                                             className={`mt-0.5 p-0.5 rounded border transition-all ${isExpanded ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-gray-400 border-gray-200 hover:text-blue-600 hover:border-blue-300'}`}
                                         >
@@ -7937,10 +8057,10 @@ filteredRequests.map(req => {
                                         </button>
                                     )}
                                     
-                                    <div>
+                                    <div className="flex-1">
                                         <div className="font-bold text-gray-900">{item.name}</div>
                                         
-                                        {/* ⭐ กรณี Borrow: แสดง Asset No. */}
+                                        {/* กรณี Borrow */}
                                         {isBorrow && (item.assetId || item.serial) && (
                                             <div className="text-xs font-mono text-indigo-600 mt-1 flex flex-wrap gap-2">
                                                 {item.assetId && <span className="bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">ID: {item.assetId}</span>}
@@ -7948,12 +8068,61 @@ filteredRequests.map(req => {
                                             </div>
                                         )}
 
-                                        {/* กรณี Buy: แสดง SubJob/EP (เหมือนเดิม) */}
-                                        {isBuy && (item.subJob || item.matCode) && (
-                                            <div className="text-xs text-gray-500 mt-1 flex flex-col gap-1">
-                                                <div className="flex gap-2">
-                                                    {item.subJob && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span>}
-                                                    {item.matCode && <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">EP: {item.matCode}</span>}
+                                        {/* ⭐ กรณี Buy: ส่วนแก้ไข SubJob / Mat. Code */}
+                                        {isBuy && (
+                                            <div className="text-xs text-gray-500 mt-1">
+                                                <div className="flex flex-col gap-2">
+                                                    
+                                                    {/* --- SUBJOB EDITOR --- */}
+                                                    {isCostEditMode ? (
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="font-bold w-8 text-gray-400">Sub:</span>
+                                                            <select 
+                                                                className="border border-indigo-300 rounded px-1 py-1 text-xs bg-indigo-50 text-indigo-700 w-full max-w-[250px] outline-none focus:ring-1 focus:ring-indigo-500"
+                                                                value={item.subJob}
+                                                                onChange={(e) => {
+                                                                    const newData = {...tempCostRequest};
+                                                                    newData.items[idx].subJob = e.target.value;
+                                                                    setTempCostRequest(newData);
+                                                                }}
+                                                            >
+                                                                <option value="">-- ไม่ระบุ --</option>
+                                                                {projectData?.subJobs?.map(s => <option key={s.code} value={s.code}>{s.code}: {s.description}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    ) : (
+                                                        (item.subJob || item.matCode) && (
+                                                            <div className="flex gap-2">
+                                                                {item.subJob && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span>}
+                                                            </div>
+                                                        )
+                                                    )}
+
+                                                    {/* --- MAT. CODE EDITOR --- */}
+                                                    {isCostEditMode ? (
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="font-bold w-8 text-gray-400">Mat.:</span>
+                                                            <select 
+                                                                className="border border-purple-300 rounded px-1 py-1 text-xs bg-purple-50 text-purple-700 w-full max-w-[250px] outline-none focus:ring-1 focus:ring-purple-500"
+                                                                value={item.matCode}
+                                                                onChange={(e) => {
+                                                                    const newData = {...tempCostRequest};
+                                                                    newData.items[idx].matCode = e.target.value;
+                                                                    setTempCostRequest(newData);
+                                                                }}
+                                                            >
+                                                                <option value="">-- ไม่ระบุ --</option>
+                                                                {projectData?.matCodes?.map(m => <option key={m.code} value={m.code}>{m.code}: {m.description}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    ) : (
+                                                        (item.matCode) && (
+                                                            <div className="flex gap-2">
+                                                                <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">Mat.: {item.matCode}</span>
+                                                            </div>
+                                                        )
+                                                    )}
+
                                                 </div>
                                             </div>
                                         )}
@@ -7978,7 +8147,6 @@ filteredRequests.map(req => {
                             {/* 3. Column จำนวน */}
                             <td className="p-3 text-center align-top">
                                 {isBuy ? (
-                                    // งานซื้อ: แสดง รับแล้ว / สั่งซื้อ (มี / )
                                     <div className="font-medium">
                                         {item.receivedTotal ? <span className="text-green-600 font-bold">{item.receivedTotal}</span> : 0} 
                                         <span className="text-gray-400 mx-1">/</span> 
@@ -7986,13 +8154,11 @@ filteredRequests.map(req => {
                                         <span className="text-xs text-gray-500 ml-1">{item.unit}</span>
                                     </div>
                                 ) : (
-                                    // ⭐ งานเบิก/ยืม: แสดงแค่จำนวนเดียว (ไม่มี / )
                                     <div className="font-bold text-blue-700 text-base">
                                         {item.qty} <span className="text-xs text-gray-500 font-normal">{item.unit}</span>
                                     </div>
                                 )}
                                 
-                                {/* แสดงระยะเวลาเช่า (เฉพาะ HO Rent) */}
                                 {isRent && isBuy && (
                                     <div className="text-[10px] mt-0.5 text-indigo-600 font-bold">
                                         x {item.duration || 1} {item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}
@@ -8000,7 +8166,7 @@ filteredRequests.map(req => {
                                 )}
                             </td>
 
-                            {/* 4. Column รวมเงิน (แสดงเฉพาะงานซื้อ) */}
+                            {/* 4. Column รวมเงิน */}
                             {isBuy && (
                                 <td className="p-3 text-right font-bold text-gray-900 align-top bg-gray-50/50">
                                     {lineTotal.toLocaleString()}
@@ -8020,7 +8186,7 @@ filteredRequests.map(req => {
                             </td>
                         </tr>
                         
-                        {/* Expanded Details Row (คืนค่าตารางรายละเอียดกลับมา) */}
+                        {/* Expanded Details Row */}
                         {isExpanded && hasDetails && (
                             <tr className="bg-gray-50/50 animate-in fade-in">
                                 <td colSpan={isBuy ? 5 : 3} className="p-4 border-t border-gray-200 shadow-inner">
@@ -8030,7 +8196,8 @@ filteredRequests.map(req => {
                                                 <List className="w-3 h-3 text-gray-500"/> 
                                                 {hasAssets ? 'รายละเอียดทรัพย์สินรายชิ้น (Asset Details)' : 'ประวัติการรับของ (Receive History)'}
                                             </h5>
-                                            <span className="text-[10px] text-gray-400 italic">* แสดงข้อมูลตามจริงที่บันทึกรับของ</span>
+                                            {/* ⭐ แจ้งเตือนเมื่ออยู่ในโหมดแก้ไขราคา */}
+                                            {isCostEditMode && hasLogs && <span className="text-[10px] text-orange-600 font-bold flex items-center gap-1 bg-orange-50 px-2 py-0.5 rounded border border-orange-200"><Edit className="w-3 h-3"/> แก้ไขราคาจริง (Actual Price) ได้ที่นี่</span>}
                                         </div>
                                         
                                         <table className="w-full text-xs text-left">
@@ -8082,6 +8249,7 @@ filteredRequests.map(req => {
                                                                     {isBuy && (
                                                                         <>
                                                                             <td className="px-4 py-2.5 text-right font-mono">
+                                                                                {/* Asset แก้ราคาที่หน้ารายละเอียด Asset โดยตรง (ไม่แก้ตรงนี้) */}
                                                                                 {assetPrice.toLocaleString()}
                                                                             </td>
                                                                             {isRent && (
@@ -8114,7 +8282,28 @@ filteredRequests.map(req => {
                                                                     {isBuy && (
                                                                         <>
                                                                             <td className="px-4 py-2.5 text-right font-mono text-gray-600">
-                                                                                {log.price.toLocaleString()} <span className="text-[10px] text-gray-400">x {log.qty}</span>
+                                                                                {/* ⭐ แก้ไข: Input ราคาจริง (Lot Price) */}
+                                                                                {isCostEditMode ? (
+                                                                                    <div className="flex items-center justify-end gap-1">
+                                                                                        <input 
+                                                                                            type="number" 
+                                                                                            className="border border-blue-300 rounded px-1 py-0.5 text-right w-24 text-sm font-bold text-blue-700 bg-blue-50 focus:ring-2 focus:ring-blue-500 outline-none"
+                                                                                            value={log.price}
+                                                                                            onChange={(e) => {
+                                                                                                const newData = {...tempCostRequest};
+                                                                                                // แก้ราคาใน Log เฉพาะรายการนี้
+                                                                                                newData.items[idx].receivedLog[lIdx].price = parseFloat(e.target.value) || 0;
+                                                                                                setTempCostRequest(newData);
+                                                                                            }}
+                                                                                        />
+                                                                                        <span className="text-[10px] text-gray-400">x {log.qty}</span>
+                                                                                    </div>
+                                                                                ) : (
+                                                                                    // แสดงผลปกติ
+                                                                                    <>
+                                                                                        {log.price.toLocaleString()} <span className="text-[10px] text-gray-400">x {log.qty}</span>
+                                                                                    </>
+                                                                                )}
                                                                             </td>
                                                                             {isRent && (
                                                                                 <td className="px-4 py-2.5 text-center text-indigo-600 font-bold">
@@ -10574,7 +10763,8 @@ filteredRequests.map(req => {
                     {item.subJob || item.matCode ? (
                         <div className="flex flex-col gap-1 text-xs font-bold">
                             {item.subJob && <span>Sub: {item.subJob}</span>}
-                            {item.matCode && <span>EP: {item.matCode}</span>}
+                            {/* เปลี่ยน EP: เป็น Mat.: */}
+{item.matCode && <span>Mat.: {item.matCode}</span>}
                         </div>
                     ) : '-'}
                 </td>
