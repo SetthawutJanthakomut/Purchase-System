@@ -10497,63 +10497,111 @@ filteredRequests.map(req => {
           </div>
       )}
 
-{/* --- PRINT PREVIEW MODAL --- */}
+{/* --- PRINT PREVIEW MODAL (แก้ไข: ปลดล็อก Modal ให้พิมพ์หลายหน้าได้) --- */}
 {showPOPreviewModal && selectedRequest && (
-  <div className="fixed inset-0 bg-white z-[200] overflow-auto">
-      <div className="w-full max-w-none mx-auto p-4 md:p-8 print-container flex flex-col items-center">
+  // 1. เพิ่ม class 'print:static print:h-auto print:overflow-visible print:block' เพื่อปลดล็อกการยึดหน้าจอ
+  <div className="fixed inset-0 bg-white z-[200] overflow-auto print:static print:h-auto print:overflow-visible print:block">
+      
+      {/* 2. เพิ่ม class 'print:block print:w-full print:max-w-none print:p-0' เพื่อขยายความกว้างเต็มกระดาษ */}
+      <div className="w-full max-w-none mx-auto p-4 md:p-8 print-container flex flex-col items-center print:block print:w-full print:h-auto print:p-0">
           
+         <style>{`
+    @media print {
+        /* ⭐ 1. รีเซ็ตขอบกระดาษ Browser เป็น 0 (เพื่อคุมเอง) */
+        @page { 
+            size: A4; 
+            margin: 0; 
+        }
+        
+        /* ซ่อน Element อื่น */
+        body * {
+            visibility: hidden;
+        }
 
-<style>{`
-              @media print {
-                  @page { size: A4; margin: 0; } /* ตั้งค่าขอบกระดาษเป็น 0 เพื่อให้ CSS คุมเอง */
-                  
-                  /* 1. ซ่อนทุกอย่างในหน้าเว็บก่อน */
-                  body * {
-                      visibility: hidden;
-                  }
+        /* ปรับ html/body ให้รองรับเนื้อหายาวๆ */
+        html, body {
+            height: auto !important;
+            min-height: 100vh !important;
+            overflow: visible !important;
+            background: white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
 
-                  /* 2. แสดงเฉพาะพื้นที่ที่เราต้องการพิมพ์ (ระบุด้วย ID) */
-                  #print-area, #print-area * {
-                      visibility: visible;
-                  }
+        /* แสดงเฉพาะ Print Area */
+        #print-area, #print-area * {
+            visibility: visible;
+        }
 
-                  /* 3. จัดตำแหน่งพื้นที่พิมพ์ให้ชิดมุมซ้ายบนสุด */
-                  #print-area {
-                      position: absolute !important;
-                      left: 0 !important;
-                      top: 0 !important;
-                      width: 100% !important;
-                      margin: 0 !important;
-                      padding: 20px !important; /* เว้นขอบกระดาษเล็กน้อย */
-                      background: white !important;
-                      box-shadow: none !important;
-                      max-width: none !important;
-                  }
+        /* ⭐ 2. จัดหน้ากระดาษใหม่: ความกว้างเต็ม A4 + ขอบ 15mm เท่ากันทุกด้าน */
+        #print-area {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            
+            /* บังคับความกว้าง A4 */
+            width: 210mm !important;
+            max-width: 210mm !important;
+            
+            /* กำหนดขอบกระดาษ (ซ้าย/ขวา/บน/ล่าง) ที่นี่ */
+            padding: 15mm !important; 
+            
+            height: auto !important;
+            margin: 0 !important;
+            background: white !important;
+            overflow: visible !important;
+            display: block !important;
+            z-index: 9999 !important;
+            box-sizing: border-box !important; /* สำคัญ: ให้ padding รวมอยู่ใน width */
+        }
 
-                  /* 4. ซ่อนปุ่มและองค์ประกอบที่ไม่จำเป็นอย่างเด็ดขาด */
-                  .no-print, button { 
-                      display: none !important; 
-                  }
-                  
-                  /* บังคับให้ Table และ Font คมชัด */
-                  table { width: 100% !important; border-collapse: collapse !important; }
-                  tr { page-break-inside: avoid; }
-                  html, body { height: auto; overflow: visible; background: white; }
-              }
+        /* ซ่อนปุ่ม */
+        .no-print, button { 
+            display: none !important;
+        }
+        
+        /* จัดการตาราง */
+        table { 
+            width: 100% !important;
+            border-collapse: collapse !important; 
+        }
+        thead { 
+            display: table-header-group !important; /* หัวตารางซ้ำทุกหน้า */
+        }
+        tr { 
+            page-break-inside: avoid !important; /* แถวไม่ขาดครึ่ง */
+            break-inside: avoid !important;
+        }
+        
+        /* เส้นขอบ */
+        .preview-table th, .preview-table td, 
+        td, th { 
+            border: 1px solid black !important;
+            padding: 6px 8px !important; 
+            font-size: 10pt !important; 
+            color: black !important;
+        }
+        
+        .header-box {
+            border: 1px solid black !important;
+            color: black !important;
+        }
+    }
 
-              /* CSS สำหรับหน้าจอปกติ (Preview) */
-              .preview-table th, .preview-table td { 
-                  border: 1px solid black;
-                  padding: 6px 8px; 
-                  font-size: 12px; 
-                  vertical-align: top;
-              }
-              .header-box { 
-                  border: 1px solid black;
-                  padding: 10px; 
-                  margin-bottom: 15px; 
-              }
-          `}</style>
+    /* CSS หน้าจอปกติ */
+    .preview-table th, .preview-table td { 
+        border: 1px solid black;
+        padding: 6px 8px; 
+        font-size: 12px; 
+        vertical-align: top;
+    }
+    .header-box { 
+        border: 1px solid black;
+        padding: 10px; 
+        margin-bottom: 15px; 
+    }
+`}</style>
+
 
           {/* Toolbar */}
           <div className="w-full max-w-[210mm] flex justify-between items-center mb-6 border-b pb-4 no-print bg-gray-50 p-4 rounded-xl">
