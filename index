@@ -392,7 +392,7 @@ const StatusBadge = ({ status, type }) => {
       const [projectFormTab, setProjectFormTab] = useState('General');
       const [inventoryProjectFilter, setInventoryProjectFilter] = useState('All');
       const [assetProjectFilter, setAssetProjectFilter] = useState('All');
-      const [projectDetailTab, setProjectDetailTab] = useState('SubJob'); // 'SubJob' หรือ 'EPCode'
+      const [projectDetailTab, setProjectDetailTab] = useState('SubJob'); // 'SubJob' หรือ 'MatCode'
       const [globalProjectFilter, setGlobalProjectFilter] = useState('All');
       // --- STATE: User Detail Modal ---
 const [viewingUser, setViewingUser] = useState(null); // เก็บ User ที่กำลังดู
@@ -951,7 +951,7 @@ const handleSaveProject = async () => { // ⭐ เพิ่ม async
 
 
 const handleDeleteProject = async (id) => { // ⭐ เพิ่ม async
-          if (!confirm('ยืนยันการลบโครงการ? ข้อมูล SubJob และ EP Code จะหายไปทั้งหมด')) return;
+          if (!confirm('ยืนยันการลบโครงการ? ข้อมูล SubJob และ Mat. Code จะหายไปทั้งหมด')) return;
           
           // ⭐ [เพิ่มใหม่] ดึงชื่อโครงการมาก่อนลบ เพื่อเอาไปใส่ใน Log
           const targetProject = projects.find(p => p.id === id);
@@ -996,7 +996,7 @@ const handleDeleteProject = async (id) => { // ⭐ เพิ่ม async
                   ...prev,
                   [type]: [...(prev[type] || []), ...newData]
               }));
-              showToast(`นำเข้า ${type === 'subJobs' ? 'SubJob' : 'EP Code'} สำเร็จ ${newData.length} รายการ`);
+              showToast(`นำเข้า ${type === 'subJobs' ? 'SubJob' : 'Mat. Code'} สำเร็จ ${newData.length} รายการ`);
           };
           reader.readAsText(file);
           e.target.value = ''; // Reset input
@@ -1483,12 +1483,12 @@ const handleCreateOrder = async (e, isDraft = false) => {
             for (const item of orderItems) {
                 
                 // ------------------------------------------------------------------
-                // ✅ 1. ตรวจสอบ SubJob หรือ EP Code (สำหรับ Local, HO, Withdraw)
+                // ✅ 1. ตรวจสอบ SubJob หรือ Mat. Code (สำหรับ Local, HO, Withdraw)
                 // ------------------------------------------------------------------
                 if (['Local', 'HO', 'Withdraw'].includes(newOrderMeta.type)) {
-                    // ต้องมีอย่างใดอย่างหนึ่ง (SubJob OR EP Code)
-                    if (!item.subJob && !item.epCode) {
-                        showToast(`รายการ "${item.name}" ต้องระบุ SubJob หรือ EP Code อย่างใดอย่างหนึ่ง`, 'error');
+                    // ต้องมีอย่างใดอย่างหนึ่ง (SubJob OR Mat. Code)
+                    if (!item.subJob && !item.MatCode) {
+                        showToast(`รายการ "${item.name}" ต้องระบุ SubJob หรือ Mat. Code อย่างใดอย่างหนึ่ง`, 'error');
                         return; // หยุดการทำงานทันที
                     }
                 }
@@ -1861,7 +1861,7 @@ useEffect(() => {
       const [expandedItems, setExpandedItems] = useState(new Set());
       const [isForceClose, setIsForceClose] = useState(false);
       const [expandedChart, setExpandedChart] = useState(null);
-      const [drillDownState, setDrillDownState] = useState({ SubJob: null, EPCode: null });
+      const [drillDownState, setDrillDownState] = useState({ SubJob: null, MatCode: null });
       
       // Verification Modal State
       const [showVerificationModal, setShowVerificationModal] = useState(false);
@@ -1910,7 +1910,7 @@ const [verificationData, setVerificationData] = useState({
       const [editingId, setEditingId] = useState(null);
       const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
       // แก้ไขบรรทัดนี้
-const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '', duration: 1 });
+const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', MatCode: '', note: '', images: [], assetId: '', serial: '', duration: 1 });
       const [orderItems, setOrderItems] = useState([]);
       
       const [showSuggestions, setShowSuggestions] = useState(false);
@@ -2708,7 +2708,7 @@ const handleAddItem = () => {
 
     // ผ่านทุกเงื่อนไข -> เพิ่มรายการ
     setOrderItems([...orderItems, { ...tempItem }]);
-    setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [], assetId: '', serial: '' });
+    setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', MatCode: '', note: '', images: [], assetId: '', serial: '' });
     setStockSuggestion(null); 
 };
 
@@ -2921,7 +2921,7 @@ const getSelectionItems = () => {
           setEditingId(null);
           setOrderItems([]);
           setNewOrderMeta({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
-          setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [] });
+          setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', MatCode: '', note: '', images: [] });
       };
 
 // [แก้ไข] เพิ่มฟังก์ชันคำนวณวันที่ล่วงหน้า
@@ -2944,7 +2944,7 @@ const getSelectionItems = () => {
               attachment: null, 
               quotation: null 
           });
-          setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', epCode: '', note: '', images: [] });
+          setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', MatCode: '', note: '', images: [] });
           setShowCreateModal(true);
       };
 
@@ -3489,13 +3489,13 @@ const confirmReturnAsset = async () => {
           if (!req || !req.job) return { budget: 0, used: 0, pending: 0, current: 0 };
           const projectData = projects.find(p => p.name === req.job);
           if (!projectData) return { budget: 0, used: 0, pending: 0, current: 0 };
-          const list = type === 'SubJob' ? projectData.subJobs : projectData.epCodes;
+          const list = type === 'SubJob' ? projectData.subJobs : projectData.MatCodes;
           const target = list?.find(x => x.code === code);
           const budget = target?.budget || 0;
 
           // Helper: คำนวณยอดเงินแบบละเอียด (Assets > Logs > Estimate)
           const calculateRequestTotal = (r) => {
-              const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code);
+              const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.MatCode) === code);
               const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
               
               return items.reduce((sum, item) => {
@@ -4632,7 +4632,7 @@ const handleSubmitContract = async () => {
                   if (req.status !== 'Completed') return sum; 
 
                   const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
-                  const items = req.items.filter(i => (type === 'SubJob' ? i.subJob : i.epCode) === code);
+                  const items = req.items.filter(i => (type === 'SubJob' ? i.subJob : i.MatCode) === code);
 
                   const reqTotal = items.reduce((iSum, item) => {
                       // Logic คำนวณราคาแบบละเอียด (Assets > Logs > Estimate)
@@ -4690,26 +4690,26 @@ const handleSubmitContract = async () => {
               });
           });
 
-          // 2. EP Code Data
-          const epCodeData = [];
+          // 2. Mat. Code Data
+          const MatCodeData = [];
           targetProjects.forEach(p => {
-              (p.epCodes || []).forEach(ep => {
-                  const existing = epCodeData.find(x => x.code === ep.code);
+              (p.MatCodes || []).forEach(ep => {
+                  const existing = MatCodeData.find(x => x.code === ep.code);
                   // ⭐ ส่งชื่อโครงการ (p.name) เข้าไปคำนวณด้วย
-                  const used = calculateUsedForProject(p.name, ep.code, 'EPCode');
+                  const used = calculateUsedForProject(p.name, ep.code, 'MatCode');
                   
                   if (existing) {
                       existing.budget += (ep.budget || 0);
                       existing.used += used;
                   } else {
                       // ⭐ เพิ่ม group: ep.group || 'Others'
-                      epCodeData.push({ code: ep.code, budget: ep.budget || 0, used: used, group: ep.group || 'Others' });
+                      MatCodeData.push({ code: ep.code, budget: ep.budget || 0, used: used, group: ep.group || 'Others' });
                   }
               });
           });
 
         subJobData.sort((a,b) => a.code.localeCompare(b.code));
-          epCodeData.sort((a,b) => a.code.localeCompare(b.code));
+          MatCodeData.sort((a,b) => a.code.localeCompare(b.code));
 
           // ⭐ 3. Project Summary (สำหรับหน้า All Projects)
           const projectSummary = projects.map(p => {
@@ -4722,16 +4722,16 @@ const handleSubmitContract = async () => {
                   pUsed += calculateUsedForProject(p.name, sj.code, 'SubJob');
               });
 
-              // รวมยอด EPCode
-              (p.epCodes || []).forEach(ep => {
+              // รวมยอด MatCode
+              (p.MatCodes || []).forEach(ep => {
                   pBudget += (ep.budget || 0);
-                  pUsed += calculateUsedForProject(p.name, ep.code, 'EPCode');
+                  pUsed += calculateUsedForProject(p.name, ep.code, 'MatCode');
               });
 
               return { name: p.name, budget: pBudget, used: pUsed };
           }).sort((a, b) => b.budget - a.budget); // เรียงตามงบมากไปน้อย
 
-          return { subJobData, epCodeData, projectSummary };
+          return { subJobData, MatCodeData, projectSummary };
       }, [projects, requests, globalProjectFilter, assets]);
 // --- HELPER: แปลง Google Drive URL เป็น Image Link ---
       const getDriveImageUrl = (src) => {
@@ -5040,7 +5040,7 @@ const PublicAnnouncementPopup = () => (
                    `}</style>
 
                    {/* 1. ⭐ Budget Tracking Charts (ย้ายขึ้นมาเป็นอันดับ 1) */}
-                   {dashboardView === 'Purchase' && (budgetChartData.subJobData.length > 0 || budgetChartData.epCodeData.length > 0) && (
+                   {dashboardView === 'Purchase' && (budgetChartData.subJobData.length > 0 || budgetChartData.MatCodeData.length > 0) && (
                        <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm animate-in fade-in">
                            
                            {/* Header & Summary */}
@@ -5051,8 +5051,8 @@ const PublicAnnouncementPopup = () => (
                                </h3>
                                
                                <div className="flex gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
-                                   {['SubJob', 'EPCode'].map(type => {
-                                       const data = type === 'SubJob' ? budgetChartData.subJobData : budgetChartData.epCodeData;
+                                   {['SubJob', 'MatCode'].map(type => {
+                                       const data = type === 'SubJob' ? budgetChartData.subJobData : budgetChartData.MatCodeData;
                                        const totalBudget = data.reduce((s, i) => s + i.budget, 0);
                                        const totalUsed = data.reduce((s, i) => s + i.used, 0);
                                        const pct = totalBudget > 0 ? (totalUsed / totalBudget) * 100 : 0;
@@ -5078,7 +5078,7 @@ const PublicAnnouncementPopup = () => (
                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
                                    {[
                                        { type: 'SubJob', title: 'SubJob Breakdown', rawData: budgetChartData.subJobData, color: 'bg-indigo-600' },
-                                       { type: 'EPCode', title: 'EP Code Breakdown', rawData: budgetChartData.epCodeData, color: 'bg-purple-600' }
+                                       { type: 'MatCode', title: 'Mat. Code Breakdown', rawData: budgetChartData.MatCodeData, color: 'bg-purple-600' }
                                    ].map((chart, cIdx) => {
                                        // --- Logic: Grouping & Drill-down ---
                                        const activeGroup = drillDownState[chart.type];
@@ -6434,7 +6434,7 @@ filteredRequests.map(req => {
             onClick={() => { 
                 const newId = `PJ-${Date.now().toString().slice(-4)}`;
                 // ⭐ เพิ่ม budget ใน object ตั้งต้น (ถ้าจำเป็น) แต่ array ว่างๆ ไม่ต้องแก้
-                setEditingProject({ id: newId, originalId: newId, name: '', subJobs: [], epCodes: [], isNew: true });
+                setEditingProject({ id: newId, originalId: newId, name: '', subJobs: [], MatCodes: [], isNew: true });
                 setProjectFormTab('General');
                 setShowProjectModal(true); 
             }} 
@@ -6468,8 +6468,8 @@ filteredRequests.map(req => {
                                         <span className="font-bold bg-indigo-50 text-indigo-700 px-2 rounded-full text-xs">{proj.subJobs?.length || 0}</span>
                                     </div>
                                     <div className="flex justify-between text-sm text-gray-600">
-                                        <span className="flex items-center gap-1"><Tag className="w-3 h-3"/> EP Codes</span>
-                                        <span className="font-bold bg-purple-50 text-purple-700 px-2 rounded-full text-xs">{proj.epCodes?.length || 0}</span>
+                                        <span className="flex items-center gap-1"><Tag className="w-3 h-3"/> Mat. Codes</span>
+                                        <span className="font-bold bg-purple-50 text-purple-700 px-2 rounded-full text-xs">{proj.MatCodes?.length || 0}</span>
                                     </div>
                                 </div>
                             </div>
@@ -6655,17 +6655,17 @@ filteredRequests.map(req => {
                           </div>
 
                           <div 
-                              onClick={() => setProjectDetailTab('EPCode')}
-                              className={`p-4 rounded-xl border shadow-sm cursor-pointer transition-all flex flex-col items-center justify-center gap-2 group ${projectDetailTab === 'EPCode' ? 'bg-purple-50 border-purple-200 ring-2 ring-purple-100' : 'bg-white border-gray-200 hover:border-purple-200'}`}
+                              onClick={() => setProjectDetailTab('MatCode')}
+                              className={`p-4 rounded-xl border shadow-sm cursor-pointer transition-all flex flex-col items-center justify-center gap-2 group ${projectDetailTab === 'MatCode' ? 'bg-purple-50 border-purple-200 ring-2 ring-purple-100' : 'bg-white border-gray-200 hover:border-purple-200'}`}
                           >
-                              <div className={`p-3 rounded-full ${projectDetailTab === 'EPCode' ? 'bg-purple-200 text-purple-700' : 'bg-gray-100 text-gray-400 group-hover:bg-purple-50 group-hover:text-purple-600'}`}>
+                              <div className={`p-3 rounded-full ${projectDetailTab === 'MatCode' ? 'bg-purple-200 text-purple-700' : 'bg-gray-100 text-gray-400 group-hover:bg-purple-50 group-hover:text-purple-600'}`}>
                                   <Tag className="w-6 h-6"/>
                               </div>
                               <div className="text-center">
-                                  <p className={`text-2xl font-bold ${projectDetailTab === 'EPCode' ? 'text-purple-700' : 'text-gray-800'}`}>
-                                      {viewingProject.epCodes?.length || 0}
+                                  <p className={`text-2xl font-bold ${projectDetailTab === 'MatCode' ? 'text-purple-700' : 'text-gray-800'}`}>
+                                      {viewingProject.MatCodes?.length || 0}
                                   </p>
-                                  <p className="text-xs font-bold text-gray-500">รายการ EP Codes</p>
+                                  <p className="text-xs font-bold text-gray-500">รายการ Mat. Codes</p>
                               </div>
                           </div>
                       </div>
@@ -6686,7 +6686,7 @@ filteredRequests.map(req => {
                                       </tr>
                                   </thead>
                                   <tbody className="divide-y">
-                                      {(projectDetailTab === 'SubJob' ? (viewingProject.subJobs || []) : (viewingProject.epCodes || [])).map((item, i) => (
+                                      {(projectDetailTab === 'SubJob' ? (viewingProject.subJobs || []) : (viewingProject.MatCodes || [])).map((item, i) => (
                                           <tr key={i} className="hover:bg-gray-50">
                                               {/* ⭐ แสดง Group ช่องแรก */}
                                               <td className="px-4 py-2 text-gray-600 font-bold text-xs">{item.group || '-'}</td>
@@ -6698,7 +6698,7 @@ filteredRequests.map(req => {
                                           </tr>
                                       ))}
 
-                                      {(projectDetailTab === 'SubJob' ? (viewingProject.subJobs || []) : (viewingProject.epCodes || [])).length === 0 && (
+                                      {(projectDetailTab === 'SubJob' ? (viewingProject.subJobs || []) : (viewingProject.MatCodes || [])).length === 0 && (
                                           <tr><td colSpan="2" className="px-4 py-8 text-center text-gray-400">ไม่มีข้อมูล</td></tr>
                                       )}
                                   </tbody>
@@ -6750,13 +6750,13 @@ filteredRequests.map(req => {
 
                   {/* Tabs */}
                   <div className="flex border-b bg-gray-50 px-6 pt-2">
-                      {['General', 'SubJob', 'EPCode'].map(tab => (
+                      {['General', 'SubJob', 'MatCode'].map(tab => (
                           <button 
                             key={tab}
                             onClick={() => setProjectFormTab(tab)}
                             className={`px-6 py-3 text-sm font-bold border-b-2 transition-colors ${projectFormTab === tab ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
                           >
-                              {tab === 'General' ? 'ข้อมูลทั่วไป' : tab === 'SubJob' ? 'จัดการ SubJob' : 'จัดการ EP Code'}
+                              {tab === 'General' ? 'ข้อมูลทั่วไป' : tab === 'SubJob' ? 'จัดการ SubJob' : 'จัดการ Mat. Code'}
                           </button>
                       ))}
                   </div>
@@ -6783,7 +6783,7 @@ filteredRequests.map(req => {
                           </div>
                       )}
 
-                      {(projectFormTab === 'SubJob' || projectFormTab === 'EPCode') && (
+                      {(projectFormTab === 'SubJob' || projectFormTab === 'MatCode') && (
                           <div className="space-y-4">
                               {/* CSV Note */}
                               {/* CSV Note */}
@@ -6819,7 +6819,7 @@ filteredRequests.map(req => {
                                           </tr>
                                       </thead>
                                       <tbody className="divide-y">
-                                          {(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes'] || []).map((item, idx) => (
+                                          {(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes'] || []).map((item, idx) => (
                                               <tr key={idx} className="hover:bg-gray-50 group">
                                                   {/* 1. ลำดับ */}
                                                   <td className="px-4 py-2 text-center text-gray-400 text-xs">{idx+1}</td>
@@ -6831,9 +6831,9 @@ filteredRequests.map(req => {
                                                           className="w-full bg-transparent outline-none border-b border-transparent focus:border-gray-300 text-sm font-bold text-gray-700" 
                                                           value={item.group || ''} 
                                                           onChange={(e) => {
-                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes'])];
+                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes'])];
                                                               list[idx].group = e.target.value;
-                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes']: list});
+                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes']: list});
                                                           }}
                                                           placeholder="Group"
                                                       />
@@ -6846,9 +6846,9 @@ filteredRequests.map(req => {
                                                           className="w-full bg-transparent outline-none focus:text-indigo-800 border-b border-transparent focus:border-indigo-300 font-mono font-bold text-indigo-600" 
                                                           value={item.code} 
                                                           onChange={(e) => {
-                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes'])];
+                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes'])];
                                                               list[idx].code = e.target.value;
-                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes']: list});
+                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes']: list});
                                                           }}
                                                           placeholder="Code"
                                                       />
@@ -6861,9 +6861,9 @@ filteredRequests.map(req => {
                                                           className="w-full bg-transparent outline-none border-b border-transparent focus:border-gray-300" 
                                                           value={item.description} 
                                                           onChange={(e) => {
-                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes'])];
+                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes'])];
                                                               list[idx].description = e.target.value;
-                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes']: list});
+                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes']: list});
                                                           }}
                                                           placeholder="Description"
                                                       />
@@ -6877,9 +6877,9 @@ filteredRequests.map(req => {
                                                           className="w-full bg-transparent outline-none border-b border-transparent focus:border-gray-300 text-right font-mono" 
                                                           value={item.budget || ''} 
                                                           onChange={(e) => {
-                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes'])];
+                                                              const list = [...(editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes'])];
                                                               list[idx].budget = parseFloat(e.target.value) || 0;
-                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes']: list});
+                                                              setEditingProject({...editingProject, [projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes']: list});
                                                           }}
                                                           placeholder="0.00"
                                                       />
@@ -6891,11 +6891,11 @@ filteredRequests.map(req => {
                 <button 
                     type="button"
                     onClick={() => {
-                        const currentList = editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes'];
+                        const currentList = editingProject[projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes'];
                         const newList = currentList.filter((_, i) => i !== idx);
                         setEditingProject({
                             ...editingProject, 
-                            [projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes']: newList
+                            [projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes']: newList
                         });
                     }}
                     className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center justify-center mx-auto"
@@ -6919,7 +6919,7 @@ filteredRequests.map(req => {
     <button 
         type="button"
         onClick={() => {
-            const key = projectFormTab === 'SubJob' ? 'subJobs' : 'epCodes';
+            const key = projectFormTab === 'SubJob' ? 'subJobs' : 'MatCodes';
             // ⭐ แก้ไข: เพิ่ม group: '' เข้าไปใน object ใหม่
             setEditingProject({...editingProject, [key]: [...(editingProject[key] || []), { code: '', description: '', group: '', budget: 0 }]});
         }}
@@ -7035,7 +7035,7 @@ filteredRequests.map(req => {
     value={newOrderMeta.job} 
     onChange={e => {
         setNewOrderMeta({...newOrderMeta, job: e.target.value});
-        setTempItem(prev => ({...prev, subJob: '', epCode: ''}));
+        setTempItem(prev => ({...prev, subJob: '', MatCode: ''}));
     }}
 >
     <option value="">-- กรุณาเลือกโครงการ --</option>
@@ -7190,11 +7190,11 @@ filteredRequests.map(req => {
                                         <div className="col-span-4">
     <label className="text-xs font-bold text-gray-500 mb-1 block">SubJob</label>
     <select 
-        className={`w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-colors ${tempItem.epCode ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''}`} 
+        className={`w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-colors ${tempItem.MatCode ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''}`} 
         value={tempItem.subJob} 
         onChange={e => setTempItem({...tempItem, subJob: e.target.value})}
-        // ⭐ แก้ไข: ล็อกถ้ายังไม่เลือก Project หรือ ถ้ามีค่าใน EP Code แล้ว
-        disabled={!newOrderMeta.job || !!tempItem.epCode} 
+        // ⭐ แก้ไข: ล็อกถ้ายังไม่เลือก Project หรือ ถ้ามีค่าใน Mat. Code แล้ว
+        disabled={!newOrderMeta.job || !!tempItem.MatCode} 
     >
         <option value="">-- เลือก --</option>
         {selectedProjectData?.subJobs?.map((sub, i) => (
@@ -7205,16 +7205,16 @@ filteredRequests.map(req => {
     </select>
 </div>
                                         <div className="col-span-4">
-    <label className="text-xs font-bold text-gray-500 mb-1 block">EP Code</label>
+    <label className="text-xs font-bold text-gray-500 mb-1 block">Mat. Code</label>
     <select 
         className={`w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-colors ${tempItem.subJob ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''}`}
-        value={tempItem.epCode} 
-        onChange={e => setTempItem({...tempItem, epCode: e.target.value})}
+        value={tempItem.MatCode} 
+        onChange={e => setTempItem({...tempItem, MatCode: e.target.value})}
         // ⭐ แก้ไข: ล็อกถ้ายังไม่เลือก Project หรือ ถ้ามีค่าใน SubJob แล้ว
         disabled={!newOrderMeta.job || !!tempItem.subJob} 
     >
         <option value="">-- เลือก --</option>
-        {selectedProjectData?.epCodes?.map((ep, i) => (
+        {selectedProjectData?.MatCodes?.map((ep, i) => (
             <option key={i} value={ep.code}>
                 {ep.code} : {ep.description}
             </option>
@@ -7360,8 +7360,8 @@ filteredRequests.map(req => {
                                     <>
                                         <td className="p-3 text-xs text-gray-500">
                                             {itm.subJob && <div>S: {itm.subJob}</div>}
-                                            {itm.epCode && <div>E: {itm.epCode}</div>}
-                                            {!itm.subJob && !itm.epCode && '-'}
+                                            {itm.MatCode && <div>E: {itm.MatCode}</div>}
+                                            {!itm.subJob && !itm.MatCode && '-'}
                                         </td>
                                         <td className="p-3 text-xs text-gray-500 break-words whitespace-pre-wrap max-w-[200px]">{itm.note || '-'}</td>
                                    </>
@@ -7648,7 +7648,7 @@ filteredRequests.map(req => {
         const uniqueCodes = [...new Set(codeList.filter(c => c))];
         uniqueCodes.forEach(code => {
             // หาข้อมูล Group จาก Project Data
-            const defs = type === 'SubJob' ? projectData.subJobs : projectData.epCodes;
+            const defs = type === 'SubJob' ? projectData.subJobs : projectData.MatCodes;
             const target = defs?.find(d => d.code === code);
             const groupName = target?.group || 'Others (อื่นๆ)'; // ถ้าไม่ระบุกลุ่ม ให้รวมเป็น Others
             
@@ -7665,7 +7665,7 @@ filteredRequests.map(req => {
     };
 
     processCodes(items.map(i => i.subJob), 'SubJob');
-    processCodes(items.map(i => i.epCode), 'EPCode');
+    processCodes(items.map(i => i.MatCode), 'MatCode');
 
     const groupKeys = Object.keys(groups).sort();
     if (groupKeys.length === 0) return null;
@@ -7911,11 +7911,11 @@ filteredRequests.map(req => {
                                         )}
 
                                         {/* กรณี Buy: แสดง SubJob/EP (เหมือนเดิม) */}
-                                        {isBuy && (item.subJob || item.epCode) && (
+                                        {isBuy && (item.subJob || item.MatCode) && (
                                             <div className="text-xs text-gray-500 mt-1 flex flex-col gap-1">
                                                 <div className="flex gap-2">
                                                     {item.subJob && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span>}
-                                                    {item.epCode && <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">EP: {item.epCode}</span>}
+                                                    {item.MatCode && <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">EP: {item.MatCode}</span>}
                                                 </div>
                                             </div>
                                         )}
@@ -10509,7 +10509,7 @@ filteredRequests.map(req => {
                     <tr className="bg-gray-100 text-center font-bold">
                         <th className="w-12 border border-black">NO.</th>
                         <th className="border border-black">รายการวัสดุ (Description) / จำนวน / หน่วย</th>
-                        <th className="w-32 border border-black">SUBJOB / EP CODE</th>
+                        <th className="w-32 border border-black">SUBJOB / Mat. Code</th>
                         <th className="w-48 border border-black">วันที่ต้องการ / หมายเหตุ</th>
                     </tr>
                 </thead>
@@ -10533,10 +10533,10 @@ filteredRequests.map(req => {
                     </div>
                 </td>
                 <td className="text-center align-middle border border-black p-2">
-                    {item.subJob || item.epCode ? (
+                    {item.subJob || item.MatCode ? (
                         <div className="flex flex-col gap-1 text-xs font-bold">
                             {item.subJob && <span>Sub: {item.subJob}</span>}
-                            {item.epCode && <span>EP: {item.epCode}</span>}
+                            {item.MatCode && <span>EP: {item.MatCode}</span>}
                         </div>
                     ) : '-'}
                 </td>
