@@ -410,7 +410,88 @@ const [announcements, setAnnouncements] = useState([]);
     const [announceForm, setAnnounceForm] = useState({ id: '', title: '', detail: '', active: true }); 
     const [isAnnounceLoading, setIsAnnounceLoading] = useState(false);
 
+// --- UI Component: Searchable Dropdown (พิมพ์ค้นหาได้) ---
+    const SearchableDropdown = ({ label, options, value, onChange, disabled, placeholder }) => {
+        const [isOpen, setIsOpen] = useState(false);
+        const [search, setSearch] = useState("");
+        const wrapperRef = useRef(null);
 
+        // Sync ข้อความในช่องค้นหาให้ตรงกับค่าที่เลือก (value)
+        useEffect(() => {
+            const selected = options?.find(o => o.code === value);
+            if (selected) {
+                setSearch(`${selected.code} : ${selected.description}`);
+            } else if (!value) {
+                setSearch("");
+            }
+        }, [value, options]);
+
+        // คลิกพื้นที่อื่นเพื่อปิด Dropdown
+        useEffect(() => {
+            const handleClickOutside = (event) => {
+                if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+                    setIsOpen(false);
+                    // ถ้าค่าที่พิมพ์ไม่ตรงกับรายการใดเลย ให้ Reset กลับไปเป็นค่าว่างหรือค่าเดิมที่ถูกเลือก
+                    const selected = options?.find(o => o.code === value);
+                    if (selected) setSearch(`${selected.code} : ${selected.description}`);
+                    else if (!value) setSearch("");
+                }
+            };
+            document.addEventListener("mousedown", handleClickOutside);
+            return () => document.removeEventListener("mousedown", handleClickOutside);
+        }, [wrapperRef, value, options]);
+
+        const filteredOptions = (options || []).filter(opt => 
+            opt.code.toLowerCase().includes(search.toLowerCase()) || 
+            opt.description.toLowerCase().includes(search.toLowerCase())
+        );
+
+        return (
+            <div className="relative" ref={wrapperRef}>
+                <label className="text-xs font-bold text-gray-500 mb-1 block">{label}</label>
+                <div className="relative">
+                    <input
+                        type="text"
+                        className={`w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none ${disabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white'}`}
+                        placeholder={placeholder}
+                        value={search}
+                        onChange={(e) => {
+                            setSearch(e.target.value);
+                            setIsOpen(true);
+                            if (e.target.value === "") onChange(""); // เคลียร์ค่าเมื่อลบข้อความหมด
+                        }}
+                        onFocus={() => !disabled && setIsOpen(true)}
+                        disabled={disabled}
+                    />
+                    {/* Icon ลูกศรลง */}
+                    <div className="absolute right-3 top-3 pointer-events-none text-gray-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    </div>
+                </div>
+
+                {isOpen && !disabled && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto animate-in fade-in zoom-in-95">
+                        {filteredOptions.length > 0 ? (
+                            filteredOptions.map((opt) => (
+                                <div
+                                    key={opt.code}
+                                    className="px-3 py-2 text-sm hover:bg-indigo-50 cursor-pointer text-gray-700 border-b border-gray-50 last:border-0"
+                                    onClick={() => {
+                                        onChange(opt.code);
+                                        setIsOpen(false);
+                                    }}
+                                >
+                                    <span className="font-bold text-indigo-600">{opt.code}</span> : {opt.description}
+                                </div>
+                            ))
+                        ) : (
+                            <div className="px-3 py-3 text-sm text-gray-400 text-center">ไม่พบข้อมูล</div>
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
 
    // --- STATE: Signature (ชุดสมบูรณ์) ---
     const [sigMode, setSigMode] = useState('Draw'); // 'Draw' หรือ 'Upload'
@@ -4817,8 +4898,8 @@ const handleSubmitContract = async () => {
                   pUsed += calculateUsedForProject(p.name, ep.code, 'matCode');
               });
 
-              return { name: p.name, budget: pBudget, used: pUsed };
-          }).sort((a, b) => b.budget - a.budget); // เรียงตามงบมากไปน้อย
+              return { id: p.id, name: p.name, budget: pBudget, used: pUsed };
+          }).sort((a, b) => b.budget - a.budget);
 
           return { subJobData, matCodeData, projectSummary };
       }, [projects, requests, globalProjectFilter, assets]);
@@ -5367,7 +5448,7 @@ const PublicAnnouncementPopup = () => (
 
                                                        {/* Label */}
                                                        <div className="mt-3 text-[10px] font-bold text-gray-500 -rotate-45 origin-top-left translate-y-2 whitespace-nowrap w-0 overflow-visible group-hover:text-teal-700 transition-colors">
-                                                           {proj.name}
+                                                           {proj.id} {/* ⭐ เปลี่ยนจาก name เป็น id */}
                                                        </div>
 
                                                        {/* Tooltip */}
@@ -7296,52 +7377,28 @@ filteredRequests.map(req => {
                                 const selectedProjectData = projects.find(p => p.name === newOrderMeta.job);
                                 return (
                                     <>
-                                       <div className="col-span-4">
-    <label className="text-xs font-bold text-gray-500 mb-1 block">SubJob</label>
-    <select 
-        // ⭐ แก้ไข Class: ให้เป็นสีเทาเฉพาะตอน (Withdraw + เลือก Mat. Code แล้ว)
-        className={`w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-colors ${
-            (newOrderMeta.type === 'Withdraw' && tempItem.matCode) ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''
-        }`} 
-        value={tempItem.subJob} 
-        onChange={e => setTempItem({...tempItem, subJob: e.target.value})}
-        
-        // ⭐ แก้ไข Disabled: 
-        // 1. ถ้ายังไม่เลือก Project -> ล็อก
-        // 2. ถ้าเป็น Withdraw และเลือก Mat. Code แล้ว -> ล็อก (เพื่อให้เลือกได้อย่างเดียว)
-        // 3. ถ้าเป็น Local/HO -> ไม่ล็อก (เพื่อให้เลือกทั้งคู่ได้)
-        disabled={!newOrderMeta.job || (newOrderMeta.type === 'Withdraw' && !!tempItem.matCode)} 
-    >
-        <option value="">-- เลือก --</option>
-        {selectedProjectData?.subJobs?.map((sub, i) => (
-            <option key={i} value={sub.code}>
-                {sub.code} : {sub.description}
-            </option>
-        ))}
-    </select>
-</div>
+                                        {/* ⭐ ใช้ SearchableDropdown แทน Select เดิม */}
+                                        <div className="col-span-4">
+                                            <SearchableDropdown
+                                                label="SubJob"
+                                                placeholder="พิมพ์รหัสหรือเลือก..."
+                                                options={selectedProjectData?.subJobs || []}
+                                                value={tempItem.subJob}
+                                                onChange={(val) => setTempItem({...tempItem, subJob: val})}
+                                                disabled={!newOrderMeta.job || (newOrderMeta.type === 'Withdraw' && !!tempItem.matCode)}
+                                            />
+                                        </div>
 
-<div className="col-span-4">
-    <label className="text-xs font-bold text-gray-500 mb-1 block">Mat. Code</label>
-    <select 
-        // ⭐ แก้ไข Class: ทำเหมือนกัน แต่สลับเงื่อนไขเช็ค SubJob
-        className={`w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-colors ${
-            (newOrderMeta.type === 'Withdraw' && tempItem.subJob) ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''
-        }`}
-        value={tempItem.matCode} 
-        onChange={e => setTempItem({...tempItem, matCode: e.target.value})}
-        
-        // ⭐ แก้ไข Disabled:
-        disabled={!newOrderMeta.job || (newOrderMeta.type === 'Withdraw' && !!tempItem.subJob)} 
-    >
-        <option value="">-- เลือก --</option>
-        {selectedProjectData?.matCodes?.map((mat, i) => ( // อย่าลืมแก้ตรงนี้เป็น matCodes ตามที่เปลี่ยนใน Project Settings
-            <option key={i} value={mat.code}>
-                {mat.code} : {mat.description}
-            </option>
-        ))}
-    </select>
-</div>
+                                        <div className="col-span-4">
+                                            <SearchableDropdown
+                                                label="Mat. Code"
+                                                placeholder="พิมพ์รหัสหรือเลือก..."
+                                                options={selectedProjectData?.matCodes || []}
+                                                value={tempItem.matCode}
+                                                onChange={(val) => setTempItem({...tempItem, matCode: val})}
+                                                disabled={!newOrderMeta.job || (newOrderMeta.type === 'Withdraw' && !!tempItem.subJob)}
+                                            />
+                                        </div>
                                     </>
                                 );
                             })()}
@@ -7453,7 +7510,7 @@ filteredRequests.map(req => {
                                         <th className="p-3 font-bold text-center">รูป</th>
                                     </>
                                 ) : (
-                                    <><th className="p-3 font-bold">SubJob/EP</th><th className="p-3 font-bold">หมายเหตุ</th></>
+                                    <><th className="p-3 font-bold">SubJob/Mat</th><th className="p-3 font-bold">หมายเหตุ</th></>
                                 )}
                                 {/* ⭐ เพิ่มหัวตารางราคา */}
                                 <th className="p-3 text-right font-bold">ราคา</th>
@@ -7481,7 +7538,7 @@ filteredRequests.map(req => {
                                     <>
                                         <td className="p-3 text-xs text-gray-500">
                                             {itm.subJob && <div>S: {itm.subJob}</div>}
-                                            {itm.matCode && <div>E: {itm.matCode}</div>}
+                                            {itm.matCode && <div>M: {itm.matCode}</div>}
                                             {!itm.subJob && !itm.matCode && '-'}
                                         </td>
                                         <td className="p-3 text-xs text-gray-500 break-words whitespace-pre-wrap max-w-[200px]">{itm.note || '-'}</td>
