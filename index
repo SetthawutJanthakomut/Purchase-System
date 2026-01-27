@@ -69,8 +69,8 @@
         5:  'สร้างคำขอ: ซื้อ HO',
         6:  'สร้างคำขอ: เบิกวัสดุ',
         7:  'สร้างคำขอ: ยืมทรัพย์สิน',
-        8:  'อนุมัติ: หัวหน้าแผนก (Level 1)',
-        9:  'อนุมัติ: PM (Level 2)',
+        8:  'อนุมัติ: (Level 1)',
+        9:  'อนุมัติ: (Level 2)',
         10: 'ตรวจสอบเอกสาร (Verify)',
         11: 'ออกใบขอซื้อ (Issue PR)',
         12: 'ออกใบสั่งซื้อ (Issue PO)',
@@ -6387,10 +6387,12 @@ filteredRequests.map(req => {
                            </div>
                            <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
 
-                           {/* ปุ่ม Checklist - วางไว้ข้างๆ ปุ่ม Import หรือ ประวัติ */}
-<button onClick={() => openChecklistModal('Inventory')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
-    <ClipboardList className="w-4 h-4"/> Checklist / Audit
-</button>
+                          {/* ปุ่ม Checklist - แสดงเฉพาะ Admin (2) หรือผู้ที่มีสิทธิ์จัดการสินค้า (16, 17, 18) */}
+{(hasPermission(2) || hasPermission(16) || hasPermission(17) || hasPermission(18)) && (
+    <button onClick={() => openChecklistModal('Inventory')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
+        <ClipboardList className="w-4 h-4"/> Checklist / Audit
+    </button>
+)}
                            
 {/* ⭐ ปุ่มเพิ่มสินค้า (Inventory) - สิทธิ์ 16 */}
 {hasPermission(16) && (
@@ -6571,10 +6573,12 @@ filteredRequests.map(req => {
                     <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
 
 
-                    {/* ปุ่ม Checklist - วางไว้ข้างๆ ปุ่ม Import หรือ ประวัติ */}
-<button onClick={() => openChecklistModal('Asset')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
-    <ClipboardList className="w-4 h-4"/> Checklist / Audit
-</button>
+                  {/* ปุ่ม Checklist - แสดงเฉพาะ Admin (2) หรือผู้ที่มีสิทธิ์จัดการทรัพย์สิน (19, 20, 21) */}
+{(hasPermission(2) || hasPermission(19) || hasPermission(20) || hasPermission(21)) && (
+    <button onClick={() => openChecklistModal('Asset')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
+        <ClipboardList className="w-4 h-4"/> Checklist / Audit
+    </button>
+)}
                     
 
                {/* ⭐ ปุ่มเพิ่มทรัพย์สิน (Asset) - สิทธิ์ 19 */}
@@ -12815,8 +12819,7 @@ filteredRequests.map(req => {
     </div>
 )}
 
-
-{/* --- CHECKLIST / AUDIT MODAL (Updated: Column Widths & Lease Data) --- */}
+{/* --- CHECKLIST / AUDIT MODAL (แก้ไข: ระยะเช่า + จัดขนาดช่องตาราง) --- */}
 {showChecklistModal && (
     <>
         {/* 1. CSS สำหรับพิมพ์ */}
@@ -12999,10 +13002,10 @@ filteredRequests.map(req => {
                         <tr className="bg-gray-100 font-bold">
                             <th className="border border-black p-2 w-10 text-center">#</th>
                             <th className="border border-black p-2 w-24">รหัส</th>
-                            {/* ⭐ 1. ชื่อสินค้า (Auto Width) จะขยายอัตโนมัติ */}
+                            {/* ⭐ ชื่อสินค้า: ปล่อย Auto ให้กินพื้นที่ที่เหลือ */}
                             <th className="border border-black p-2">ชื่อสินค้า</th>
-                            {/* ⭐ 2. รหัสโครงการ (Reduced Width) เหลือ w-20 */}
-                            <th className="border border-black p-2 w-20">รหัสโครงการ</th>
+                            {/* ⭐ รหัสโครงการ: บีบให้เล็กลง */}
+                            <th className="border border-black p-2 w-24 text-center">รหัสโครงการ</th>
                             <th className="border border-black p-2 w-24 text-right">คงเหลือ</th>
                             <th className="border border-black p-2 w-24 text-center">นับจริง</th>
                             <th className="border border-black p-2 w-24 text-center">อัปเดตล่าสุด</th>
@@ -13015,7 +13018,7 @@ filteredRequests.map(req => {
                             <th className="border border-black p-2">รายการ</th>
                             <th className="border border-black p-2 w-24">รหัสโครงการ</th>
                             <th className="border border-black p-2 w-24">Serial No.</th>
-                            <th className="border border-black p-2 w-24 text-center">ระยะเวลาเช่า</th>
+                            <th className="border border-black p-2 w-28 text-center">ระยะเช่า</th>
                             <th className="border border-black p-2 w-20 text-center">สถานะ</th>
                             <th className="border border-black p-2 w-32">ผู้ถือครอง</th>
                             <th className="border border-black p-2 w-24 text-center">อัปเดตล่าสุด</th>
@@ -13030,6 +13033,7 @@ filteredRequests.map(req => {
                                     <td className="border border-black p-2 text-center">{idx + 1}</td>
                                     <td className="border border-black p-2 font-mono">{item.id}</td>
                                     <td className="border border-black p-2 font-bold">{item.name}</td>
+                                    {/* ⭐ รหัสโครงการ */}
                                     <td className="border border-black p-2 text-center">
                                         {projects.find(p => p.name === item.project)?.id || '-'}
                                     </td>
@@ -13047,10 +13051,16 @@ filteredRequests.map(req => {
                                         {projects.find(p => p.name === item.project)?.id || '-'}
                                     </td>
                                     <td className="border border-black p-2">{item.serial || '-'}</td>
-                                    {/* ⭐ 3. พยายามดึงข้อมูลระยะเวลาเช่าจากหลายๆ key */}
-                                    <td className="border border-black p-2 text-center">
-                                        {item.leasePeriod || item.lease_duration || item.rentDuration || item.period || '-'}
+                                    
+                                    {/* ⭐ แก้ไข: ดึงข้อมูลระยะเช่าจาก rentalStart/End หรือ duration */}
+                                    <td className="border border-black p-2 text-center font-medium">
+                                        {item.ownerType === 'Rent' ? (
+                                            item.duration ? 
+                                                `${item.duration} ${item.rentalUnit || ''}` : 
+                                                (item.rentalStart && item.rentalEnd ? `${item.rentalStart} - ${item.rentalEnd}` : '-')
+                                        ) : '-'}
                                     </td>
+
                                     <td className="border border-black p-2 text-center">{item.status}</td>
                                     <td className="border border-black p-2">{item.holder || '-'}</td>
                                     <td className="border border-black p-2 text-center">{item.lastUpdated?.split(' ')[0]}</td>
@@ -13076,6 +13086,7 @@ filteredRequests.map(req => {
         </div>
     </>
 )}
+
 
         </div>
       );
