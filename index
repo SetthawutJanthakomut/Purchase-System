@@ -1631,12 +1631,14 @@ const generateNextReqId = () => {
                 }
             }
             
-            const order = {
+           // ... (ส่วนบนของฟังก์ชันเหมือนเดิม)
+
+          const order = {
                 id: editingId || generateNextReqId(),
                 requester: `${user.firstName} ${user.lastName}`,
-                status: nextStatus,
+                status: nextStatus, // สถานะจะถูกคำนวณใหม่
                 created: new Date().toISOString().split('T')[0],
-                items: processedItems, // ⭐ ใช้รายการที่อัปโหลดรูปแล้ว
+                items: processedItems, 
                 ...newOrderMeta,
                 attachment: attachmentData,
                 quotation: quotationData,
@@ -1646,20 +1648,49 @@ const generateNextReqId = () => {
                 history: [
                     ...(existingReq?.history || []),
                     createLog(
-                        isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'ส่งข้อมูลแก้ไข' : 'สร้างคำขอ'),
+                        isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'แก้ไขข้อมูล (Edit Data)' : 'สร้างคำขอ'),
                         `${user.empId} ${user.firstName} ${user.lastName}`,
                         isFullFlow ? 'Submit (Full Flow)' : 'Submit'
                     )
                 ],
                 comments: existingReq?.comments || []
             };
-            
+
+            // 1. อัปเดตรายการใน State หลัก (Requests)
             setRequests(prev => editingId ? prev.map(r => r.id === editingId ? order : r) : [order, ...prev]);
             
+            // 2. อัปเดตหน้าต่างรายละเอียด/ประวัติ (Detail Modal) ถ้าเปิดอยู่
+            if (selectedRequest && selectedRequest.id === order.id) {
+                setSelectedRequest(order);
+            }
+
+            // ⭐ 3. [เพิ่มใหม่] อัปเดตหน้าตรวจสอบเอกสาร (Verification Modal) ถ้าเปิดอยู่
+            if (showVerificationModal && verificationData.requestId === order.id) {
+                const hasQuotation = !!order.quotation; // เช็คว่ามีไฟล์ใบเสนอราคาไหม
+                const hasEmail = !!order.attachment;    // เช็คว่ามีไฟล์เมลอนุมัติไหม
+
+                setVerificationData(prev => ({
+                    ...prev,
+                    // อัปเดตสถานะไฟล์ในหน้าตรวจสอบทันที
+                    filesExist: {
+                        quotation: hasQuotation,
+                        email: hasEmail
+                    },
+                    // (Optional) สั่งให้ติ๊กถูกอัตโนมัติถ้าไฟล์มาแล้ว
+                    checks: {
+                        ...prev.checks,
+                        quotation: hasQuotation ? true : prev.checks.quotation,
+                        email: hasEmail ? true : prev.checks.email
+                    }
+                }));
+            }
+
             saveRequestToSheet(order);
             setIsLoading(false);
-            showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : 'ส่งคำขอเรียบร้อย');
+            showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : (editingId ? 'บันทึกการแก้ไขเรียบร้อย' : 'ส่งคำขอเรียบร้อย'));
             setUploadFiles({ email: null, quotation: null });
+            
+            // ปิดเฉพาะหน้าต่าง Create/Edit (หน้า Verification จะยังเปิดอยู่และข้อมูลอัปเดตแล้ว)
             handleCloseCreateModal();
 
         } catch (err) {
@@ -6917,9 +6948,9 @@ filteredRequests.map(req => {
             </div>
           </main>
     
-          {/* Create Modal */}
+       {/* เปลี่ยน z-[80] เป็น z-[250] เพื่อให้ซ้อนทับหน้า Verification ได้ */}
 {showCreateModal && (
-        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[250] p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden max-h-[90vh] flex flex-col">
             
             {/* --- HEADER --- */}
@@ -7383,17 +7414,19 @@ filteredRequests.map(req => {
                   </div>
               )}
 
-              {/* Bottom Actions */}
+             {/* Bottom Actions */}
               <div className="flex gap-3 pt-4 border-t border-gray-100">
                   <button type="button" onClick={(e) => handleCreateOrder(e, true)} className="flex-1 bg-white border border-gray-300 text-gray-700 font-bold py-3.5 rounded-xl shadow-sm hover:bg-gray-50 flex items-center justify-center gap-2 transition-colors">
                       <Save className="w-5 h-5"/> บันทึกร่าง
                   </button>
+                  
+                  {/* ⭐ เปลี่ยนข้อความปุ่มตามบริบท (ส่งคำขอ vs บันทึกแก้ไข) */}
                   <button type="button" onClick={(e) => handleCreateOrder(e, false)} className="flex-1 bg-blue-600 text-white font-bold py-3.5 rounded-xl shadow-lg hover:bg-blue-700 flex items-center justify-center gap-2 transition-transform active:scale-95">
-                      <Send className="w-5 h-5"/> ส่งคำขอ
+                      <Send className="w-5 h-5"/> {editingId ? 'บันทึกแก้ไข' : 'ส่งคำขอ'}
                   </button>
               </div>
             </form>
-            </div>
+          </div>
           </div>
         </div>
       )}
@@ -8144,7 +8177,7 @@ filteredRequests.map(req => {
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
              
-             {/* --- HEADER: ปุ่มปิด X แบบไม่มีพื้นหลัง (เหมือนหน้าประวัติ) --- */}
+             {/* --- HEADER --- */}
              <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
                  <div>
                      <h3 className="font-bold text-xl text-gray-800 flex items-center gap-2">
@@ -8153,28 +8186,31 @@ filteredRequests.map(req => {
                      <p className="text-sm text-gray-500 mt-1">Verification Process</p>
                  </div>
                  
-                 {/* ⭐ ปุ่มปิดกากบาท (X) แบบไม่มีพื้นหลัง */}
-                 <button 
-                    type="button"
-                    onClick={() => setShowVerificationModal(false)} 
-                    className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors"
-                    title="ปิดหน้าต่าง"
-                 >
-                    <svg 
-                        xmlns="http://www.w3.org/2000/svg" 
-                        width="24" height="24" 
-                        viewBox="0 0 24 24" 
-                        fill="none" 
-                        stroke="currentColor" 
-                        strokeWidth="2" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round"
-                        className="w-6 h-6"
-                    >
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                 </button>
+                 <div className="flex items-center gap-2">
+                     {/* ⭐⭐ [เพิ่มใหม่] ปุ่มเปิดหน้าต่างแก้ไขข้อมูล ⭐⭐ */}
+                     <button 
+                        type="button"
+                        onClick={() => {
+                            const req = requests.find(r => r.id === verificationData.requestId);
+                            if(req) handleEditDraft(req); // เรียกฟังก์ชันเปิดหน้าต่างแก้ไข
+                        }}
+                        className="flex items-center gap-1 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-100 hover:bg-indigo-100 transition-colors"
+                     >
+                        <Edit className="w-3 h-3"/> แก้ไขข้อมูล
+                     </button>
+
+                     <button 
+                        type="button"
+                        onClick={() => setShowVerificationModal(false)} 
+                        className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors"
+                        title="ปิดหน้าต่าง"
+                     >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                    </button>
+                 </div>
              </div>
              
              {/* --- BODY --- */}
