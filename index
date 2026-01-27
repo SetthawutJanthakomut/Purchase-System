@@ -21,6 +21,28 @@
     ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
     .animate-in { animation: fadeIn 0.2s ease-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+
+    @media print {
+        @page { size: A4; margin: 10mm; } /* ตั้งขอบกระดาษ */
+        body * { visibility: hidden; }
+        #print-area, #print-area * { visibility: visible; }
+        #print-area {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
+            margin: 0 !important;
+            background: white !important;
+        }
+        .no-print { display: none !important; }
+        
+        /* ✅ แก้ไข: บังคับให้หัวตารางแสดงทุกหน้า */
+        table { width: 100% !important; border-collapse: collapse !important; }
+        thead { display: table-header-group !important; } 
+        tr { page-break-inside: avoid !important; } /* พยายามไม่ตัดบรรทัดกลางหน้า */
+    }
+
   </style>
 </head>
 <body>
@@ -409,6 +431,145 @@ const [announcements, setAnnouncements] = useState([]);
     const [announcement, setAnnouncement] = useState(null);
     const [announceForm, setAnnounceForm] = useState({ id: '', title: '', detail: '', active: true }); 
     const [isAnnounceLoading, setIsAnnounceLoading] = useState(false);
+
+    // --- STATE: Checklist & Audit ---
+const [showChecklistModal, setShowChecklistModal] = useState(false);
+const [checklistMode, setChecklistMode] = useState('Inventory'); // 'Inventory' or 'Asset'
+const [checklistFilters, setChecklistFilters] = useState({
+    projects: [],
+    types: [], // Inv: System/NonSystem | Asset: Company/Rent
+    statuses: [], // Asset only
+    selectedItems: [] // Store IDs
+});
+const [checklistUploadFile, setChecklistUploadFile] = useState(null);
+
+// Helper: Toggle Checkbox in Filters
+const toggleChecklistFilter = (field, value) => {
+    setChecklistFilters(prev => {
+        const current = prev[field];
+        const newSet = current.includes(value) 
+            ? current.filter(x => x !== value)
+            : [...current, value];
+        
+        // ถ้าเปลี่ยน Filter หลัก ให้เคลียร์ Items ที่เลือกไว้ เพื่อป้องกันข้อมูลผิดชุด
+        if (field !== 'selectedItems') {
+             return { ...prev, [field]: newSet, selectedItems: [] };
+        }
+        return { ...prev, [field]: newSet };
+    });
+};
+
+// Helper: Select All Items based on current filters
+const handleSelectAllChecklistItems = (filteredItems) => {
+    const allIds = filteredItems.map(i => i.id);
+    setChecklistFilters(prev => ({ 
+        ...prev, 
+        selectedItems: prev.selectedItems.length === allIds.length ? [] : allIds 
+    }));
+};
+
+// Logic: Filter Items for Checklist Modal
+const getChecklistFilteredItems = () => {
+    if (checklistMode === 'Inventory') {
+        return inventory.filter(i => {
+            // Filter Project
+            if (checklistFilters.projects.length > 0 && !checklistFilters.projects.includes(i.project || 'ส่วนกลาง')) return false;
+            // Filter Type
+            const type = i.stockType || 'System';
+            if (checklistFilters.types.length > 0 && !checklistFilters.types.includes(type)) return false;
+            return true;
+        });
+    } else {
+        return assets.filter(a => {
+            // Filter Project
+            if (checklistFilters.projects.length > 0 && !checklistFilters.projects.includes(a.project || 'ส่วนกลาง')) return false;
+            // Filter Type (Owner)
+            if (checklistFilters.types.length > 0 && !checklistFilters.types.includes(a.ownerType)) return false;
+            // Filter Status
+            if (checklistFilters.statuses.length > 0 && !checklistFilters.statuses.includes(a.status)) return false;
+            return true;
+        });
+    }
+};
+
+// Logic: Upload Signed Checklist
+const handleUploadChecklist = async () => {
+    if (!checklistUploadFile) {
+        showToast('กรุณาเลือกไฟล์ก่อนอัปโหลด', 'error');
+        return;
+    }
+    
+    setIsLoading(true);
+    try {
+        const base64 = await fileToBase64(checklistUploadFile);
+        const result = await new Promise((resolve, reject) => {
+            google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .uploadFileToDrive(base64, checklistUploadFile.name);
+        });
+
+        if (result.error) throw new Error(result.error);
+
+        // บันทึก Log
+        const logAction = checklistMode === 'Inventory' ? 'Audit Inventory' : 'Audit Assets';
+        const note = `อัปโหลดไฟล์ Checklist (${checklistMode}) \nไฟล์: ${result.name}`;
+        const logImages = []; // หรือใส่เป็น Link ไฟล์ก็ได้ถ้าต้องการ
+        
+        // ใช้ addInvLog เพื่อบันทึกลงประวัติรวม
+        await addInvLog(
+            logAction, 
+            'Checklist Document', 
+            'Upload', 
+            note, 
+            [{ name: result.name, url: result.url, type: 'application/pdf' }]
+        );
+
+        showToast('อัปโหลดและบันทึกประวัติเรียบร้อย');
+        setChecklistUploadFile(null);
+        setShowChecklistModal(false);
+    } catch (err) {
+        console.error(err);
+        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
+
+
+const handlePrintChecklist = () => {
+    // เก็บชื่อ Title เดิมไว้
+    const originalTitle = document.title;
+    
+    // ตั้งชื่อใหม่: ประเภท_โครงการ_วันเวลา
+    const dateStr = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: '2-digit', hour:'2-digit', minute:'2-digit' }).replace(/[\/:]/g, '-').replace(', ', '_');
+    const typeName = checklistMode === 'Inventory' ? 'Inventory_Audit' : 'Asset_Audit';
+    const projectStr = checklistFilters.projects.length > 0 ? checklistFilters.projects.join('_') : 'All_Projects';
+    
+    // เปลี่ยน Title (Browser จะใช้ชื่อนี้เป็นชื่อไฟล์ PDF)
+    document.title = `${typeName}_${projectStr}_${dateStr}`;
+    
+    // สั่งพิมพ์
+    window.print();
+    
+    // คืนค่า Title เดิมหลังจากพิมพ์เสร็จ (หน่วงเวลาเล็กน้อยเพื่อให้ Browser จับชื่อทัน)
+    setTimeout(() => {
+        document.title = originalTitle;
+    }, 1000);
+};
+
+// Logic: Open Modal
+const openChecklistModal = (mode) => {
+    setChecklistMode(mode);
+    setChecklistFilters({
+        projects: [],
+        types: [],
+        statuses: [],
+        selectedItems: []
+    });
+    setChecklistUploadFile(null);
+    setShowChecklistModal(true);
+};
 
 // --- UI Component: Searchable Dropdown (พิมพ์ค้นหาได้) ---
     const SearchableDropdown = ({ label, options, value, onChange, disabled, placeholder }) => {
@@ -6243,6 +6404,11 @@ filteredRequests.map(req => {
                                 <input type="text" className="w-full pl-10 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm outline-none" placeholder="ค้นหาสินค้า..." value={invSearch} onChange={e => setInvSearch(e.target.value)}/>
                            </div>
                            <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
+
+                           {/* ปุ่ม Checklist - วางไว้ข้างๆ ปุ่ม Import หรือ ประวัติ */}
+<button onClick={() => openChecklistModal('Inventory')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
+    <ClipboardList className="w-4 h-4"/> Checklist / Audit
+</button>
                            
 {/* ⭐ ปุ่มเพิ่มสินค้า (Inventory) - สิทธิ์ 16 */}
 {hasPermission(16) && (
@@ -6421,6 +6587,12 @@ filteredRequests.map(req => {
                     </div>
 
                     <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
+
+
+                    {/* ปุ่ม Checklist - วางไว้ข้างๆ ปุ่ม Import หรือ ประวัติ */}
+<button onClick={() => openChecklistModal('Asset')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
+    <ClipboardList className="w-4 h-4"/> Checklist / Audit
+</button>
                     
 
                {/* ⭐ ปุ่มเพิ่มทรัพย์สิน (Asset) - สิทธิ์ 19 */}
@@ -12609,6 +12781,212 @@ filteredRequests.map(req => {
                     );
                 })()}
             </div>
+        </div>
+    </div>
+)}
+
+
+{/* --- CHECKLIST / AUDIT MODAL (New Layout) --- */}
+{showChecklistModal && (
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[200] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden">
+            
+            {/* Header */}
+            <div className="px-6 py-4 border-b bg-white flex justify-between items-center no-print shrink-0">
+                <div>
+                    <h3 className="font-bold text-xl text-indigo-800 flex items-center gap-2">
+                        <ClipboardList className="w-6 h-6"/> สร้างใบตรวจนับ ({checklistMode === 'Inventory' ? 'วัสดุ' : 'ทรัพย์สิน'})
+                    </h3>
+                    <p className="text-sm text-gray-500">เลือกเงื่อนไขเพื่อพิมพ์ใบตรวจนับ (ดึงข้อมูลทั้งหมดตามเงื่อนไข)</p>
+                </div>
+                <button onClick={() => setShowChecklistModal(false)} className="text-gray-400 hover:text-gray-600 p-2 rounded-full hover:bg-gray-100"><X className="w-6 h-6"/></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 bg-slate-50 no-print">
+                
+                {/* 1. Filter Section (แนวนอน) */}
+                <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm mb-6 space-y-4">
+                    <h4 className="font-bold text-gray-700 flex items-center gap-2 border-b pb-2"><Filter size={16}/> ตัวกรองข้อมูล (Filters)</h4>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Projects */}
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 mb-2 block">โครงการ (Projects)</label>
+                            <div className="bg-gray-50 border rounded-lg p-2 max-h-32 overflow-y-auto space-y-1">
+                                {projects.map(p => (
+                                    <label key={p.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-100 p-1 rounded">
+                                        <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500" 
+                                            checked={checklistFilters.projects.includes(p.name)}
+                                            onChange={() => toggleChecklistFilter('projects', p.name)}
+                                        />
+                                        <span className="text-sm">{p.name}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Types */}
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 mb-2 block">ประเภท (Types)</label>
+                            <div className="bg-gray-50 border rounded-lg p-2 space-y-1">
+                                {checklistMode === 'Inventory' ? (
+                                    ['System', 'NonSystem'].map(t => (
+                                        <label key={t} className="flex items-center gap-2 cursor-pointer hover:bg-gray-100 p-1 rounded">
+                                            <input type="checkbox" className="rounded text-indigo-600" checked={checklistFilters.types.includes(t)} onChange={() => toggleChecklistFilter('types', t)}/>
+                                            <span className="text-sm">{t === 'System' ? 'ในระบบ' : 'นอกระบบ'}</span>
+                                        </label>
+                                    ))
+                                ) : (
+                                    ['Company', 'Rent'].map(t => (
+                                        <label key={t} className="flex items-center gap-2 cursor-pointer hover:bg-gray-100 p-1 rounded">
+                                            <input type="checkbox" className="rounded text-indigo-600" checked={checklistFilters.types.includes(t)} onChange={() => toggleChecklistFilter('types', t)}/>
+                                            <span className="text-sm">{t === 'Company' ? 'ทรัพย์สินบริษัท' : 'ทรัพย์สินเช่า'}</span>
+                                        </label>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Status (Asset Only) */}
+                        {checklistMode === 'Asset' && (
+                            <div>
+                                <label className="text-xs font-bold text-gray-500 mb-2 block">สถานะ (Status)</label>
+                                <div className="bg-gray-50 border rounded-lg p-2 max-h-32 overflow-y-auto space-y-1">
+                                    {['Available', 'Borrowed', 'Lost', 'Damaged'].map(s => (
+                                        <label key={s} className="flex items-center gap-2 cursor-pointer hover:bg-gray-100 p-1 rounded">
+                                            <input type="checkbox" className="rounded text-indigo-600" checked={checklistFilters.statuses.includes(s)} onChange={() => toggleChecklistFilter('statuses', s)}/>
+                                            <span className="text-sm">{s}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* 2. Action Section */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Print Button */}
+                    <div className="bg-indigo-50 border border-indigo-100 p-5 rounded-xl flex flex-col items-center justify-center text-center">
+                        <div className="text-indigo-800 font-bold text-lg mb-1">{getChecklistFilteredItems().length} รายการ</div>
+                        <p className="text-xs text-indigo-600 mb-4">ตรงตามเงื่อนไขที่เลือก</p>
+                        <button onClick={handlePrintChecklist} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-md flex items-center justify-center gap-2 transition-transform active:scale-95">
+                            <Printer className="w-5 h-5"/> พิมพ์ / บันทึก PDF
+                        </button>
+                    </div>
+
+                    {/* Upload Section */}
+                    <div className="bg-white border border-gray-200 p-5 rounded-xl">
+                        <label className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2"><UploadCloud size={18}/> อัปโหลดเอกสารกลับ (Upload)</label>
+                        <div className="space-y-3">
+                            <input 
+                                type="file" 
+                                accept=".pdf,.jpg,.png"
+                                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-green-50 file:text-green-700 hover:file:bg-green-100 bg-gray-50 border border-gray-300 rounded-xl cursor-pointer"
+                                onChange={(e) => setChecklistUploadFile(e.target.files[0])}
+                            />
+                            <button 
+                                onClick={handleUploadChecklist}
+                                disabled={!checklistUploadFile}
+                                className="w-full bg-green-600 text-white px-4 py-2.5 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm flex items-center justify-center gap-2"
+                            >
+                                <Save className="w-4 h-4"/> บันทึกเข้าระบบ
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- PRINT LAYOUT (Visible only when printing) --- */}
+            {/* ✅ ใช้ ID: print-area ตาม CSS เพื่อให้แสดงเฉพาะส่วนนี้ */}
+            <div id="print-area" className="hidden print:block fixed inset-0 bg-white z-[9999] p-8 overflow-visible text-black h-auto">
+                <div className="text-center mb-6">
+                    <h1 className="text-2xl font-bold mb-1">ใบตรวจนับ{checklistMode === 'Inventory' ? 'วัสดุคงคลัง (Inventory Audit)' : 'ทรัพย์สิน (Asset Audit)'}</h1>
+                    <p className="text-sm text-gray-600">วันที่พิมพ์: {new Date().toLocaleString('th-TH')}</p>
+                </div>
+
+                <div className="mb-4 text-sm border-b pb-2">
+                    <p><strong>โครงการที่เลือก:</strong> {checklistFilters.projects.length > 0 ? checklistFilters.projects.join(', ') : 'ทั้งหมด'}</p>
+                    <p><strong>เงื่อนไข:</strong> {checklistMode === 'Inventory' ? 
+                        `ประเภท: ${checklistFilters.types.length > 0 ? checklistFilters.types.join(', ') : 'ทั้งหมด'}` : 
+                        `ประเภท: ${checklistFilters.types.length > 0 ? checklistFilters.types.join(', ') : 'ทั้งหมด'}, สถานะ: ${checklistFilters.statuses.length > 0 ? checklistFilters.statuses.join(', ') : 'ทั้งหมด'}`
+                    }</p>
+                </div>
+
+                {/* ✅ Table Structure with THEAD for repeating headers */}
+                <table className="w-full border-collapse border border-black text-xs">
+                    <thead>
+                        {checklistMode === 'Inventory' ? (
+                            <tr className="bg-gray-100">
+                                <th className="border border-black p-2 w-10 text-center">#</th>
+                                <th className="border border-black p-2 w-24">รหัส</th>
+                                <th className="border border-black p-2">ชื่อสินค้า</th>
+                                <th className="border border-black p-2 w-32">โครงการ</th>
+                                <th className="border border-black p-2 w-24 text-right">คงเหลือในระบบ</th>
+                                <th className="border border-black p-2 w-24 text-center">นับจริง</th>
+                                <th className="border border-black p-2 w-24 text-center">อัปเดตล่าสุด</th>
+                                <th className="border border-black p-2 w-40 text-center">หมายเหตุ</th>
+                            </tr>
+                        ) : (
+                            <tr className="bg-gray-100">
+                                <th className="border border-black p-2 w-8 text-center"><CheckSquare size={14}/></th>
+                                <th className="border border-black p-2 w-24">รหัสทรัพย์สิน</th>
+                                <th className="border border-black p-2">รายการ</th>
+                                <th className="border border-black p-2 w-32">โครงการ</th>
+                                <th className="border border-black p-2 w-24">Serial No.</th>
+                                <th className="border border-black p-2 w-20 text-center">สถานะ</th>
+                                <th className="border border-black p-2 w-32">ผู้ถือครอง</th>
+                                <th className="border border-black p-2 w-24 text-center">อัปเดตล่าสุด</th>
+                                <th className="border border-black p-2 w-32 text-center">หมายเหตุ</th>
+                            </tr>
+                        )}
+                    </thead>
+                    <tbody>
+                        {getChecklistFilteredItems().map((item, idx) => (
+                            <tr key={idx}>
+                                {checklistMode === 'Inventory' ? (
+                                    <>
+                                        <td className="border border-black p-2 text-center">{idx + 1}</td>
+                                        <td className="border border-black p-2 font-mono">{item.id}</td>
+                                        <td className="border border-black p-2 font-bold">{item.name}</td>
+                                        <td className="border border-black p-2">{item.project || '-'}</td>
+                                        <td className="border border-black p-2 text-right">{item.qty} {item.unit}</td>
+                                        <td className="border border-black p-2"></td> {/* ช่องว่างกรอกจริง */}
+                                        <td className="border border-black p-2 text-center">{item.lastUpdated?.split(' ')[0]}</td>
+                                        <td className="border border-black p-2"></td> {/* ช่องว่างหมายเหตุ */}
+                                    </>
+                                ) : (
+                                    <>
+                                        <td className="border border-black p-2 text-center"><div className="w-4 h-4 border border-black mx-auto"></div></td>
+                                        <td className="border border-black p-2 font-mono">{item.id}</td>
+                                        <td className="border border-black p-2 font-bold">{item.name}</td>
+                                        <td className="border border-black p-2">{item.project || '-'}</td>
+                                        <td className="border border-black p-2">{item.serial || '-'}</td>
+                                        <td className="border border-black p-2 text-center">{item.status}</td>
+                                        <td className="border border-black p-2">{item.holder || '-'}</td>
+                                        <td className="border border-black p-2 text-center">{item.lastUpdated?.split(' ')[0]}</td>
+                                        <td className="border border-black p-2"></td> {/* ช่องว่างหมายเหตุ */}
+                                    </>
+                                )}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+
+                <div className="mt-8 flex justify-between px-10 break-inside-avoid">
+                    <div className="text-center">
+                        <div className="border-b border-dotted border-black w-48 h-8"></div>
+                        <p className="mt-1">ผู้ตรวจสอบ (Checker)</p>
+                        <p className="mt-4">วันที่ ...../...../..........</p>
+                    </div>
+                    <div className="text-center">
+                        <div className="border-b border-dotted border-black w-48 h-8"></div>
+                        <p className="mt-1">ผู้อนุมัติ / รับทราบ (Approved By)</p>
+                        <p className="mt-4">วันที่ ...../...../..........</p>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 )}
