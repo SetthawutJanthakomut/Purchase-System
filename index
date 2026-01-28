@@ -4001,18 +4001,14 @@ const confirmReturnAsset = async () => {
                         receivedCount = item.receivedTotal || 0;
                   }
 
-                 // Priority C: Estimate Remainder
-          const rem = Math.max(0, item.qty - cnt);
-          
-          // ⭐ เพิ่มเงื่อนไข: ถ้ายังไม่จบงาน (Completed) ให้บวกยอดที่เหลือเข้าไปด้วย
-          // แต่ถ้าจบงานแล้ว (Completed) ไม่ต้องบวกส่วนนี้ (ถือว่าตัดทิ้ง)
-          if (r.status !== 'Completed') {
-              const dur = isRent ? (item.duration || 1) : 1;
-              const estPrice = item.unitPrice || 0;
-              itemVal += (rem * estPrice * dur);
-          }
+                  // Priority C: Estimate Remainder
+                  const remainingQty = Math.max(0, item.qty - receivedCount);
+                  const estimateDuration = isRent ? (item.duration || 1) : 1;
+                  const estimatePrice = item.unitPrice || 0;
+                  
+                  itemTotal += (remainingQty * estimatePrice * estimateDuration);
 
-          return sum + itemVal;
+                  return sum + itemTotal;
               }, 0);
           };
 
@@ -8868,21 +8864,23 @@ const receivedLogs = item.receivedLog || [];
                             }, 0);
                             receivedCount = relatedAssets.length;
                         } 
-                       // B. Logs
-else if (receivedLogs.length > 0) {
-    itemVal += receivedLogs.reduce((s, log) => {
-        const duration = isRent ? (log.duration || 1) : 1;
-        return s + (log.qty * log.price * duration);
-    }, 0);
-    cnt = item.receivedTotal || 0;
-}
+                        // B. Logs
+                        else if (receivedLogs.length > 0) {
+                            itemTotal += receivedLogs.reduce((lSum, log) => {
+                                const duration = isRent ? (log.duration || 1) : 1;
+                                return lSum + (log.qty * log.price * duration);
+                            }, 0);
+                            receivedCount = item.receivedTotal || 0;
+                        }
+                        
+                        // ⭐ C. Estimate: คิดเฉพาะถ้าสถานะ "ไม่ใช่" จบงาน หรือ รับบางส่วน
+                        if (!['Completed', 'Partially Received'].includes(selectedRequest.status)) {
+                            const remainingQty = Math.max(0, item.qty - receivedCount);
+                            const estimateDuration = isRent ? (item.duration || 1) : 1;
+                            itemTotal += (remainingQty * item.unitPrice * estimateDuration);
+                        }
 
-// ⭐ แก้ไข: ตัดส่วน C. Estimate ออกเลย 
-// เพราะฟังก์ชันนี้ทำงานเฉพาะ req.status === 'Completed' 
-// ดังนั้นยอดที่ยังไม่ได้รับ (Remaining) ถือว่ายกเลิก ไม่ต้องนำมาคิดเป็นงบที่ใช้ไป
-// (ลบ Code ส่วน C. Estimate ทิ้ง หรือ comment ไว้)
-
-return iSum + itemVal;
+                        return sum + itemTotal;
                     }, 0).toLocaleString()}
                 </div>
 
