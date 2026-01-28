@@ -2350,11 +2350,14 @@ const handleSaveAnnouncement = () => {
           }).clearSystemAnnouncement();
       };
 
-
-// --- LOGIC: COST EDITING ---
+// --- LOGIC: COST EDITING (UPDATED FOR ASSETS) ---
       const handleStartCostEdit = () => {
-          // คัดลอกข้อมูล Request ปัจจุบันมาใส่ตัวแปรชั่วคราวเพื่อแก้ไข
-          setTempCostRequest(JSON.parse(JSON.stringify(selectedRequest)));
+          const clone = JSON.parse(JSON.stringify(selectedRequest));
+          // ⭐ Snapshot Assets related to this request (ดึงทรัพย์สินที่เกี่ยวข้องมาเก็บไว้แก้ไข)
+          const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id);
+          clone.tempAssets = JSON.parse(JSON.stringify(relatedAssets));
+          
+          setTempCostRequest(clone);
           setIsCostEditMode(true);
       };
 
@@ -2366,32 +2369,57 @@ const handleSaveAnnouncement = () => {
       const handleSaveCostEdit = async () => {
           if (!tempCostRequest) return;
           setIsLoading(true);
-
           try {
               const changes = [];
               const oldReq = selectedRequest;
               const newReq = tempCostRequest;
+              const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
 
-              // 1. ตรวจสอบการเปลี่ยนแปลงของ SubJob และ Mat. Code
+              // 1. ตรวจสอบการเปลี่ยนแปลงของ Request (SubJob, MatCode, Inventory Logs)
               newReq.items.forEach((newItem, idx) => {
                   const oldItem = oldReq.items[idx];
-                  if (newItem.subJob !== oldItem.subJob) {
-                      changes.push(`${newItem.name}: SubJob (${oldItem.subJob || '-'} -> ${newItem.subJob})`);
-                  }
-                  if (newItem.matCode !== oldItem.matCode) {
-                      changes.push(`${newItem.name}: Mat. (${oldItem.matCode || '-'} -> ${newItem.matCode})`);
-                  }
+                  if (newItem.subJob !== oldItem.subJob) changes.push(`${newItem.name}: SubJob (${oldItem.subJob || '-'} -> ${newItem.subJob})`);
+                  if (newItem.matCode !== oldItem.matCode) changes.push(`${newItem.name}: Mat. (${oldItem.matCode || '-'} -> ${newItem.matCode})`);
 
-                  // 2. ตรวจสอบการเปลี่ยนแปลงราคาใน Receive History
+                  // Check Inventory Logs
                   if (newItem.receivedLog && newItem.receivedLog.length > 0) {
                       newItem.receivedLog.forEach((newLog, logIdx) => {
-                          const oldLog = oldItem.receivedLog[logIdx];
-                          if (newLog.price !== oldLog.price) {
+                          const oldLog = oldItem.receivedLog?.[logIdx];
+                          if (oldLog && newLog.price !== oldLog.price) {
                               changes.push(`${newItem.name} (Lot ${logIdx + 1}): Price (${oldLog.price.toLocaleString()} -> ${newLog.price.toLocaleString()})`);
                           }
                       });
                   }
               });
+
+              // 2. ⭐ ตรวจสอบการเปลี่ยนแปลงของ Assets (เพิ่มใหม่)
+              if (newReq.tempAssets && newReq.tempAssets.length > 0) {
+                  for (const newAsset of newReq.tempAssets) {
+                      const oldAsset = assets.find(a => a.id === newAsset.id);
+                      if (!oldAsset) continue;
+
+                      let assetChanged = false;
+                      let assetChanges = [];
+
+                      // Check Price (Buy/Rent)
+                      if (newAsset.price !== oldAsset.price) { assetChanges.push(`Price: ${oldAsset.price} -> ${newAsset.price}`); assetChanged = true; }
+                      if (newAsset.rentalPrice !== oldAsset.rentalPrice) { assetChanges.push(`Rent Price: ${oldAsset.rentalPrice} -> ${newAsset.rentalPrice}`); assetChanged = true; }
+                      // Check Duration & Unit
+                      if (newAsset.duration !== oldAsset.duration) { assetChanges.push(`Duration: ${oldAsset.duration} -> ${newAsset.duration}`); assetChanged = true; }
+                      if (newAsset.rentalUnit !== oldAsset.rentalUnit) { assetChanges.push(`Unit: ${oldAsset.rentalUnit} -> ${newAsset.rentalUnit}`); assetChanged = true; }
+
+                      if (assetChanged) {
+                          // Sync Asset to Server
+                          await saveAssetToSheet(newAsset); 
+                          // Update Global State
+                          setAssets(prev => prev.map(a => a.id === newAsset.id ? newAsset : a));
+                          
+                          changes.push(`${newAsset.id}: ${assetChanges.join(', ')}`);
+                          // Log for Asset
+                          await addInvLog('Edit Asset Cost', newAsset.name, 'Edit', `แก้ไข Cost/Term: ${assetChanges.join(', ')}`, [], selectedRequest.id, newAsset.id);
+                      }
+                  }
+              }
 
               if (changes.length === 0) {
                   showToast('ไม่มีข้อมูลเปลี่ยนแปลง', 'info');
@@ -2400,25 +2428,22 @@ const handleSaveAnnouncement = () => {
                   return;
               }
 
-              // 3. บันทึกข้อมูลและประวัติ
-              const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
-              const logNote = `แก้ไขข้อมูล Cost/Code:\n- ${changes.join('\n- ')}`;
+              // 3. บันทึกข้อมูล Request และประวัติ
+              const logNote = `แก้ไขข้อมูล Cost/Code/Assets:\n- ${changes.join('\n- ')}`;
+              const { tempAssets, ...reqToSave } = newReq; // เอา tempAssets ออกก่อนบันทึก Request
               
               const updatedReq = {
-                  ...newReq,
+                  ...reqToSave,
                   history: [...newReq.history, createLog('Edit Cost', userSignature, logNote)]
               };
-
-              // Sync ลง Sheet
-              saveRequestToSheet(updatedReq);
               
-              // Update State
+              saveRequestToSheet(updatedReq); // Sync Request
               setRequests(prev => prev.map(r => r.id === updatedReq.id ? updatedReq : r));
               setSelectedRequest(updatedReq);
               
               setIsCostEditMode(false);
               setTempCostRequest(null);
-              showToast('บันทึกการแก้ไข Cost เรียบร้อย');
+              showToast('บันทึกการแก้ไขเรียบร้อย');
 
           } catch (err) {
               console.error(err);
@@ -2427,6 +2452,7 @@ const handleSaveAnnouncement = () => {
               setIsLoading(false);
           }
       };
+
 // --- LOGIC: IMPORT ASSETS (CSV) - SMART PARSER ---
 const handleFileImport = (e) => {
     const file = e.target.files[0];
@@ -8502,17 +8528,47 @@ filteredRequests.map(req => {
                                 </div>
                             </td>
 
-                            {/* 2. Column ราคา (แสดงเฉพาะงานซื้อ) */}
+                            {/* 2. Column ราคา (แสดงเฉพาะงานซื้อ) - แก้ไข: เช็คราคาคละ (Mixed Price) */}
                             {isBuy && (
                                 <td className="p-3 text-right text-gray-700 align-top">
-                                    {item.unitPrice > 0 ? (
-                                        <div className="flex flex-col items-end">
-                                            <span className="font-mono font-bold text-gray-900">{item.unitPrice.toLocaleString()}</span>
-                                            <span className="text-[10px] text-gray-500">
-                                                {isRent ? `/${item.rentalUnit || 'เดือน'}` : `บาท`}
-                                            </span>
-                                        </div>
-                                    ) : '-'}
+                                    {(() => {
+                                        // 1. ดึงประวัติราคาที่รับจริงทั้งหมด
+                                        const rLogs = item.receivedLog || [];
+                                        const actualPrices = rLogs.map(l => l.price).filter(p => p !== undefined && p !== null);
+                                        
+                                        // 2. เช็คว่ามีกี่ราคาที่ไม่ซ้ำกัน
+                                        const uniquePrices = [...new Set(actualPrices)];
+                                        const isMixed = uniquePrices.length > 1;
+                                        
+                                        // 3. หาราคาที่จะแสดง (ถ้ายังไม่รับเลย ให้ใช้ราคาประเมิน unitPrice)
+                                        const displayPrice = uniquePrices.length === 1 ? uniquePrices[0] : item.unitPrice;
+
+                                        return (
+                                            <div className="flex flex-col items-end">
+                                                {isMixed ? (
+                                                    // กรณี A: มีหลายราคา (คละกัน) -> แสดงป้ายเตือน
+                                                    <>
+                                                        <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-1 rounded border border-orange-200 shadow-sm mb-1">
+                                                            คละราคา
+                                                        </span>
+                                                        <span className="text-[9px] text-gray-400">(Mixed Price)</span>
+                                                    </>
+                                                ) : (
+                                                    // กรณี B: ราคาเดียว (หรือยังไม่ได้รับของ) -> แสดงตัวเลขปกติ
+                                                    <>
+                                                        <span className="font-mono font-bold text-gray-900">
+                                                            {displayPrice > 0 ? displayPrice.toLocaleString() : '-'}
+                                                        </span>
+                                                        {displayPrice > 0 && (
+                                                            <span className="text-[10px] text-gray-500">
+                                                                {isRent ? `/${item.rentalUnit || 'เดือน'}` : `บาท`}
+                                                            </span>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })()}
                                 </td>
                             )}
 
@@ -8595,7 +8651,7 @@ filteredRequests.map(req => {
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-100">
-                                                {(() => {
+                                              {(() => {
                                                     if (hasAssets) {
                                                         return relatedAssets.map((asset, aIdx) => {
                                                             const assetPrice = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
@@ -8621,14 +8677,72 @@ filteredRequests.map(req => {
                                                                     {isBuy && (
                                                                         <>
                                                                             <td className="px-4 py-2.5 text-right font-mono">
-                                                                                {/* Asset แก้ราคาที่หน้ารายละเอียด Asset โดยตรง (ไม่แก้ตรงนี้) */}
-                                                                                {assetPrice.toLocaleString()}
+                                                                                {/* ⭐ แก้ไข: ถ้าเป็น Edit Mode ให้แสดง Input ราคา */}
+                                                                                {isCostEditMode ? (
+                                                                                    <input 
+                                                                                        type="number" 
+                                                                                        className="border border-blue-300 rounded px-1 py-0.5 text-right w-24 text-sm font-bold text-blue-700 bg-blue-50 focus:ring-2 focus:ring-blue-500 outline-none"
+                                                                                        value={isRent ? asset.rentalPrice : asset.price}
+                                                                                        onChange={(e) => {
+                                                                                            const val = parseFloat(e.target.value) || 0;
+                                                                                            const newTemp = [...tempCostRequest.tempAssets];
+                                                                                            const target = newTemp.find(t => t.id === asset.id);
+                                                                                            if(target) {
+                                                                                                if(isRent) target.rentalPrice = val;
+                                                                                                else target.price = val;
+                                                                                                setTempCostRequest({...tempCostRequest, tempAssets: newTemp});
+                                                                                            }
+                                                                                        }}
+                                                                                    />
+                                                                                ) : (
+                                                                                    assetPrice.toLocaleString()
+                                                                                )}
                                                                             </td>
+                                                                            
                                                                             {isRent && (
                                                                                 <td className="px-4 py-2.5 text-center text-indigo-600 font-bold bg-indigo-50/30">
-                                                                                    {assetDuration} {unitLabel}
+                                                                                    {/* ⭐ แก้ไข: ถ้าเป็น Edit Mode ให้แสดง Input ระยะเวลาและหน่วย */}
+                                                                                    {isCostEditMode ? (
+                                                                                        <div className="flex items-center gap-1 justify-center">
+                                                                                            <input 
+                                                                                                type="number"
+                                                                                                min="1"
+                                                                                                className="border border-indigo-300 rounded px-1 py-0.5 text-center w-12 text-xs font-bold text-indigo-700 bg-white focus:ring-1 focus:ring-indigo-500"
+                                                                                                value={asset.duration || 1}
+                                                                                                onChange={(e) => {
+                                                                                                    const val = parseFloat(e.target.value) || 1;
+                                                                                                    const newTemp = [...tempCostRequest.tempAssets];
+                                                                                                    const target = newTemp.find(t => t.id === asset.id);
+                                                                                                    if(target) {
+                                                                                                        target.duration = val;
+                                                                                                        setTempCostRequest({...tempCostRequest, tempAssets: newTemp});
+                                                                                                    }
+                                                                                                }}
+                                                                                            />
+                                                                                            <select
+                                                                                                className="border border-indigo-300 rounded px-0 py-0.5 text-xs bg-white text-indigo-700 outline-none"
+                                                                                                value={asset.rentalUnit || 'Month'}
+                                                                                                onChange={(e) => {
+                                                                                                    const val = e.target.value;
+                                                                                                    const newTemp = [...tempCostRequest.tempAssets];
+                                                                                                    const target = newTemp.find(t => t.id === asset.id);
+                                                                                                    if(target) {
+                                                                                                        target.rentalUnit = val;
+                                                                                                        setTempCostRequest({...tempCostRequest, tempAssets: newTemp});
+                                                                                                    }
+                                                                                                }}
+                                                                                            >
+                                                                                                <option value="Day">วัน</option>
+                                                                                                <option value="Month">เดือน</option>
+                                                                                                <option value="Year">ปี</option>
+                                                                                            </select>
+                                                                                        </div>
+                                                                                    ) : (
+                                                                                        `${assetDuration} ${unitLabel}`
+                                                                                    )}
                                                                                 </td>
                                                                             )}
+                                                                            
                                                                             <td className="px-4 py-2.5 text-right font-bold text-gray-800">
                                                                                 {totalRow.toLocaleString()}
                                                                             </td>
@@ -8637,7 +8751,8 @@ filteredRequests.map(req => {
                                                                 </tr>
                                                             );
                                                         });
-                                                    } else if (hasLogs) {
+                                                    }
+                                                     else if (hasLogs) {
                                                         return receivedLogs.map((log, lIdx) => {
                                                             const logDuration = isRent ? (log.duration || 1) : 1;
                                                             const totalRow = log.qty * log.price * logDuration;
@@ -8704,20 +8819,27 @@ filteredRequests.map(req => {
                 })}
             </tbody>
 
-            {/* ⭐ 4. Footer: แสดง Grand Total เฉพาะงานซื้อ (Local/HO) เท่านั้น */}
+           {/* ⭐ 4. Footer: แสดง Grand Total เฉพาะงานซื้อ (Local/HO) เท่านั้น */}
             {['Local', 'HO'].includes(selectedRequest.type) && (
                 <tfoot className="bg-gray-50 border-t-2 border-gray-200">
                     <tr>
                         <td colSpan="3" className="p-4 text-right text-gray-600 text-sm">รวมจำนวนเงินทั้งสิ้น (Grand Total)</td>
                         <td className="p-4 text-right font-bold text-xl text-blue-700">
-                            {selectedRequest.items.reduce((sum, item) => {
-                                // ... Logic คำนวณเดิม ...
+                            {/* ⭐ แก้ไข: เปลี่ยนแหล่งข้อมูล Items ตามโหมด (Edit -> Temp, View -> Actual) */}
+                            {(isCostEditMode && tempCostRequest ? tempCostRequest.items : selectedRequest.items).reduce((sum, item) => {
+                                // ... Logic คำนวณ ...
                                 const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
-                                const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+                                
+                                // ⭐ แก้ไข: เลือกแหล่งข้อมูล Assets ตามโหมด
+                                const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
+                                const relatedAssets = sourceAssets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+                                
                                 const receivedLogs = item.receivedLog || [];
                                 let itemTotal = 0;
                                 let receivedCount = 0;
+
                                 if (relatedAssets.length > 0) {
+                                    // A. คำนวณจาก Assets (ใช้ราคาใหม่ถ้ามีการแก้)
                                     itemTotal += relatedAssets.reduce((aSum, asset) => {
                                         const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
                                         const duration = isRent ? (asset.duration || item.duration || 1) : 1;
@@ -8725,12 +8847,15 @@ filteredRequests.map(req => {
                                     }, 0);
                                     receivedCount = relatedAssets.length;
                                 } else if (receivedLogs.length > 0) {
+                                    // B. คำนวณจาก Logs
                                     itemTotal += receivedLogs.reduce((lSum, log) => {
                                         const duration = isRent ? (log.duration || 1) : 1;
                                         return lSum + (log.qty * log.price * duration);
                                     }, 0);
                                     receivedCount = item.receivedTotal || 0;
                                 }
+                                
+                                // C. ส่วนที่เหลือ (Estimate)
                                 const remainingQty = Math.max(0, item.qty - receivedCount);
                                 const estimateDuration = isRent ? (item.duration || 1) : 1;
                                 itemTotal += (remainingQty * item.unitPrice * estimateDuration);
