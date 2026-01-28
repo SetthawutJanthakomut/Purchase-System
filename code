@@ -1521,9 +1521,14 @@ function sendWeeklyBudgetSummary() {
 
         // C. Estimate (ส่วนที่เหลือ)
         const rem = Math.max(0, item.qty - cnt);
-        const dur = isRent ? (item.duration || 1) : 1;
-        const estPrice = item.unitPrice || 0;
-        val += (rem * estPrice * dur);
+        
+        // ⭐ เพิ่มเงื่อนไข: ถ้ายังไม่จบงาน ให้คิดยอดที่เหลือ
+        // แต่ถ้าสถานะ req เป็น Completed แล้ว ให้ข้ามส่วนนี้ไปเลย
+        if (req.status !== 'Completed') {
+            const dur = isRent ? (item.duration || 1) : 1;
+            const estPrice = item.unitPrice || 0;
+            val += (rem * estPrice * dur);
+        }
         
         return val;
     };
