@@ -357,11 +357,13 @@ function getBudgetInfoForEmail_FullDetail(req) {
           }
 
           // Priority C: Estimate Remainder
-          const rem = Math.max(0, item.qty - cnt);
-          const dur = isRent ? (item.duration || 1) : 1;
-          const estPrice = item.unitPrice || 0;
-          
-          itemVal += (rem * estPrice * dur);
+          // ⭐ [แก้ไขใหม่] ถ้าสถานะเป็น Completed (จบงาน/Force Close) ไม่ต้องเอาเศษที่เหลือมาคิดเงิน
+          if (r.status !== 'Completed') { 
+              const rem = Math.max(0, item.qty - cnt);
+              const dur = isRent ? (item.duration || 1) : 1;
+              const estPrice = item.unitPrice || 0;
+              itemVal += (rem * estPrice * dur);
+          }
 
           return sum + itemVal;
       }, 0);
