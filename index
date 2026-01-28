@@ -4001,14 +4001,18 @@ const confirmReturnAsset = async () => {
                         receivedCount = item.receivedTotal || 0;
                   }
 
-                  // Priority C: Estimate Remainder
-                  const remainingQty = Math.max(0, item.qty - receivedCount);
-                  const estimateDuration = isRent ? (item.duration || 1) : 1;
-                  const estimatePrice = item.unitPrice || 0;
-                  
-                  itemTotal += (remainingQty * estimatePrice * estimateDuration);
+                 // Priority C: Estimate Remainder
+          const rem = Math.max(0, item.qty - cnt);
+          
+          // ⭐ เพิ่มเงื่อนไข: ถ้ายังไม่จบงาน (Completed) ให้บวกยอดที่เหลือเข้าไปด้วย
+          // แต่ถ้าจบงานแล้ว (Completed) ไม่ต้องบวกส่วนนี้ (ถือว่าตัดทิ้ง)
+          if (r.status !== 'Completed') {
+              const dur = isRent ? (item.duration || 1) : 1;
+              const estPrice = item.unitPrice || 0;
+              itemVal += (rem * estPrice * dur);
+          }
 
-                  return sum + itemTotal;
+          return sum + itemVal;
               }, 0);
           };
 
@@ -8406,9 +8410,11 @@ filteredRequests.map(req => {
                     const currentJob = isCostEditMode ? tempCostRequest.job : selectedRequest.job;
                     const projectData = projects.find(p => p.name === currentJob);
 
-                    // ... (ตัวแปรคำนวณราคาเดิม) ...
-                    const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
-                    const receivedLogs = item.receivedLog || [];
+                   
+const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
+const relatedAssets = sourceAssets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+const receivedLogs = item.receivedLog || [];
+                    
                     const hasAssets = relatedAssets.length > 0;
                     const hasLogs = receivedLogs.length > 0;
                     const hasDetails = hasAssets || hasLogs;
@@ -8431,9 +8437,11 @@ filteredRequests.map(req => {
                               }, 0);
                              lineReceivedCount = item.receivedTotal || 0;
                         }
-                        const remainingQty = Math.max(0, item.qty - lineReceivedCount);
-                        const estimateDuration = isRent ? (item.duration || 1) : 1;
-                        lineTotal += (remainingQty * item.unitPrice * estimateDuration);
+                        if (!['Completed', 'Partially Received'].includes(selectedRequest.status)) {
+    const remainingQty = Math.max(0, item.qty - lineReceivedCount);
+    const estimateDuration = isRent ? (item.duration || 1) : 1;
+    lineTotal += (remainingQty * item.unitPrice * estimateDuration);
+}
                     }
 
                     return (
@@ -8602,9 +8610,17 @@ filteredRequests.map(req => {
                             )}
 
                             {/* 5. Column หมายเหตุ */}
-                            <td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
-                                {item.note || '-'}
-                                {item.images && item.images.length > 0 && (
+<td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
+    {item.note || '-'}
+    
+    {/* ⭐ เพิ่ม: แจ้งเตือนถ้ารับของไม่ครบในสถานะจบงาน/รับบางส่วน */}
+    {['Completed', 'Partially Received'].includes(selectedRequest.status) && (item.receivedTotal || 0) < item.qty && (
+        <div className="mt-1 text-[10px] text-orange-700 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded w-fit font-bold">
+            * รับไม่ครบ (คิดยอดจริง)
+        </div>
+    )}
+
+    {item.images && item.images.length > 0 && (
                                     <div className="mt-1">
                                         <button onClick={(e) => { e.stopPropagation(); setViewingAttachments({ attachments: item.images }); }} className="text-[10px] text-blue-600 flex items-center gap-1 hover:underline">
                                             <ImageIcon className="w-3 h-3"/> รูปภาพ ({item.images.length})
@@ -8824,53 +8840,63 @@ filteredRequests.map(req => {
                 })}
             </tbody>
 
-           {/* ⭐ 4. Footer: แสดง Grand Total เฉพาะงานซื้อ (Local/HO) เท่านั้น */}
-            {['Local', 'HO'].includes(selectedRequest.type) && (
-                <tfoot className="bg-gray-50 border-t-2 border-gray-200">
-                    <tr>
-                        <td colSpan="3" className="p-4 text-right text-gray-600 text-sm">รวมจำนวนเงินทั้งสิ้น (Grand Total)</td>
-                        <td className="p-4 text-right font-bold text-xl text-blue-700">
-                            {/* ⭐ แก้ไข: เปลี่ยนแหล่งข้อมูล Items ตามโหมด (Edit -> Temp, View -> Actual) */}
-                            {(isCostEditMode && tempCostRequest ? tempCostRequest.items : selectedRequest.items).reduce((sum, item) => {
-                                // ... Logic คำนวณ ...
-                                const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
-                                
-                                // ⭐ แก้ไข: เลือกแหล่งข้อมูล Assets ตามโหมด
-                                const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
-                                const relatedAssets = sourceAssets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
-                                
-                                const receivedLogs = item.receivedLog || [];
-                                let itemTotal = 0;
-                                let receivedCount = 0;
+{/* ⭐ 4. Footer: แสดง Grand Total */}
+{['Local', 'HO'].includes(selectedRequest.type) && (
+    <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+        <tr>
+            <td colSpan="3" className="p-4 text-right text-gray-600 text-sm align-top pt-5">
+                รวมจำนวนเงินทั้งสิ้น (Grand Total)
+            </td>
+            <td className="p-4 text-right">
+                <div className="font-bold text-xl text-blue-700">
+                    {/* ⭐ แก้ไข Logic คำนวณ Grand Total */}
+                    {(isCostEditMode && tempCostRequest ? tempCostRequest.items : selectedRequest.items).reduce((sum, item) => {
+                        const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
+                        const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
+                        const relatedAssets = sourceAssets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+                        const receivedLogs = item.receivedLog || [];
+                        
+                        let itemTotal = 0;
+                        let receivedCount = 0;
 
-                                if (relatedAssets.length > 0) {
-                                    // A. คำนวณจาก Assets (ใช้ราคาใหม่ถ้ามีการแก้)
-                                    itemTotal += relatedAssets.reduce((aSum, asset) => {
-                                        const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                                        const duration = isRent ? (asset.duration || item.duration || 1) : 1;
-                                        return aSum + (price * duration);
-                                    }, 0);
-                                    receivedCount = relatedAssets.length;
-                                } else if (receivedLogs.length > 0) {
-                                    // B. คำนวณจาก Logs
-                                    itemTotal += receivedLogs.reduce((lSum, log) => {
-                                        const duration = isRent ? (log.duration || 1) : 1;
-                                        return lSum + (log.qty * log.price * duration);
-                                    }, 0);
-                                    receivedCount = item.receivedTotal || 0;
-                                }
-                                
-                                // C. ส่วนที่เหลือ (Estimate)
-                                const remainingQty = Math.max(0, item.qty - receivedCount);
-                                const estimateDuration = isRent ? (item.duration || 1) : 1;
-                                itemTotal += (remainingQty * item.unitPrice * estimateDuration);
-                                return sum + itemTotal;
-                            }, 0).toLocaleString()}
-                        </td>
-                        <td className="bg-gray-50"></td> 
-                    </tr>
-                </tfoot>
-            )}
+                        // A. Assets
+                        if (relatedAssets.length > 0) {
+                            itemTotal += relatedAssets.reduce((aSum, asset) => {
+                                const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                                const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                                return aSum + (price * duration);
+                            }, 0);
+                            receivedCount = relatedAssets.length;
+                        } 
+                       // B. Logs
+else if (receivedLogs.length > 0) {
+    itemVal += receivedLogs.reduce((s, log) => {
+        const duration = isRent ? (log.duration || 1) : 1;
+        return s + (log.qty * log.price * duration);
+    }, 0);
+    cnt = item.receivedTotal || 0;
+}
+
+// ⭐ แก้ไข: ตัดส่วน C. Estimate ออกเลย 
+// เพราะฟังก์ชันนี้ทำงานเฉพาะ req.status === 'Completed' 
+// ดังนั้นยอดที่ยังไม่ได้รับ (Remaining) ถือว่ายกเลิก ไม่ต้องนำมาคิดเป็นงบที่ใช้ไป
+// (ลบ Code ส่วน C. Estimate ทิ้ง หรือ comment ไว้)
+
+return iSum + itemVal;
+                    }, 0).toLocaleString()}
+                </div>
+
+                {/* ⭐ เพิ่มหมายเหตุท้ายบิล */}
+                {['Completed', 'Partially Received'].includes(selectedRequest.status) && (
+                    <div className="text-[10px] text-orange-600 font-bold mt-1 bg-orange-50 px-2 py-1 rounded border border-orange-200 inline-block">
+                        * ยอดรวมตามจริง (เฉพาะที่รับของแล้ว)
+                    </div>
+                )}
+            </td>
+            <td className="bg-gray-50"></td> 
+        </tr>
+    </tfoot>
+)}
         </table>
     </div>
 </div>
