@@ -8684,15 +8684,16 @@ filteredRequests.map(req => {
                                                                                         className="border border-blue-300 rounded px-1 py-0.5 text-right w-24 text-sm font-bold text-blue-700 bg-blue-50 focus:ring-2 focus:ring-blue-500 outline-none"
                                                                                         value={isRent ? asset.rentalPrice : asset.price}
                                                                                         onChange={(e) => {
-                                                                                            const val = parseFloat(e.target.value) || 0;
-                                                                                            const newTemp = [...tempCostRequest.tempAssets];
-                                                                                            const target = newTemp.find(t => t.id === asset.id);
-                                                                                            if(target) {
-                                                                                                if(isRent) target.rentalPrice = val;
-                                                                                                else target.price = val;
-                                                                                                setTempCostRequest({...tempCostRequest, tempAssets: newTemp});
-                                                                                            }
-                                                                                        }}
+    const val = parseFloat(e.target.value) || 0;
+    setTempCostRequest(prev => {
+        const newAssets = prev.tempAssets.map(item => 
+            item.id === asset.id 
+                ? { ...item, [isRent ? 'rentalPrice' : 'price']: val }
+                : item
+        );
+        return { ...prev, tempAssets: newAssets };
+    });
+}}
                                                                                     />
                                                                                 ) : (
                                                                                     assetPrice.toLocaleString()
@@ -8709,28 +8710,32 @@ filteredRequests.map(req => {
                                                                                                 min="1"
                                                                                                 className="border border-indigo-300 rounded px-1 py-0.5 text-center w-12 text-xs font-bold text-indigo-700 bg-white focus:ring-1 focus:ring-indigo-500"
                                                                                                 value={asset.duration || 1}
-                                                                                                onChange={(e) => {
-                                                                                                    const val = parseFloat(e.target.value) || 1;
-                                                                                                    const newTemp = [...tempCostRequest.tempAssets];
-                                                                                                    const target = newTemp.find(t => t.id === asset.id);
-                                                                                                    if(target) {
-                                                                                                        target.duration = val;
-                                                                                                        setTempCostRequest({...tempCostRequest, tempAssets: newTemp});
-                                                                                                    }
-                                                                                                }}
+                                                                                               onChange={(e) => {
+    const val = parseFloat(e.target.value) || 1;
+    setTempCostRequest(prev => {
+        const newAssets = prev.tempAssets.map(item => 
+            item.id === asset.id 
+                ? { ...item, duration: val }
+                : item
+        );
+        return { ...prev, tempAssets: newAssets };
+    });
+}}
                                                                                             />
                                                                                             <select
                                                                                                 className="border border-indigo-300 rounded px-0 py-0.5 text-xs bg-white text-indigo-700 outline-none"
                                                                                                 value={asset.rentalUnit || 'Month'}
-                                                                                                onChange={(e) => {
-                                                                                                    const val = e.target.value;
-                                                                                                    const newTemp = [...tempCostRequest.tempAssets];
-                                                                                                    const target = newTemp.find(t => t.id === asset.id);
-                                                                                                    if(target) {
-                                                                                                        target.rentalUnit = val;
-                                                                                                        setTempCostRequest({...tempCostRequest, tempAssets: newTemp});
-                                                                                                    }
-                                                                                                }}
+                                                                                           onChange={(e) => {
+    const val = e.target.value;
+    setTempCostRequest(prev => {
+        const newAssets = prev.tempAssets.map(item => 
+            item.id === asset.id 
+                ? { ...item, rentalUnit: val }
+                : item
+        );
+        return { ...prev, tempAssets: newAssets };
+    });
+}}
                                                                                             >
                                                                                                 <option value="Day">วัน</option>
                                                                                                 <option value="Month">เดือน</option>
