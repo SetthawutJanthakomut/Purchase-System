@@ -522,17 +522,21 @@ const handleExportBudgetCSV = () => {
                 }, 0);
                 receivedCount = item.receivedTotal || 0;
                 displayPrice = receivedLogs[receivedLogs.length - 1].price;
-            }
+           }
 
             // C. ส่วนที่เหลือ (Estimate)
+            // ⭐ [แก้ไขใหม่] ตัดส่วนนี้ทิ้ง หรือ ไม่นำมาบวกยอดเงิน (itemTotalVal) เพื่อให้ได้ Actual Cost จริงๆ
             const remainingQty = Math.max(0, item.qty - receivedCount);
             if (remainingQty > 0) {
                 const p = item.unitPrice || 0;
-                const d = isRent ? (item.duration || 1) : 1;
-                itemTotalVal += (remainingQty * p * d);
+                
+                // เก็บราคาไว้แสดงผลเฉยๆ (ถ้ายังไม่เคยมีการรับของเลย)
                 if(displayPrice === 0) displayPrice = p;
                 
-                lotDetailList.push(`Pending: ${remainingQty} @ ${p.toLocaleString()}`);
+                // ❌ ลบการบวกเงินตรงนี้ทิ้ง: itemTotalVal += (remainingQty * p * d);
+                
+                // (Optional) เพิ่มในหมายเหตุว่ามีการยกเลิก/รับไม่ครบ
+                lotDetailList.push(`Not Received/Cancel: ${remainingQty}`);
             }
 
             // จัดการข้อความ CSV
@@ -1208,8 +1212,10 @@ const handleRegisterRequestOTP = () => {
               ((req.type === 'Withdraw' || req.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
           );
 
+          // แก้ไข: ลบเงื่อนไข 'PR Issued' ออก ให้เหลือแค่ 'Approved' อย่างเดียว
+          // เพื่อให้ระบบมองข้าม Log การออก PR/PO และไปดึงคนกด "อนุมัติ" ตัวจริงเสมอ
           const l2Log = historyDesc.find(h => 
-              (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) &&
+              isActionMatch(h.action, 'Approved') &&
               h !== l1Log
           );
 
@@ -3999,14 +4005,16 @@ const confirmReturnAsset = async () => {
                              return s + (log.qty * log.price * duration);
                         }, 0);
                         receivedCount = item.receivedTotal || 0;
-                  }
+                 }
 
                   // Priority C: Estimate Remainder
-                  const remainingQty = Math.max(0, item.qty - receivedCount);
-                  const estimateDuration = isRent ? (item.duration || 1) : 1;
-                  const estimatePrice = item.unitPrice || 0;
-                  
-                  itemTotal += (remainingQty * estimatePrice * estimateDuration);
+                  // ⭐ [แก้ไขใหม่] เช็คสถานะ Completed เพื่อตัดยอดคงเหลือทิ้ง
+                  if (r.status !== 'Completed') {
+                      const remainingQty = Math.max(0, item.qty - receivedCount);
+                      const estimateDuration = isRent ? (item.duration || 1) : 1;
+                      const estimatePrice = item.unitPrice || 0;
+                      itemTotal += (remainingQty * estimatePrice * estimateDuration);
+                  }
 
                   return sum + itemTotal;
               }, 0);
@@ -5137,10 +5145,13 @@ const handleSubmitContract = async () => {
                       }
 
                       // C. Estimate
-                      const rem = Math.max(0, item.qty - cnt);
-                      const dur = isRent ? (item.duration || 1) : 1;
-                      itemVal += (rem * (item.unitPrice || 0) * dur);
-
+                      // ⭐ [แก้ไขใหม่] ถ้าจบงานแล้ว ไม่ต้องคิดยอด Estimate เพิ่ม (เพราะฟังก์ชันนี้กรองเฉพาะ Completed มาคำนวณ Used อยู่แล้ว)
+                      if (req.status !== 'Completed') {
+                          const rem = Math.max(0, item.qty - cnt);
+                          const dur = isRent ? (item.duration || 1) : 1;
+                          itemVal += (rem * (item.unitPrice || 0) * dur);
+                      }
+                      
                       return iSum + itemVal;
                   }, 0);
 
@@ -5187,24 +5198,52 @@ const handleSubmitContract = async () => {
         subJobData.sort((a,b) => a.code.localeCompare(b.code));
           matCodeData.sort((a,b) => a.code.localeCompare(b.code));
 
-          // ⭐ 3. Project Summary (สำหรับหน้า All Projects)
+        // ⭐ 3. Project Summary (สำหรับหน้า All Projects)
           const projectSummary = projects.map(p => {
               let pBudget = 0;
               let pUsed = 0;
+              
+              // ⭐ [แก้ไข] เพิ่มตัวแปรสำหรับเก็บยอดแยก
+              let subBudget = 0;
+              let subUsed = 0;
+              let matBudget = 0;
+              let matUsed = 0;
 
               // รวมยอด SubJob
               (p.subJobs || []).forEach(sj => {
-                  pBudget += (sj.budget || 0);
-                  pUsed += calculateUsedForProject(p.name, sj.code, 'SubJob');
+                  const b = (sj.budget || 0);
+                  const u = calculateUsedForProject(p.name, sj.code, 'SubJob');
+                  
+                  pBudget += b;
+                  pUsed += u;
+                  
+                  // เก็บยอดแยก SubJob
+                  subBudget += b;
+                  subUsed += u;
               });
 
               // รวมยอด matCode
               (p.matCodes || []).forEach(ep => {
-                  pBudget += (ep.budget || 0);
-                  pUsed += calculateUsedForProject(p.name, ep.code, 'matCode');
+                  const b = (ep.budget || 0);
+                  const u = calculateUsedForProject(p.name, ep.code, 'matCode');
+                  
+                  pBudget += b;
+                  pUsed += u;
+                  
+                  // เก็บยอดแยก MatCode
+                  matBudget += b;
+                  matUsed += u;
               });
 
-              return { id: p.id, name: p.name, budget: pBudget, used: pUsed };
+              return { 
+                  id: p.id, 
+                  name: p.name, 
+                  budget: pBudget, 
+                  used: pUsed,
+                  // ส่งค่าที่แยกแล้วออกไปใช้งาน
+                  subBudget, subUsed,
+                  matBudget, matUsed
+              };
           }).sort((a, b) => b.budget - a.budget);
 
           return { subJobData, matCodeData, projectSummary };
@@ -5764,20 +5803,37 @@ const PublicAnnouncementPopup = () => (
                                                                    {proj.name}
                                                                </div>
                                                                <div className="space-y-0.5 text-[10px]">
-                                                                   <div className="flex justify-between gap-3">
+                                                                  <div className="flex justify-between gap-3">
                                                                        <span className="text-gray-400">งบรวม:</span> 
                                                                        <span className="font-mono font-bold">{proj.budget.toLocaleString()}</span>
-                                                                   </div>
-                                                                   <div className="flex justify-between gap-3">
+                                                               </div>
+                                                    
+                                               <div className="flex justify-between gap-3">
                                                                        <span className="text-gray-400">ใช้รวม:</span> 
                                                                        <span className="font-mono font-bold text-blue-300">{proj.used.toLocaleString()}</span>
-                                                                   </div>
-                                                                   <div className="flex justify-between gap-3">
+                                                               </div>
+                                                                   <div className="flex justify-between gap-3 pb-2 border-b border-gray-600 mb-1">
                                                                        <span className="text-gray-400">คงเหลือ:</span> 
-                                                                       <span className={`font-mono font-bold ${proj.budget - proj.used < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                                                       <span className={`font-mono font-bold ${proj.budget - proj.used < 0 ?
+'text-red-400' : 'text-green-400'}`}>
                                                                            {(proj.budget - proj.used).toLocaleString()}
                                                                        </span>
-                                                                   </div>
+                                                                  </div>
+
+                                                                  {/* ⭐ [เพิ่มใหม่] แสดงยอดแยก SubJob (สีคราม) และ Mat. Code (สีม่วง) */}
+                                                                  <div className="flex justify-between gap-3 text-[9px] text-indigo-300">
+                                                                      <span>SubJob:</span>
+                                                                      <span className="font-mono opacity-90">
+                                                                          {proj.subUsed.toLocaleString()} / {proj.subBudget.toLocaleString()}
+                                                                      </span>
+                                                                  </div>
+                                                                  <div className="flex justify-between gap-3 text-[9px] text-purple-300">
+                                                                      <span>Mat.Code:</span>
+                                                                      <span className="font-mono opacity-90">
+                                                                          {proj.matUsed.toLocaleString()} / {proj.matBudget.toLocaleString()}
+                                                                      </span>
+                                                                  </div>
+                                                                   
                                                                </div>
                                                                <div className="text-[8px] text-gray-500 mt-1.5 text-center pt-1 border-t border-gray-700/50">*คลิกเพื่อดูรายละเอียด</div>
                                                            </div>
@@ -6424,8 +6480,8 @@ filteredRequests.map(req => {
  (req.type === 'Local' || 
   req.type === 'Withdraw' || 
   req.type === 'Borrow' || 
-  // ⭐ แก้ไข: เพิ่มสถานะ 'Partially Received' และสถานะอื่นๆ ให้ HO พิมพ์ได้
-  (req.type === 'HO' && (req.isFullApprovalFlow || req.status === 'Approved' || ['PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Completed'].includes(req.status)))
+  // ⭐ แก้ไข: HO ต้องเป็น Full Flow (มีการขออนุมัติ) เท่านั้นถึงจะแสดงปุ่มพิมพ์
+  (req.type === 'HO' && req.isFullApprovalFlow)
  ) && (
   <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
       <Printer className="w-4 h-4"/> พิมพ์
@@ -8107,18 +8163,19 @@ filteredRequests.map(req => {
                         )}
 
 {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(selectedRequest.status) && 
- (selectedRequest.type === 'Local' || 
+ (selectedRequest.type === 'Local' ||
   selectedRequest.type === 'Withdraw' || 
   selectedRequest.type === 'Borrow' || 
-  // ⭐ แก้ไข: เพิ่มสถานะ 'Partially Received' ใน Array ของ HO
-  (selectedRequest.type === 'HO' && (selectedRequest.isFullApprovalFlow || selectedRequest.status === 'Approved' || ['PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Completed'].includes(selectedRequest.status)))
+  // ⭐ แก้ไข: HO ต้องเป็น Full Flow เท่านั้นถึงจะพิมพ์ได้
+  (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)
  ) && (
     <button 
         onClick={() => handleOpenPrintPreview(selectedRequest)}
         className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 transition-colors"
         title="พิมพ์เอกสาร"
     >
-        <Printer className="w-4 h-4"/> พิมพ์
+        <Printer className="w-4 h-4"/> 
+        พิมพ์
     </button>
 )}
 
@@ -8874,6 +8931,7 @@ const receivedLogs = item.receivedLog || [];
                         }
                         
                         // ⭐ C. Estimate: คิดเฉพาะถ้าสถานะ "ไม่ใช่" จบงาน หรือ รับบางส่วน
+                        // (Logic เดิมถูกต้องแล้ว แต่ปรับให้ชัดเจนขึ้น)
                         if (!['Completed', 'Partially Received'].includes(selectedRequest.status)) {
                             const remainingQty = Math.max(0, item.qty - receivedCount);
                             const estimateDuration = isRent ? (item.duration || 1) : 1;
