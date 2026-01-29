@@ -485,7 +485,13 @@ const handleExportBudgetCSV = () => {
             const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
             
             // --- LOGIC คำนวณราคาจริง (Actual Cost Logic) ---
-            const relatedAssets = assets.filter(a => a.currentRequestId === req.id && a.name === item.name);
+            // --- LOGIC คำนวณราคาจริง (Actual Cost Logic) ---
+// ⭐ แก้ไข: เพิ่มเงื่อนไขเช็คราคา (Price) เพื่อให้แยกรายการได้ถูกต้องตาม Logic ใหม่
+const relatedAssets = assets.filter(a => 
+    a.currentRequestId === req.id && 
+    a.name === item.name &&
+    (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+);
             const receivedLogs = item.receivedLog || [];
             
             let itemTotalVal = 0;
@@ -8465,8 +8471,16 @@ filteredRequests.map(req => {
 
                    
 const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
-const relatedAssets = sourceAssets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
-const receivedLogs = item.receivedLog || [];
+    
+    // 🟢 แทนที่ด้วยโค้ดชุดนี้:
+    const relatedAssets = sourceAssets.filter(a => 
+        a.currentRequestId === selectedRequest.id && // 1. เช็คเลขที่ใบคำขอ
+        a.name === item.name && // 2. เช็คชื่อสินค้า
+        // 3. ⭐ เช็คราคา (เพื่อแยกรายการที่ชื่อซ้ำแต่คนละราคา)
+        (a.price === item.unitPrice || a.rentalPrice === item.unitPrice) 
+    );
+
+    const receivedLogs = item.receivedLog || [];
                     
                     const hasAssets = relatedAssets.length > 0;
                     const hasLogs = receivedLogs.length > 0;
@@ -8637,11 +8651,15 @@ const receivedLogs = item.receivedLog || [];
                             <td className="p-3 text-center align-top">
                                 {isBuy ? (
                                     <div className="font-medium">
-                                        {item.receivedTotal ? <span className="text-green-600 font-bold">{item.receivedTotal}</span> : 0} 
-                                        <span className="text-gray-400 mx-1">/</span> 
-                                        {item.qty} 
-                                        <span className="text-xs text-gray-500 ml-1">{item.unit}</span>
-                                    </div>
+    {/* ⭐ แก้ไข: ใช้นับจำนวนจริงจาก relatedAssets (ถ้ามี) หรือใช้ receivedTotal กรณีเป็นวัสดุ */}
+    {hasAssets ? 
+        <span className="text-green-600 font-bold">{relatedAssets.length}</span> : 
+        (item.receivedTotal ? <span className="text-green-600 font-bold">{item.receivedTotal}</span> : 0)
+    }
+    <span className="text-gray-400 mx-1">/</span> 
+    {item.qty} 
+    <span className="text-xs text-gray-500 ml-1">{item.unit}</span>
+</div>
                                 ) : (
                                     <div className="font-bold text-blue-700 text-base">
                                         {item.qty} <span className="text-xs text-gray-500 font-normal">{item.unit}</span>
@@ -8906,7 +8924,12 @@ const receivedLogs = item.receivedLog || [];
                     {(isCostEditMode && tempCostRequest ? tempCostRequest.items : selectedRequest.items).reduce((sum, item) => {
                         const isRent = selectedRequest.type === 'HO' && selectedRequest.purchaseType === 'Rent';
                         const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
-                        const relatedAssets = sourceAssets.filter(a => a.currentRequestId === selectedRequest.id && a.name === item.name);
+                        // ✅ แก้ไข: เพิ่มเงื่อนไขเช็คราคา เพื่อให้ยอดตรงกับตารางด้านบน
+const relatedAssets = sourceAssets.filter(a => 
+    a.currentRequestId === selectedRequest.id && 
+    a.name === item.name &&
+    (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+);
                         const receivedLogs = item.receivedLog || [];
                         
                         let itemTotal = 0;
@@ -11049,7 +11072,8 @@ const receivedLogs = item.receivedLog || [];
 
                   const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
                   let l1Log = historyDesc.find(h => isActionMatch(h.action, 'Pending PM') || ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')));
-                  const l2Log = historyDesc.find(h => (isActionMatch(h.action, 'Approved') || isActionMatch(h.action, 'PR Issued')) && h !== l1Log);
+                  // ✅ ตัด 'PR Issued' ออก เพื่อให้ระบบมองข้ามไปหาคนกด 'Approved' ตัวจริง
+const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log);
                   
                   const userReq = getUser(reqLog);
                   const userL1 = getUser(l1Log);
@@ -12937,44 +12961,55 @@ const receivedLogs = item.receivedLog || [];
                         const displayDate = lastLog ? (lastLog.timestamp || lastLog.date) : req.created;
                         const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
 
-                        req.items.forEach(item => {
-                            // --- เริ่มต้น Logic การคำนวณ ---
-                            const relatedAssets = assets.filter(a => a.currentRequestId === req.id && a.name === item.name);
-                            const receivedLogs = item.receivedLog || [];
-                            
-                            let itemTotal = 0;
-                            let receivedCount = 0;
-                            let pricesList = []; // เก็บรายการราคาเพื่อเช็คว่าราคาเดียวหรือคละ
+          req.items.forEach(item => {
+    // --- เริ่มต้น Logic การคำนวณ (Updated) ---
+    
+    // ⭐ แก้ไขตรงนี้: เพิ่ม Logic กรองด้วยราคา
+    const relatedAssets = assets.filter(a => 
+        a.currentRequestId === req.id && 
+        a.name === item.name &&
+        (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+    );
+    
+    const receivedLogs = item.receivedLog || [];
+    
+    let itemTotal = 0;
+    let receivedCount = 0;
+    let pricesList = []; 
 
-                            // Priority A: Assets (แม่นยำสุด)
-                            if (relatedAssets.length > 0) {
-                                itemTotal += relatedAssets.reduce((s, asset) => {
-                                    const p = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                                    const d = isRent ? (asset.duration || item.duration || 1) : 1;
-                                    pricesList.push(p);
-                                    return s + (p * d);
-                                }, 0);
-                                receivedCount = relatedAssets.length;
-                            } 
-                            // Priority B: Logs (สำหรับวัสดุ)
-                            else if (receivedLogs.length > 0) {
-                                itemTotal += receivedLogs.reduce((s, log) => {
-                                    const p = log.price;
-                                    const d = isRent ? (log.duration || 1) : 1;
-                                    pricesList.push(p);
-                                    return s + (log.qty * p * d);
-                                }, 0);
-                                receivedCount = item.receivedTotal || 0;
-                            }
+    // Priority A: Assets (แม่นยำสุด)
+    if (relatedAssets.length > 0) {
+         itemTotal += relatedAssets.reduce((s, asset) => {
+             const p = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+             const d = isRent ? (asset.duration || item.duration || 1) : 1;
+             pricesList.push(p);
+             return s + (p * d);
+         }, 0);
+         receivedCount = relatedAssets.length;
+    } 
+    // Priority B: Logs (สำหรับวัสดุ)
+    else if (receivedLogs.length > 0) {
+         itemTotal += receivedLogs.reduce((s, log) => {
+             const p = log.price;
+             const d = isRent ? (log.duration || 1) : 1;
+             pricesList.push(p);
+             return s + (log.qty * p * d);
+          }, 0);
+         receivedCount = item.receivedTotal || 0;
+    }
 
-                            // Priority C: Estimate (ส่วนที่เหลือ)
-                            const remaining = Math.max(0, item.qty - receivedCount);
-                            if (remaining > 0) {
-                                const p = item.unitPrice || 0;
-                                const d = isRent ? (item.duration || 1) : 1;
-                                itemTotal += (remaining * p * d);
-                                pricesList.push(p);
-                            }
+    // Priority C: Estimate (ส่วนที่เหลือ - เฉพาะที่ยังไม่จบงาน)
+    if (!['Completed', 'Received'].includes(req.status)) {
+        const remaining = Math.max(0, item.qty - receivedCount);
+        if (remaining > 0) {
+            const p = item.unitPrice || 0;
+            const d = isRent ? (item.duration || 1) : 1;
+            itemTotal += (remaining * p * d);
+            pricesList.push(p);
+        }
+    }
+
+
 
                             // ตรวจสอบว่าราคาคละกันหรือไม่
                             const uniquePrices = [...new Set(pricesList)];
