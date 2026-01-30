@@ -759,8 +759,11 @@ function saveDataToSheet(sheetName, id, dataObj) {
 }
 
 function deleteDataFromSheet(sheetName, id) {
+  // ⭐ แก้ไข: ต้อง Encode ID ก่อนส่ง เพราะมีภาษาไทยและเครื่องหมาย |
+  var encodedId = encodeURIComponent(id);
+  
   // สั่งลบแถวที่ id ตรงกัน
-  callSupabase(sheetName, 'delete', null, `?id=eq.${id}`);
+  callSupabase(sheetName, 'delete', null, `?id=eq.${encodedId}`);
 }
 
 // --- FILE UPLOAD FUNCTIONS ---
@@ -1757,6 +1760,7 @@ function updateLogItemId(oldId, newId) {
   console.log(`[UpdateLog] Changing ID from ${oldId} to ${newId}`);
   
   // 1. ดึงข้อมูล Logs ทั้งหมด (ดึง column id มาด้วยเพื่อใช้อ้างอิงตอนบันทึกทับ)
+  // เรียกใช้ callSupabase ที่มีอยู่แล้วในโค้ด
   const response = callSupabase('Logs', 'get', null, '?select=id,payload');
   
   // ป้องกัน Error กรณีดึงข้อมูลไม่ได้
@@ -1784,7 +1788,7 @@ function updateLogItemId(oldId, newId) {
       changed = true;
     }
     
-    // ถ้ามีการแก้ไข ให้บันทึกกลับลง Database
+    // ถ้ามีการแก้ไข ให้บันทึกกลับลง Database โดยใช้ saveDataToSheet ที่มีอยู่แล้ว
     if (changed) {
       saveDataToSheet('Logs', row.id, log);
       count++;
@@ -1793,4 +1797,61 @@ function updateLogItemId(oldId, newId) {
 
   console.log(`[UpdateLog] Updated ${count} logs.`);
   return { success: true, count: count };
+}
+
+
+// --- ฟังก์ชันบันทึกข้อมูลนำเข้าแบบรวดเร็ว (Batch Save) ---
+function batchImportInventory(items, logs) {
+  // 1. บันทึกรายการสินค้า (วนลูปเรียกฟังก์ชันเดิมฝั่ง Server)
+  if (items && items.length > 0) {
+    items.forEach(item => {
+      try {
+        syncInventory(item); 
+      } catch (e) {
+        console.error("Error saving item: " + item.id, e);
+      }
+    });
+  }
+  
+  // 2. บันทึก Logs (วนลูปเรียกฟังก์ชันเดิมฝั่ง Server)
+  if (logs && logs.length > 0) {
+    logs.forEach(log => {
+      try {
+        // ใช้ saveDataToSheet เพื่อหุ้มข้อมูลลง column 'payload' เหมือนปกติ
+        saveDataToSheet('Logs', null, log); 
+      } catch (e) {
+         console.error("Error saving log", e);
+      }
+    });
+  }
+  
+  return { success: true };
+}
+
+
+// --- ฟังก์ชันบันทึกข้อมูลทรัพย์สินแบบกลุ่ม (Batch Save Assets) ---
+function batchImportAssets(assets, logs) {
+  // 1. บันทึกทรัพย์สิน
+  if (assets && assets.length > 0) {
+    assets.forEach(asset => {
+      try {
+        syncAsset(asset); // เรียกฟังก์ชันเดิมที่มีอยู่แล้ว
+      } catch (e) {
+        console.error("Error saving asset: " + asset.id, e);
+      }
+    });
+  }
+
+  // 2. บันทึก Logs
+  if (logs && logs.length > 0) {
+    logs.forEach(log => {
+      try {
+        saveDataToSheet('Logs', null, log);
+      } catch (e) {
+        console.error("Error saving log", e);
+      }
+    });
+  }
+  
+  return { success: true };
 }
