@@ -1534,7 +1534,7 @@ const handleInvFileImport = (e) => {
 };
 
 
-// --- LOGIC: CONFIRM IMPORT (Robust Auto Gen Loop) ---
+// --- LOGIC: CONFIRM IMPORT (FAST VERSION: Batch Save) ---
 const confirmImportInventory = async () => {
     if (importInvData.length === 0) return;
 
@@ -1550,16 +1550,19 @@ const confirmImportInventory = async () => {
     setIsLoading(true);
     const date = new Date().toLocaleString('th-TH');
     
-    // ⭐ ใช้ List ชั่วคราวเพื่อเช็คเลขรันต่อเนื่องในลูป
-    let currentInvList = [...inventory]; 
+    // เตรียมข้อมูลสำหรับคำนวณและบันทึก
+    let currentInvList = [...inventory];
+    let runNoCount = inventory.length;
     
-    // เตรียมเลขรันเริ่มต้น (Start Running Number)
-    let runNoCount = inventory.length; 
+    // ⭐ ตะกร้าเก็บข้อมูลที่จะส่งไปบันทึกทีเดียว
+    let batchItems = [];
+    let batchLogs = [];
 
+    // 2. Loop Processing (คำนวณแต่ยังไม่บันทึก)
     for (const item of importInvData) {
         const currentType = item.stockType || 'System';
 
-        // 2. เช็คของเดิม (ชื่อ+โครงการ+ประเภท)
+        // เช็คของเดิม
         const existingIndex = currentInvList.findIndex(inv => 
             inv.name === item.name && 
             inv.project === item.project &&
@@ -1577,30 +1580,46 @@ const confirmImportInventory = async () => {
                 note: item.note ? (existingItem.note ? `${existingItem.note} | ${item.note}` : item.note) : existingItem.note,
                 lastUpdated: date
             };
-            currentInvList[existingIndex] = updatedItem; // อัปเดตใน List ชั่วคราว
             
+            // อัปเดตใน List ชั่วคราว
+            currentInvList[existingIndex] = updatedItem;
+            
+            // ใส่ตะกร้าสินค้าที่จะบันทึก
             const { images, ...itemForServer } = updatedItem;
-            await saveInventoryToSheet(itemForServer);
-            await addInvLog('Import Merge', updatedItem.name, `+${item.qty}`, `โครงการ: ${item.project} | CSV Import`, [], null, updatedItem.id);
+            batchItems.push(itemForServer);
+            
+            // สร้าง Log ใส่ตะกร้า
+            batchLogs.push({
+                timestamp: new Date().toISOString(),
+                action: 'Import Merge',
+                itemName: updatedItem.name,
+                amount: `+${item.qty}`,
+                note: `โครงการ: ${item.project} (${currentType}) | CSV Import`,
+                attachments: [],
+                requestId: null,
+                assetId: updatedItem.id,
+                user: `${user.empId} ${user.firstName}`
+            });
             
         } else {
-            // ✅ NEW (ของใหม่)
+            // ✅ NEW
             let baseId = item.id;
-            
-            // ⭐ Logic Auto Gen: ถ้าไม่มีรหัสมา ให้รันเลขต่อทันที
             if (!baseId) {
-                runNoCount++; 
+                runNoCount++;
                 baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
-                
-                // เช็คซ้ำกับใน List ชั่วคราว (เผื่อเลขกระโดดหรือมีคนลบ)
                 while (currentInvList.some(inv => getDisplayId(inv.id) === baseId)) {
                     runNoCount++;
                     baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
                 }
             }
 
-            // สร้าง ID เต็ม
-            const finalId = `${baseId}|${item.project}|${currentType}`;
+            // สร้าง Real ID
+            let finalId = `${baseId}|${item.project}|${currentType}`;
+            let counter = 1;
+            while (currentInvList.some(i => i.id === finalId)) {
+                finalId = `${baseId}|${item.project}|${currentType}|${counter}`;
+                counter++;
+            }
 
             const newItem = {
                 id: finalId,
@@ -1616,20 +1635,51 @@ const confirmImportInventory = async () => {
                 note: item.note,
                 project: item.project
             };
-            currentInvList.push(newItem); // เพิ่มเข้า List ชั่วคราว เพื่อให้รอบต่อไปเช็คเจอ
             
+            // อัปเดตใน List ชั่วคราว
+            currentInvList.push(newItem);
+            
+            // ใส่ตะกร้าสินค้าที่จะบันทึก
             const { images, ...itemForServer } = newItem;
-            await saveInventoryToSheet(itemForServer);
-            await addInvLog('Import New', newItem.name, `Start: ${newItem.qty}`, `โครงการ: ${item.project} | CSV New Item`, [], null, finalId);
+            batchItems.push(itemForServer);
+
+            // สร้าง Log ใส่ตะกร้า
+            const typeLabel = currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
+            batchLogs.push({
+                timestamp: new Date().toISOString(),
+                action: 'Import New',
+                itemName: newItem.name,
+                amount: `Start: ${newItem.qty}`,
+                note: `โครงการ: ${item.project} ${typeLabel} | CSV New Item`,
+                attachments: [],
+                requestId: null,
+                assetId: finalId,
+                user: `${user.empId} ${user.firstName}`
+            });
         }
     }
 
-    setInventory(currentInvList); // อัปเดตหน้าจอทีเดียว
-    setIsLoading(false);
-    setShowImportInvModal(false);
-    setImportInvData([]);
-    setImportInvFileName('');
-    showToast(`นำเข้าสำเร็จ`);
+    // ⭐ 3. ส่งข้อมูลก้อนใหญ่ไปบันทึกทีเดียว (Server Trip เดียว)
+    try {
+        await new Promise((resolve, reject) => {
+            google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .batchImportInventory(batchItems, batchLogs);
+        });
+
+        setInventory(currentInvList); // อัปเดตหน้าจอ
+        setIsLoading(false);
+        setShowImportInvModal(false);
+        setImportInvData([]);
+        setImportInvFileName('');
+        showToast(`นำเข้าข้อมูล ${batchItems.length} รายการ เสร็จสิ้น!`);
+        
+    } catch (error) {
+        setIsLoading(false);
+        console.error(error);
+        showToast("Error saving batch: " + error.message, 'error');
+    }
 };
 
       // --- LOGIC: DELETE & RESTORE ---
@@ -2655,55 +2705,45 @@ const handleFileImport = (e) => {
     reader.readAsText(file);
 };
 
-// --- LOGIC: CONFIRM IMPORT ASSETS ---
+// --- LOGIC: CONFIRM IMPORT ASSETS (Batch Save Version) ---
 const confirmImportAssets = async () => {
     if (importData.length === 0) return;
+
     // 1. Validation Loop
     for (let i = 0; i < importData.length; i++) {
         const item = importData[i];
         const line = i + 1;
 
-        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อรายการ`, 'error'); return;
-        }
-        if (!item.serial) { showToast(`รายการที่ ${line}: ขาด Serial No.`, 'error'); return;
-        }
-        if (!item.price && item.price !== 0) { showToast(`รายการที่ ${line}: ขาดราคา`, 'error'); return;
-        }
+        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อรายการ`, 'error'); return; }
+        if (!item.serial) { showToast(`รายการที่ ${line}: ขาด Serial No.`, 'error'); return; }
+        if (!item.price && item.price !== 0) { showToast(`รายการที่ ${line}: ขาดราคา`, 'error'); return; }
+        
         const validStatuses = ['Available', 'Borrowed', 'Lost', 'Damaged'];
         if (!item.status) { showToast(`รายการที่ ${line}: ขาดสถานะ`, 'error'); return; }
         if (!validStatuses.includes(item.status)) { 
-            showToast(`รายการที่ ${line}: สถานะ "${item.status}" ไม่ถูกต้อง (ต้องเป็น Available, Borrowed, Lost, Damaged)`, 'error');
-            return; 
+            showToast(`รายการที่ ${line}: สถานะ "${item.status}" ไม่ถูกต้อง`, 'error'); return; 
         }
         
+        // เช็ค ID ซ้ำในระบบ
         if (item.id && assets.some(a => a.id === item.id)) {
-            showToast(`รายการที่ ${line}: รหัสทรัพย์สิน "${item.id}" มีอยู่ในระบบแล้ว`, 'error');
-            return;
+            showToast(`รายการที่ ${line}: รหัสทรัพย์สิน "${item.id}" มีอยู่ในระบบแล้ว`, 'error'); return;
         }
 
-        // ⭐ เพิ่ม: ตรวจสอบโครงการ
-        if (!item.project) { showToast(`รายการที่ ${line}: ขาดชื่อโครงการ`, 'error');
-        return; }
-        if (!projects.some(p => p.name === item.project)) { showToast(`รายการที่ ${line}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error');
-        return; }
+        // ตรวจสอบโครงการ
+        if (!item.project) { showToast(`รายการที่ ${line}: ขาดชื่อโครงการ`, 'error'); return; }
+        if (!projects.some(p => p.name === item.project)) { showToast(`รายการที่ ${line}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error'); return; }
 
-        if (item.ownerType === 'Rent' && !item.rentalUnit) { showToast(`รายการที่ ${line}: ของเช่าต้องระบุหน่วย`, 'error');
-        return; }
+        if (item.ownerType === 'Rent' && !item.rentalUnit) { showToast(`รายการที่ ${line}: ของเช่าต้องระบุหน่วย`, 'error'); return; }
         
-        // ⭐⭐ [แก้ไขใหม่] ตรวจสอบ Holder ถ้าสถานะเป็น Borrowed
+        // ตรวจสอบ Holder
         if (item.status === 'Borrowed') {
             if (!item.holder || item.holder === '-') { 
-                showToast(`รายการที่ ${line}: สถานะ Borrowed ต้องระบุผู้ถือครอง`, 'error');
-                return; 
+                showToast(`รายการที่ ${line}: สถานะ Borrowed ต้องระบุผู้ถือครอง`, 'error'); return; 
             }
-            
-            // เช็คว่าชื่อมีในระบบหรือไม่ (First Name + Last Name)
             const holderName = item.holder.trim();
             const userExists = allUsers.some(u => `${u.firstName} ${u.lastName}` === holderName);
-            
             if (!userExists) {
-                showToast(`รายการที่ ${line}: ไม่พบผู้ใช้ชื่อ "${holderName}" ในระบบ (ต้องระบุ ชื่อ-นามสกุล ให้ถูกต้อง)`, 'error');
-                return;
+                showToast(`รายการที่ ${line}: ไม่พบผู้ใช้ชื่อ "${holderName}" ในระบบ`, 'error'); return;
             }
         }
     }
@@ -2711,18 +2751,24 @@ const confirmImportAssets = async () => {
     setIsLoading(true);
     const date = new Date().toLocaleString('th-TH');
     
+    // เตรียมตัวแปรสำหรับ Batch
     const newAssets = [];
-    let currentRunNo = assets.length;
+    const batchLogs = [];
+    let currentRunNo = assets.length; // ใช้นับเพื่อ Gen ID
     
-    // 2. Process & Save
+    // 2. Process Data (เตรียมข้อมูลใส่ตะกร้า)
     for (const item of importData) {
         let finalId = item.id;
-        // Auto Gen ID
+        
+        // Auto Gen ID Logic (เหมือนเดิม)
         if (!finalId) {
             currentRunNo++;
             const prefix = item.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
+            // สร้าง ID เบื้องต้น
             const runNo = String(currentRunNo).padStart(3, '0');
             finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
+            
+            // วนลูปเช็คซ้ำ (ทั้งในระบบ และในตะกร้า newAssets)
             while (assets.some(a => a.id === finalId) || newAssets.some(a => a.id === finalId)) {
                 currentRunNo++;
                 const nextRunNo = String(currentRunNo).padStart(3, '0');
@@ -2747,24 +2793,50 @@ const confirmImportAssets = async () => {
             lastUpdated: date,
             image: null,
             note: item.note,
-            project: item.project // ⭐ บันทึกโครงการ
+            project: item.project 
         };
 
-
+        // ใส่ตะกร้า Assets
         newAssets.push(newAsset);
-        saveAssetToSheet(newAsset); 
         
+        // ใส่ตะกร้า Logs (สร้าง Object เอง เพราะไม่ได้เรียก addInvLog)
         const logNote = item.note ? `(Note: ${item.note})` : '';
-        addInvLog('Import Assets', newAsset.name, 'New', `นำเข้าข้อมูล CSV เข้าโครงการ ${item.project} ${logNote}`, [], null, newAsset.id);
+        batchLogs.push({
+            timestamp: new Date().toISOString(),
+            action: 'Import Assets',
+            itemName: newAsset.name,
+            amount: 'New',
+            note: `นำเข้าข้อมูล CSV เข้าโครงการ ${item.project} ${logNote}`,
+            attachments: [],
+            requestId: null,
+            assetId: newAsset.id,
+            user: `${user.empId} ${user.firstName}`
+        });
     }
 
-    setAssets(prev => [...prev, ...newAssets]);
+    // ⭐ 3. ส่งข้อมูลก้อนใหญ่ไปบันทึกทีเดียว
+    try {
+        await new Promise((resolve, reject) => {
+            google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .batchImportAssets(newAssets, batchLogs);
+        });
 
-    setIsLoading(false);
-    setShowImportAssetModal(false);
-    setImportData([]);
-    setImportFileName('');
-    showToast(`นำเข้าสำเร็จ ${newAssets.length} รายการ`);
+        // อัปเดตหน้าจอทีเดียว
+        setAssets(prev => [...prev, ...newAssets]);
+        
+        setIsLoading(false);
+        setShowImportAssetModal(false);
+        setImportData([]);
+        setImportFileName('');
+        showToast(`นำเข้าสำเร็จ ${newAssets.length} รายการ`);
+
+    } catch (error) {
+        setIsLoading(false);
+        console.error(error);
+        showToast("Error saving batch: " + error.message, 'error');
+    }
 };
 
 // คำนวณจำนวนงานที่ค้าง (สำหรับ Sidebar)
@@ -4069,97 +4141,117 @@ const confirmReturnAsset = async () => {
     }
 };
 
-// --- LOGIC: UPDATE ASSET (UPDATED VALIDATION) ---
-      const handleUpdateAsset = async (e) => {
-          e.preventDefault();
-          
-          // ⭐ Validation Rules
-          if (editingAssetItem.status === 'Lost' || editingAssetItem.status === 'Damaged') {
-              if (!editingAssetItem.note || editingAssetItem.note.trim() === '') {
-                  showToast('กรุณาระบุหมายเหตุ (สำหรับสถานะ สูญหาย/ชำรุด)', 'error');
-                  return;
-              }
-          }
-          
-          if (editingAssetItem.status === 'Damaged') {
-              // เช็คว่ามีการอัปโหลดรูปใหม่หรือไม่ (บังคับถ่ายรูปความเสียหาย)
-              if (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) {
-                  showToast('กรุณาอัปโหลดรูปภาพความเสียหาย (สำหรับสถานะ ชำรุด)', 'error');
-                  return;
-              }
-          }
-
-          setIsLoading(true);
-
-          try {
-              const date = new Date().toLocaleString('th-TH');
-              const originalAsset = assets.find(a => a.id === editingAssetItem.originalId);
-
-              // 1. Upload New Images
-              let newUploadedFiles = [];
-              if (editingAssetItem.newImages && editingAssetItem.newImages.length > 0) {
-                  const uploadPromises = editingAssetItem.newImages.map(imgObj => {
-                      return new Promise((resolve, reject) => {
-                           const reader = new FileReader();
-                           reader.readAsDataURL(imgObj.file);
-                           reader.onload = () => {
-                               google.script.run
-                                .withSuccessHandler(resolve)
-                                .withFailureHandler(reject)
-                                .uploadAssetImage(reader.result, imgObj.file.name);
-                           };
-                      });
-                  });
-                  newUploadedFiles = await Promise.all(uploadPromises);
-              }
-
-              // 2. Prepare Data
-              const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].name : editingAssetItem.image;
-              
-              const updatedAsset = { 
-                  ...editingAssetItem, 
-                  lastUpdated: date,
-                  image: mainImage,
-                  images: [], 
-                  newImages: [] 
-              };
-              
-              // 3. Compare Changes
-              let changes = [];
-              if (originalAsset) {
-                  if (originalAsset.id !== updatedAsset.id) changes.push(`ID: ${originalAsset.id} -> ${updatedAsset.id}`);
-                  if (originalAsset.name !== updatedAsset.name) changes.push(`Name: ${originalAsset.name} -> ${updatedAsset.name}`);
-                  if (originalAsset.status !== updatedAsset.status) changes.push(`Status: ${originalAsset.status} -> ${updatedAsset.status}`);
-                  if (originalAsset.note !== updatedAsset.note) changes.push(`Note Updated`);
-                  if (newUploadedFiles.length > 0) changes.push(`Added ${newUploadedFiles.length} photos`);
-              }
-              const changeLog = changes.length > 0 ? changes.join(', ') : 'Update Info';
-
-              // 4. Save & Sync
-              setAssets(prev => prev.map(a => a.id === editingAssetItem.originalId ? updatedAsset : a));
-              
-              const { images, newImages, originalId, ...assetForServer } = updatedAsset;
-              
-              if (originalAsset.id !== updatedAsset.id) {
-                   google.script.run.deleteDataFromSheet('Assets', originalAsset.id); 
-              }
-              saveAssetToSheet(assetForServer);
-
-              // 5. Log
-              const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-              addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
-              
-              setIsLoading(false);
-              setShowEditAssetModal(false);
-              showToast('แก้ไขข้อมูลเรียบร้อย');
-
-          } catch (error) {
-              setIsLoading(false);
-              console.error(error);
-              showToast("Error: " + error.message, 'error');
-          }
-      };
+// --- LOGIC: UPDATE ASSET (UPDATED: Change ID & Update Logs) ---
+const handleUpdateAsset = async (e) => {
+    e.preventDefault();
     
+    // 1. Validation
+    if (editingAssetItem.status === 'Lost' || editingAssetItem.status === 'Damaged') {
+        if (!editingAssetItem.note || editingAssetItem.note.trim() === '') {
+            showToast('กรุณาระบุหมายเหตุ (สำหรับสถานะ สูญหาย/ชำรุด)', 'error');
+            return;
+        }
+    }
+    
+    if (editingAssetItem.status === 'Damaged') {
+        if (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) {
+            showToast('กรุณาอัปโหลดรูปภาพความเสียหาย (สำหรับสถานะ ชำรุด)', 'error');
+            return;
+        }
+    }
+
+    setIsLoading(true);
+
+    try {
+        const date = new Date().toLocaleString('th-TH');
+        const originalAsset = assets.find(a => a.id === editingAssetItem.originalId);
+
+        // 2. Upload New Images
+        let newUploadedFiles = [];
+        if (editingAssetItem.newImages && editingAssetItem.newImages.length > 0) {
+            const uploadPromises = editingAssetItem.newImages.map(imgObj => {
+                return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.readAsDataURL(imgObj.file);
+                        reader.onload = () => {
+                            google.script.run
+                            .withSuccessHandler(resolve)
+                            .withFailureHandler(reject)
+                            .uploadAssetImage(reader.result, imgObj.file.name);
+                        };
+                });
+            });
+            newUploadedFiles = await Promise.all(uploadPromises);
+        }
+
+        const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].name : editingAssetItem.image;
+        
+        // 3. Prepare Updated Data
+        const updatedAsset = { 
+            ...editingAssetItem, 
+            lastUpdated: date,
+            image: mainImage,
+            images: [], 
+            newImages: [] 
+        };
+        
+        // 4. Compare Changes & Handle ID Change
+        let changes = [];
+        if (originalAsset) {
+            if (originalAsset.id !== updatedAsset.id) changes.push(`ID: ${originalAsset.id} -> ${updatedAsset.id}`);
+            if (originalAsset.name !== updatedAsset.name) changes.push(`Name: ${originalAsset.name} -> ${updatedAsset.name}`);
+            if (originalAsset.status !== updatedAsset.status) changes.push(`Status: ${originalAsset.status} -> ${updatedAsset.status}`);
+            if (originalAsset.note !== updatedAsset.note) changes.push(`Note Updated`);
+            if (newUploadedFiles.length > 0) changes.push(`Added ${newUploadedFiles.length} photos`);
+        }
+        const changeLog = changes.length > 0 ? changes.join(', ') : 'Update Info';
+
+        // ⭐ ตรวจสอบการเปลี่ยน ID (หัวใจสำคัญ)
+        if (originalAsset && originalAsset.id !== updatedAsset.id) {
+             // 4.1 ลบตัวเก่าออกจาก Sheet
+             await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Assets', originalAsset.id)); 
+             
+             // 4.2 ⭐ สั่ง Backend อัปเดต ID ใน Logs (เรียกฟังก์ชันใหม่ที่เพิ่งเพิ่มไปใน code.gs)
+             try {
+                 await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(originalAsset.id, updatedAsset.id));
+             } catch (e) {
+                 console.log("Backend updateLogItemId error:", e);
+             }
+
+             // 4.3 ⭐ อัปเดต State Logs หน้าบ้านทันที (เพื่อให้เห็นผลทันทีโดยไม่ต้องรีเฟรช)
+             setInvLogs(prevLogs => prevLogs.map(log => {
+                 if (log.assetId === originalAsset.id) {
+                     return { ...log, assetId: updatedAsset.id };
+                 }
+                 return log;
+             }));
+        }
+
+        // 5. Update Asset State & Save
+        setAssets(prev => {
+            // กรองตัวเก่าออก (กรณีเปลี่ยน ID) หรือแทนที่ตัวเดิม
+            const filtered = prev.filter(a => a.id !== editingAssetItem.originalId);
+            return [...filtered, updatedAsset];
+        });
+        
+        const { images, newImages, originalId, ...assetForServer } = updatedAsset;
+        saveAssetToSheet(assetForServer); // บันทึกตัวใหม่
+
+        // 6. Log Action
+        const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+        addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
+        
+        setIsLoading(false);
+        setShowEditAssetModal(false);
+        setEditingAssetItem(null); // เคลียร์ค่า
+        showToast('แก้ไขข้อมูลและอัปเดตประวัติเรียบร้อย');
+
+    } catch (error) {
+        setIsLoading(false);
+        console.error(error);
+        showToast("Error: " + error.message, 'error');
+    }
+};
       
 // --- HELPER: คำนวณงบประมาณ (Budget Calculation - UPDATED LOGIC) ---
       const getBudgetStats = (req, code, type) => {
@@ -6911,8 +7003,9 @@ filteredRequests.map(req => {
                                   )}
 
                                   <td className="px-6 py-4 font-medium text-gray-500">
-                                      {inv.isSummary ? <span className="italic text-gray-400">Sum</span> : getDisplayId(inv.id)}
-                                  </td>
+    {/* ⭐ ใช้ getDisplayId เพื่อโชว์แค่รหัสสั้น */}
+    {inv.isSummary ? <span className="italic text-gray-400">Sum</span> : getDisplayId(inv.id)}
+</td>
                                   <td className="px-6 py-4">
                                        <div className="font-medium text-gray-900">{inv.name}</div>
                                        
@@ -8316,9 +8409,10 @@ filteredRequests.map(req => {
     })()}
 </div>
 
-                            <div className="flex-1 min-w-0">
+                 <div className="flex-1 min-w-0">
     <h4 className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors">{item.name}</h4>
-    <p className="text-xs text-gray-500 truncate font-mono">{item.id || item.serial || '-'}</p>
+    {/* ⭐ ใช้ getDisplayId ตรงนี้ */}
+    <p className="text-xs text-gray-500 truncate font-mono">{getDisplayId(item.id) || item.serial || '-'}</p>          
     
     {/* ⭐ ส่วนแสดงผลที่แก้ไข: แยกกรณี Withdraw ให้โชว์ breakdown */}
     {(newOrderMeta.type === 'Withdraw') ? (
@@ -9916,22 +10010,23 @@ const relatedAssets = sourceAssets.filter(a =>
         className="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none" 
         value={newStockItem.name} 
         onChange={e => {
-            const val = e.target.value;
-            let updates = { name: val };
-            
-            // ✅ Logic: เช็คชื่อซ้ำในโครงการ -> ดึงรหัสเดิม
-            if (newStockItem.project) {
-                const existing = inventory.find(i => i.name === val && i.project === newStockItem.project);
-                if (existing) {
-                    updates.id = existing.id; // ดึงรหัสเดิม
-                    updates.isAutoId = false; // ปลด Auto Gen เพื่อให้เห็นรหัสและแก้ไขได้
-                    updates.unit = existing.unit; // (แถม) ดึงหน่วยนับเดิม
-                    updates.price = existing.price; // (แถม) ดึงราคาเดิม
-                }
-            }
-            
-            setNewStockItem(prev => ({...prev, ...updates}));
-        }} 
+    const val = e.target.value;
+    let updates = { name: val };
+    
+    // Check Existing
+    if (newStockItem.project) {
+        const existing = inventory.find(i => i.name === val && i.project === newStockItem.project);
+        if (existing) {
+            // ⭐ แก้ไข: ดึงเฉพาะรหัสสั้นมาใส่ในช่อง
+            updates.id = getDisplayId(existing.id); 
+            updates.isAutoId = false;
+            updates.unit = existing.unit;
+            updates.price = existing.price;
+        }
+    }
+    
+    setNewStockItem(prev => ({...prev, ...updates}));
+}}
         placeholder="ระบุชื่อสินค้า..." 
         autoFocus
     />
@@ -10901,16 +10996,16 @@ setShowEditInvModal(true);
                         <button onClick={() => setEditingStockItem({...editingStockItem, stockType: 'NonSystem'})} className={`flex-1 py-1.5 text-sm font-bold rounded-md transition-all ${editingStockItem.stockType === 'NonSystem' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500'}`}>ของนอกระบบ</button>
                       </div>
 
-                      <div>
+                    <div>
     <label className="text-xs font-bold text-gray-500 mb-1 block">รหัสสินค้า (แก้ไขได้)</label>
     <input 
-    type="text" 
-    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 font-mono text-blue-600 font-bold" 
-    // ⭐ ใช้ getDisplayId เพื่อโชว์เฉพาะรหัส
-    value={getDisplayId(editingStockItem.id)} 
-    // ⭐ เวลาพิมพ์ ให้เก็บค่าที่พิมพ์ แต่ยังไม่บันทึก (จะไปเติม suffix ตอนกด save)
-    onChange={e => setEditingStockItem({...editingStockItem, id: e.target.value})}
-/>
+        type="text" 
+        className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 font-mono text-blue-600 font-bold" 
+        // ⭐ Value: แสดงแค่รหัสสั้น
+        value={getDisplayId(editingStockItem.id)} 
+        // ⭐ OnChange: เก็บค่าที่พิมพ์ลงไปตรงๆ (Logic บันทึกจะไปเติมส่วนท้ายให้เอง)
+        onChange={e => setEditingStockItem({...editingStockItem, id: e.target.value})}
+    />
 </div>
 
 
@@ -12438,23 +12533,31 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                                     {/* ID (รหัสวัสดุ) */}
                                     <td className="px-2 py-1 relative">
                                         <input 
-                                            type="text" 
-                                            className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-mono font-bold ${isIdMismatch ? 'text-red-600' : 'text-blue-600'}`} 
-                                            value={row.id} 
-                                            placeholder={existing ? existing.id : "Auto"}
-                                            onChange={e => { const n = [...importInvData]; n[idx].id = e.target.value; setImportInvData(n); }}
-                                        />
-                                        {isIdMismatch && <span className="text-[9px] text-red-500 block absolute bottom-0">ต้องเป็น {existing.id}</span>}
+    type="text" 
+    // ... class ...
+    // ⭐ Value: แสดงแค่รหัสสั้น
+    value={getDisplayId(row.id)} 
+    placeholder={existing ? getDisplayId(existing.id) : "Auto"}
+    onChange={e => { const n = [...importInvData]; n[idx].id = e.target.value; setImportInvData(n); }}
+/>
+                                        
+                                        
+                                        
                                         {/* ปุ่มดึงรหัสเดิม (ถ้าไม่ตรง หรือ ว่างอยู่) */}
-                                        {isDuplicate && row.id !== existing.id && (
-                                            <button 
-                                                onClick={() => { const n = [...importInvData]; n[idx].id = existing.id; setImportInvData(n); }}
-                                                className="absolute right-0 top-1 text-[9px] bg-green-100 text-green-700 px-1 rounded border border-green-200 hover:bg-green-200"
-                                                title="คลิกเพื่อใช้รหัสเดิมในระบบ"
-                                            >
-                                                ใช้รหัสเดิม
-                                            </button>
-                                        )}
+{isDuplicate && row.id !== getDisplayId(existing.id) && (
+    <button 
+        onClick={() => { 
+        const n = [...importInvData]; 
+        // ⭐ ใช้ getDisplayId ดึงแค่รหัสสั้นมาใส่
+        n[idx].id = getDisplayId(existing.id); 
+        setImportInvData(n); 
+    }}
+        className="absolute right-0 top-1 text-[9px] bg-green-100 text-green-700 px-1 rounded border border-green-200 hover:bg-green-200"
+        title="คลิกเพื่อใช้รหัสเดิมในระบบ"
+    >
+        ใช้รหัสเดิม
+    </button>
+)}
                                     </td>
 
                                     {/* Name */}
