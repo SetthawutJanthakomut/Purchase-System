@@ -11808,23 +11808,23 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                               <div className={`overflow-x-auto ${isImportAssetTableExpanded ? 'flex-1 p-4 bg-slate-50' : 'max-h-[450px]'}`}>
                                   <table className={`w-full text-xs text-left whitespace-nowrap ${isImportAssetTableExpanded ? 'shadow-md rounded-lg overflow-hidden' : ''}`}>
                                       <thead className="bg-gray-50 text-gray-700 sticky top-0 shadow-sm z-10 font-bold uppercase">
-                                          <tr>
-                                              <th className="px-3 py-2 w-8 text-center bg-gray-50">#</th>
-                                              <th className="px-3 py-2 min-w-[100px] bg-gray-50">ID</th>
-                                              <th className="px-3 py-2 min-w-[180px] bg-gray-50">Project</th>
-                                              <th className="px-3 py-2 min-w-[200px] bg-gray-50">Name</th>
-                                              <th className="px-3 py-2 min-w-[100px] bg-gray-50">Serial</th>
-                                              <th className="px-3 py-2 min-w-[120px] bg-gray-50">Type</th>
-                                              <th className="px-3 py-2 text-right min-w-[120px] bg-gray-50">Price</th>
-                                              <th className="px-3 py-2 min-w-[100px] bg-gray-50">Unit</th>
-                                              <th className="px-3 py-2 min-w-[140px] bg-gray-50">Start</th>
-                                              <th className="px-3 py-2 min-w-[140px] bg-gray-50">End</th>
-                                              <th className="px-3 py-2 min-w-[140px] bg-gray-50">Status</th>
-                                              <th className="px-3 py-2 min-w-[180px] bg-gray-50">Holder</th>
-                                              <th className="px-3 py-2 min-w-[200px] bg-gray-50">Note</th>
-                                              <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
-                                          </tr>
-                                      </thead>
+    <tr>
+        <th className="px-3 py-2 w-8 text-center bg-gray-50">#</th>
+        <th className="px-3 py-2 min-w-[100px] bg-gray-50">รหัสทรัพย์สิน</th> {/* ID */}
+        <th className="px-3 py-2 min-w-[180px] bg-gray-50">โครงการ</th>      {/* Project */}
+        <th className="px-3 py-2 min-w-[200px] bg-gray-50">ชื่อรายการ</th>    {/* Name */}
+        <th className="px-3 py-2 min-w-[100px] bg-gray-50">S/N</th>
+        <th className="px-3 py-2 min-w-[120px] bg-gray-50">ประเภท</th>      {/* Type */}
+        <th className="px-3 py-2 text-right min-w-[120px] bg-gray-50">ราคา</th> {/* Price */}
+        <th className="px-3 py-2 min-w-[100px] bg-gray-50">หน่วย</th>       {/* Unit */}
+        <th className="px-3 py-2 min-w-[140px] bg-gray-50">เริ่มสัญญา</th>    {/* Start */}
+        <th className="px-3 py-2 min-w-[140px] bg-gray-50">สิ้นสุด</th>       {/* End */}
+        <th className="px-3 py-2 min-w-[140px] bg-gray-50">สถานะ</th>       {/* Status */}
+        <th className="px-3 py-2 min-w-[180px] bg-gray-50">ผู้ถือครอง</th>     {/* Holder */}
+        <th className="px-3 py-2 min-w-[200px] bg-gray-50">หมายเหตุ</th>     {/* Note */}
+        <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
+    </tr>
+</thead>
                                       <tbody className="divide-y divide-gray-100 bg-white">
                                           {importData.map((row, idx) => (
                                               <tr key={idx} className="hover:bg-blue-50 transition-colors group">
@@ -11879,17 +11879,25 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                                                   <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const newData = [...importData]; newData[idx].price = parseFloat(e.target.value) || 0; setImportData(newData); }}/></td>
                                                   
                                                   {/* Unit */}
-                                                  <td className="px-2 py-1">
-                                                      {row.ownerType === 'Company' ? (
-                                                          <input type="text" className="w-full bg-gray-50 text-gray-500 text-center cursor-not-allowed border-none text-xs" value="baht" disabled />
-                                                      ) : (
-                                                          <select className="w-full bg-transparent outline-none" value={row.rentalUnit} onChange={e => { const newData = [...importData]; newData[idx].rentalUnit = e.target.value; setImportData(newData); }}>
-                                                              <option value="Month">Month</option>
-                                                              <option value="Day">Day</option>
-                                                              <option value="Year">Year</option>
-                                                          </select>
-                                                      )}
-                                                  </td>
+<td className="px-2 py-1">
+    {row.ownerType === 'Company' ? (
+        // กรณีบริษัท: แสดงคำว่า "บาท"
+        <input type="text" className="w-full bg-gray-50 text-gray-500 text-center cursor-not-allowed border-none text-xs" value="บาท" disabled />
+    ) : (
+        // กรณีเช่า: เลือกหน่วยเวลา (แสดงภาษาไทย แต่ value เป็นภาษาอังกฤษ)
+        <select className="w-full bg-transparent outline-none" 
+                value={row.rentalUnit} 
+                onChange={e => { 
+                    const newData = [...importData]; 
+                    newData[idx].rentalUnit = e.target.value; 
+                    setImportData(newData); 
+                }}>
+            <option value="Month">เดือน</option>
+            <option value="Day">วัน</option>
+            <option value="Year">ปี</option>
+        </select>
+    )}
+</td>
 
                                                   {/* Start */}
                                                   <td className="px-2 py-1"><input type="text" placeholder="YYYY-MM-DD" className={`w-full border-b border-transparent outline-none ${row.ownerType === 'Company' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-transparent text-gray-600 focus:border-blue-500'}`} value={row.rentalStart || ''} onChange={e => { const newData = [...importData]; newData[idx].rentalStart = e.target.value; setImportData(newData); }} disabled={row.ownerType === 'Company'}/></td>
