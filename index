@@ -196,6 +196,13 @@ const ROLES = {
         // ❌ ตัดออก: กล่อง, แพ็ค, ลัง, โหล, รีม (เพื่อให้แตกเป็นหน่วยย่อยเสมอ)
     ];
 
+    const ASSET_STATUS_LABELS = {
+    'Available': 'ว่าง',
+    'Borrowed': 'ถูกยืม',
+    'Lost': 'สูญหาย',
+    'Damaged': 'ชำรุด'
+};
+
 
     const PRIORITIES = {
         'Normal': { label: 'ปกติ', color: 'bg-blue-100 text-blue-700 border-blue-200' },
@@ -389,6 +396,36 @@ const StatusBadge = ({ status, type }) => {
 // --- STATE: Projects Management ---
       const [projects, setProjects] = useState([]); // เริ่มต้นเป็น Array ว่าง (รอโหลด)
       const [disburseItems, setDisburseItems] = useState([]);
+
+// --- STATE: Go to Top Button ---
+const [showGoTop, setShowGoTop] = useState(false);
+
+// ตรวจสอบการ scroll เพื่อแสดง/ซ่อนปุ่ม
+useEffect(() => {
+    const handleScroll = () => {
+        // หา element ที่เก็บเนื้อหาหลัก (เนื่องจากแอปใช้โครงสร้าง flex-1 overflow-auto)
+        const contentArea = document.querySelector('.flex-1.overflow-auto');
+        if (contentArea && contentArea.scrollTop > 300) {
+            setShowGoTop(true);
+        } else {
+            setShowGoTop(false);
+        }
+    };
+
+    const contentArea = document.querySelector('.flex-1.overflow-auto');
+    if (contentArea) {
+        contentArea.addEventListener('scroll', handleScroll);
+        return () => contentArea.removeEventListener('scroll', handleScroll);
+    }
+}, [activeTab]); // ตรวจสอบทุกครั้งที่เปลี่ยนหน้า
+
+const scrollToTop = () => {
+    const contentArea = document.querySelector('.flex-1.overflow-auto');
+    if (contentArea) {
+        contentArea.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+};
+
       
       const [showProjectModal, setShowProjectModal] = useState(false); // Modal แก้ไข/เพิ่ม
       const [showProjectDetailModal, setShowProjectDetailModal] = useState(false); // ⭐ Modal รายละเอียด
@@ -2479,12 +2516,58 @@ const handleFileImport = (e) => {
         const text = event.target.result;
         const rows = text.split('\n').map(row => row.split(','));
         
-        const mapUnit = (u, type) => { /* ...โค้ดเดิม... */ if (!u) return type === 'Rent' ? 'Month' : ''; const val = u.trim(); if (type === 'Rent') { const lower = val.toLowerCase(); if (lower.includes('วัน') || lower.includes('day')) return 'Day'; if (lower.includes('ปี') || lower.includes('year')) return 'Year'; if (lower.includes('เดือน') || lower.includes('month')) return 'Month'; } return val; };
-        const formatDate = (d) => { /* ...โค้ดเดิม... */ if (!d) return null; const val = d.trim(); if (val === '') return null; if (val.match(/^\d{4}-\d{2}-\d{2}$/)) return val; if (val.includes('/')) { const parts = val.split('/'); if (parts.length === 3) { let [day, month, year] = parts; let y = parseInt(year); if (y > 2400) y -= 543; return `${y}-${month.padStart(2,'0')}-${day.padStart(2,'0')}`; } } return val; };
+        // --- Helper Functions ---
+        // 1. แปลงประเภท (Type)
+        const mapType = (val) => {
+            if (!val) return 'Company';
+            const v = val.trim();
+            if (v === 'เช่า' || v.toLowerCase() === 'rent') return 'Rent';
+            return 'Company'; // Default 'บริษัท'
+        };
 
-        // CSV Columns (12 columns): ID, Name, Serial, Type, Price, Unit, Start, End, Status, Holder, Note, Project
+        // 2. แปลงสถานะ (Status)
+        const mapStatus = (val) => {
+            if (!val) return 'Available';
+            const v = val.trim();
+            if (v === 'ถูกยืม' || v.toLowerCase() === 'borrowed') return 'Borrowed';
+            if (v === 'สูญหาย' || v.toLowerCase() === 'lost') return 'Lost';
+            if (v === 'ชำรุด' || v.toLowerCase() === 'damaged') return 'Damaged';
+            return 'Available'; // Default 'ว่าง'
+        };
+
+        // 3. แปลงหน่วยนับ (Unit)
+        const mapUnit = (u, type) => {
+            if (!u) return type === 'Rent' ? 'Month' : 'baht';
+            const val = u.trim();
+            if (val.includes('วัน') || val.toLowerCase().includes('day')) return 'Day';
+            if (val.includes('ปี') || val.toLowerCase().includes('year')) return 'Year';
+            if (val.includes('เดือน') || val.toLowerCase().includes('month')) return 'Month';
+            return 'baht';
+        };
+
+        // ⭐ 4. แปลงวันที่ (Format Date) - เพิ่มส่วนนี้กลับเข้ามา
+        const formatDate = (d) => {
+            if (!d) return null;
+            const val = d.trim();
+            if (val === '') return null;
+            if (val.match(/^\d{4}-\d{2}-\d{2}$/)) return val; // ถ้าเป็น YYYY-MM-DD อยู่แล้ว
+            if (val.includes('/')) { 
+                const parts = val.split('/');
+                if (parts.length === 3) {
+                    let [day, month, year] = parts;
+                    let y = parseInt(year);
+                    if (y > 2400) y -= 543; // แปลง พ.ศ. เป็น ค.ศ.
+                    return `${y}-${month.padStart(2,'0')}-${day.padStart(2,'0')}`;
+                }
+            }
+            return val;
+        };
+
+        // --- Process Data ---
         const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== '').map((row, index) => {
-            const type = row[3]?.trim()?.toLowerCase() === 'rent' ? 'Rent' : 'Company';
+            const type = mapType(row[3]);
+            const status = mapStatus(row[8]);
+            
             return {
                 tempId: index,
                 id: row[0]?.trim() || '',           
@@ -2493,14 +2576,15 @@ const handleFileImport = (e) => {
                 ownerType: type,
                 price: parseFloat(row[4]?.trim()) || 0, 
                 rentalUnit: mapUnit(row[5], type),   
-                rentalStart: formatDate(row[6]),  
-                rentalEnd: formatDate(row[7]),    
-                status: row[8]?.trim() || 'Available', 
+                rentalStart: formatDate(row[6]),  // เรียกใช้ formatDate ตรงนี้
+                rentalEnd: formatDate(row[7]),    // และตรงนี้
+                status: status, 
                 holder: row[9]?.trim() || '-',      
                 note: row[10]?.trim() || '',
-                project: row[11]?.trim() || '' // ⭐ Col 11: Project (เพิ่มใหม่)
+                project: row[11]?.trim() || '' 
             };
         });
+        
         setImportData(data);
     };
     reader.readAsText(file);
@@ -5552,6 +5636,8 @@ const PublicAnnouncementPopup = () => (
     
             {/* Content */}
             <div className="flex-1 overflow-auto p-6 bg-slate-50">
+
+
             
             
     {activeTab === 'dashboard' && (
@@ -6968,15 +7054,16 @@ filteredRequests.map(req => {
 
                                        <td className="px-6 py-4 text-gray-500">{ast.serial}</td>
                                        <td className="px-6 py-4 text-center">
-                                           <span className={`px-2 py-1 rounded text-xs font-bold ${
-                                               ast.status === 'Available' ? 'bg-green-100 text-green-700' :
-                                               ast.status === 'Borrowed' ? 'bg-orange-100 text-orange-700' :
-                                               ast.status === 'Lost' ? 'bg-gray-800 text-white' :
-                                               ast.status === 'Damaged' ? 'bg-red-100 text-red-700' : 'bg-gray-100'
-                                           }`}>
-                                               {ast.status}
-                                           </span>
-                                       </td>
+    <span className={`px-2 py-1 rounded text-xs font-bold ${
+        ast.status === 'Available' ? 'bg-green-100 text-green-700' :
+        ast.status === 'Borrowed' ? 'bg-orange-100 text-orange-700' :
+        ast.status === 'Lost' ? 'bg-gray-800 text-white' :
+        ast.status === 'Damaged' ? 'bg-red-100 text-red-700' : 'bg-gray-100'
+    }`}>
+        {/* แก้ไขบรรทัดนี้จาก {ast.status} เป็นด้านล่าง */}
+        {ASSET_STATUS_LABELS[ast.status] || ast.status}
+    </span>
+</td>
                                        {assetTabMode === 'Rent' && (
                                             <td className="px-6 py-4 text-xs">
                                                 <div className="flex flex-col gap-1">
@@ -7546,6 +7633,19 @@ filteredRequests.map(req => {
 
  
             </div>
+
+            {showGoTop && (
+                <button
+                    onClick={scrollToTop}
+                    className="fixed bottom-6 right-6 z-[100] bg-blue-600 text-white p-3 rounded-full shadow-2xl hover:bg-blue-700 transition-all transform hover:scale-110 flex flex-col items-center gap-1 animate-in fade-in slide-in-from-bottom-5 no-print"
+                    title="กลับไปด้านบน"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m18 15-6-6-6 6"/>
+                    </svg>
+                    <span className="text-[10px] font-bold">ขึ้นบน</span>
+                </button>
+            )}
           </main>
     
        {/* เปลี่ยน z-[80] เป็น z-[250] เพื่อให้ซ้อนทับหน้า Verification ได้ */}
@@ -10079,8 +10179,14 @@ const relatedAssets = sourceAssets.filter(a =>
                                             {/* (ใส่โค้ด Asset Fields เดิมตรงนี้) */}
                                             {/* ผมละไว้เพื่อความกระชับ ให้คงโค้ดเดิมส่วน Asset ไว้ */}
                                             <div><span className="text-gray-500 block text-xs mb-1">Serial Number</span><span className="font-mono text-gray-700">{viewingItem.serial || '-'}</span></div>
-                                            <div><span className="text-gray-500 block text-xs mb-1">สถานะ</span><span className="font-bold">{viewingItem.status}</span></div>
-                                            {/* ... */}
+                                            <div>
+    <span className="text-gray-500 block text-xs mb-1">สถานะ</span>
+    <span className="font-bold">
+        {/* แก้ไขบรรทัดนี้ */}
+        {ASSET_STATUS_LABELS[viewingItem.status] || viewingItem.status}
+    </span>
+</div>
+                                            
                                         </>
                                     ) : (
                                         // ⭐ Inventory Fields (Updated)
@@ -11630,26 +11736,26 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                   {/* Body */}
                   <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
                       
-                      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
-                          <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV</h4>
-                          <p className="mb-2">เรียงคอลัมน์ดังนี้ (12 ช่อง):</p>
-<div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
-    Asset_ID, Name, Serial, Type, Price, Unit, Start_Date, End_Date, Status, Holder, Note, Project
+                     <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
+    <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV</h4>
+    <p className="mb-2">เรียงคอลัมน์ดังนี้ (12 ช่อง):</p>
+    <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
+        รหัสทรัพย์สิน, ชื่อรายการ, ซีเรียลนัมเบอร์, ประเภท, ราคา, หน่วย, วันเริ่มสัญญา, วันสิ้นสุดสัญญา, สถานะ, ผู้ถือครอง, หมายเหตุ, ชื่อโครงการ
+    </div>
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-1 text-xs text-blue-700 list-disc pl-4">
+        <li><b>รหัสทรัพย์สิน:</b> ว่างไว้ = Auto Gen (ห้ามซ้ำ)</li>
+        <li><b>ชื่อรายการ:</b> ห้ามว่าง</li>
+        <li><b>ซีเรียลนัมเบอร์:</b> ห้ามว่าง</li>
+        <li><b>ประเภท:</b> <code>บริษัท</code> หรือ <code>เช่า</code></li>
+        <li><b>ราคา:</b> ตัวเลขราคา</li>
+        <li><b>หน่วย:</b> บาท, บาท/วัน, บาท/เดือน, บาท/ปี</li>
+        <li><b>เริ่ม/สิ้นสุด:</b> 31/01/2567 หรือ 2024-01-31</li>
+        <li><b>สถานะ:</b> <code>ว่าง</code>, <code>ถูกยืม</code>, <code>สูญหาย</code>, <code>ชำรุด</code></li>
+        <li><b>ผู้ถือครอง:</b> จำเป็นถ้าสถานะคือ 'ถูกยืม'</li>
+        <li><b>หมายเหตุ:</b> บันทึกลงประวัติ</li>
+        <li><b>ชื่อโครงการ:</b> ต้องตรงกับในระบบ</li>
+    </div>
 </div>
-                          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-1 text-xs text-blue-700 list-disc pl-4">
-                              <li><b>Asset_ID:</b> ว่างไว้ = Auto Gen (ห้ามซ้ำ)</li>
-                              <li><b>Name:</b> ห้ามว่าง</li>
-                              <li><b>Serial:</b> ห้ามว่าง</li>
-                              <li><b>Type:</b> <code>Company</code>, <code>Rent</code></li>
-                              <li><b>Price:</b> ตัวเลขราคา</li>
-                              <li><b>Unit:</b> หน่วย (บาท,บาท/วัน,บาท/เดือน,บาท/ปี)</li>
-                              <li><b>Start/End:</b> ใส่แบบ <code>31/01/2567</code> (วัน/เดือน/ปี พ.ศ.) หรือ <code>2024-01-31</code></li>
-                              <li><b>Status:</b> <code>Available</code>, <code>Borrowed</code>, <code>Lost</code>, <code>Damaged</code> (ห้ามว่าง)</li>
-                              <li><b>Holder:</b> ผู้ถือครอง (จำเป็นถ้า Status = Borrowed)</li>
-                              <li><b>Note:</b> หมายเหตุ (จะบันทึกลงประวัติ)</li>
-                              <li><b>Project:</b> ชื่อโครงการ (ต้องตรงกับในระบบ)</li>
-                          </div>
-                      </div>
 
                       <div className="mb-6">
                           <div className="flex items-center gap-3">
@@ -11757,17 +11863,17 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                                                   
                                                   {/* Type */}
                                                   <td className="px-2 py-1">
-                                                      <select className="w-full bg-transparent outline-none font-bold text-gray-700" value={row.ownerType} onChange={e => { 
-                                                          const newData = [...importData]; 
-                                                          newData[idx].ownerType = e.target.value; 
-                                                          if (e.target.value === 'Company') { newData[idx].rentalUnit = 'baht'; newData[idx].rentalStart = ''; newData[idx].rentalEnd = ''; }
-                                                          else { if (newData[idx].rentalUnit === 'baht') newData[idx].rentalUnit = 'Month'; }
-                                                          setImportData(newData); 
-                                                      }}>
-                                                          <option value="Company">Company</option>
-                                                          <option value="Rent">Rent</option>
-                                                      </select>
-                                                  </td>
+    <select className="w-full bg-transparent outline-none font-bold text-gray-700" 
+            value={row.ownerType} 
+            onChange={e => { 
+                const newData = [...importData];
+                newData[idx].ownerType = e.target.value; 
+                setImportData(newData);
+            }}>
+        <option value="Company">บริษัท (Company)</option>
+        <option value="Rent">เช่า (Rent)</option>
+    </select>
+</td>
 
                                                   {/* Price */}
                                                   <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const newData = [...importData]; newData[idx].price = parseFloat(e.target.value) || 0; setImportData(newData); }}/></td>
@@ -11791,15 +11897,21 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                                                   {/* End */}
                                                   <td className="px-2 py-1"><input type="text" placeholder="YYYY-MM-DD" className={`w-full border-b border-transparent outline-none ${row.ownerType === 'Company' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-transparent text-gray-600 focus:border-blue-500'}`} value={row.rentalEnd || ''} onChange={e => { const newData = [...importData]; newData[idx].rentalEnd = e.target.value; setImportData(newData); }} disabled={row.ownerType === 'Company'}/></td>
 
-                                                  {/* Status */}
-                                                  <td className="px-2 py-1">
-                                                      <select className={`w-full bg-transparent outline-none font-bold ${row.status === 'Available' ? 'text-green-700' : row.status === 'Borrowed' ? 'text-blue-700' : 'text-gray-700'}`} value={row.status} onChange={e => { const newData = [...importData]; newData[idx].status = e.target.value; if (e.target.value !== 'Borrowed') newData[idx].holder = ''; setImportData(newData); }}>
-                                                          <option value="Available">Available</option>
-                                                          <option value="Borrowed">Borrowed</option>
-                                                          <option value="Lost">Lost</option>
-                                                          <option value="Damaged">Damaged</option>
-                                                      </select>
-                                                  </td>
+                                                 {/* Status Dropdown */}
+<td className="px-2 py-1">
+    <select className={`w-full bg-transparent outline-none font-bold ${row.status === 'Available' ? 'text-green-700' : 'text-blue-700'}`} 
+            value={row.status} 
+            onChange={e => { 
+                const newData = [...importData];
+                newData[idx].status = e.target.value;
+                setImportData(newData); 
+            }}>
+        <option value="Available">ว่าง (Available)</option>
+        <option value="Borrowed">ถูกยืม (Borrowed)</option>
+        <option value="Lost">สูญหาย (Lost)</option>
+        <option value="Damaged">ชำรุด (Damaged)</option>
+    </select>
+</td>
 
                                                   {/* Holder */}
                                                   <td className="px-2 py-1">
@@ -11962,13 +12074,14 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                                           </span>
                                       </td>
                                       <td className="px-6 py-4 text-center">
-                                          <span className={`px-2 py-1 rounded text-xs font-bold ${
-                                              item.status === 'Available' ? 'bg-green-100 text-green-700' :
-                                              item.status === 'Borrowed' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100'
-                                          }`}>
-                                              {item.status}
-                                          </span>
-                                      </td>
+    <span className={`px-2 py-1 rounded text-xs font-bold ${
+        item.status === 'Available' ? 'bg-green-100 text-green-700' :
+        item.status === 'Borrowed' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100'
+    }`}>
+        {/* แก้ไขบรรทัดนี้ */}
+        {ASSET_STATUS_LABELS[item.status] || item.status}
+    </span>
+</td>
                                       <td className="px-6 py-4 text-gray-700">{item.holder}</td>
                                   </tr>
                               ))}
