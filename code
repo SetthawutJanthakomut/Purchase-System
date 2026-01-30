@@ -1750,3 +1750,47 @@ function sendWeeklyBudgetSummary() {
       console.log("⚠️ No recipients found matching the criteria.");
   }
 }
+
+
+// --- ฟังก์ชันสำหรับอัปเดต ID ในประวัติ (Logs) เมื่อมีการเปลี่ยนรหัสสินค้า ---
+function updateLogItemId(oldId, newId) {
+  console.log(`[UpdateLog] Changing ID from ${oldId} to ${newId}`);
+  
+  // 1. ดึงข้อมูล Logs ทั้งหมด (ดึง column id มาด้วยเพื่อใช้อ้างอิงตอนบันทึกทับ)
+  const response = callSupabase('Logs', 'get', null, '?select=id,payload');
+  
+  // ป้องกัน Error กรณีดึงข้อมูลไม่ได้
+  let data;
+  try {
+    data = JSON.parse(response);
+  } catch (e) {
+    console.error("Error parsing logs:", e);
+    return { success: false, message: 'Failed to parse logs' };
+  }
+  
+  if (!Array.isArray(data)) return { success: false, message: 'No logs found or invalid data' };
+
+  let count = 0;
+  
+  // 2. วนลูปหา Log ที่มี assetId ตรงกับ oldId แล้วแก้เป็น newId
+  data.forEach(row => {
+    let log = row.payload;
+    let changed = false;
+    
+    // ตรวจสอบว่า Log นี้เป็นของรายการที่ถูกเปลี่ยนรหัสหรือไม่
+    // (เช็คที่ assetId หรือ itemId ตามที่ระบบบันทึกไว้)
+    if (log.assetId === oldId) {
+      log.assetId = newId;
+      changed = true;
+    }
+    
+    // ถ้ามีการแก้ไข ให้บันทึกกลับลง Database
+    if (changed) {
+      saveDataToSheet('Logs', row.id, log);
+      count++;
+    }
+  });
+
+  console.log(`[UpdateLog] Updated ${count} logs.`);
+  return { success: true, count: count };
+}
