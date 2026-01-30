@@ -1482,7 +1482,7 @@ for (const id of targetIds) {
 
       
 
-// --- LOGIC: IMPORT INVENTORY CSV (Auto ID & Merge Name) ---
+// --- LOGIC: IMPORT INVENTORY CSV (UPDATED: Thai Support & ID Column) ---
 const handleInvFileImport = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1494,25 +1494,28 @@ const handleInvFileImport = (e) => {
         const text = event.target.result;
         const rows = text.split('\n').map(row => row.split(','));
         
+        // Helper: แปลงประเภท (รองรับภาษาไทย)
         const getStockType = (val) => {
             if (!val) return 'System';
             const v = val.trim().toLowerCase();
             if (v.includes('นอก') || v.includes('non')) return 'NonSystem';
-            return 'System';
+            return 'System'; // Default: ในระบบ
         };
 
-        // CSV Columns (8 columns): Name, Type, Qty, Unit, Min_Stock, Price, Note, Project
-        const data = rows.slice(1).filter(row => row.length > 1 && row[0]?.trim() !== '').map((row, index) => {
+        // CSV Columns (9 columns): 
+        // 0: ID, 1: Name, 2: Type, 3: Qty, 4: Unit, 5: Min, 6: Price, 7: Note, 8: Project
+        const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== '').map((row, index) => {
             return {
                 tempId: index,
-                name: row[0]?.trim() || '',         // Col 0
-                stockType: getStockType(row[1]),    // Col 1
-                qty: parseInt(row[2]?.trim()) || 0, // Col 2
-                unit: row[3]?.trim() || 'ชิ้น',      // Col 3
-                minStock: parseInt(row[4]?.trim()) || 0, // Col 4
-                price: parseFloat(row[5]?.trim()) || 0,  // Col 5
-                note: row[6]?.trim() || '',          // Col 6
-                project: row[7]?.trim() || ''        // ⭐ Col 7: Project (เพิ่มใหม่)
+                id: row[0]?.trim() || '',           // ⭐ Col 0: รหัสวัสดุ (Material Code)
+                name: row[1]?.trim() || '',         // Col 1: ชื่อสินค้า
+                stockType: getStockType(row[2]),    // Col 2: ประเภท
+                qty: parseInt(row[3]?.trim()) || 0, // Col 3: จำนวน
+                unit: row[4]?.trim() || 'ชิ้น',      // Col 4: หน่วย
+                minStock: parseInt(row[5]?.trim()) || 0, // Col 5: Min Stock
+                price: parseFloat(row[6]?.trim()) || 0,  // Col 6: ราคา
+                note: row[7]?.trim() || '',          // Col 7: หมายเหตุ
+                project: row[8]?.trim() || ''        // Col 8: โครงการ
             };
         });
         setImportInvData(data);
@@ -1521,66 +1524,88 @@ const handleInvFileImport = (e) => {
     reader.readAsText(file);
 };
 
-// --- LOGIC: CONFIRM IMPORT (UPDATED: Project Support & Fix Error) ---
+// --- LOGIC: CONFIRM IMPORT (UPDATED: ID Validation & Auto Gen) ---
 const confirmImportInventory = async () => {
     if (importInvData.length === 0) return;
 
-    // 1. Validation
+    // 1. Validation Loop
     for (let i = 0; i < importInvData.length; i++) {
         const item = importInvData[i];
         const line = i + 1;
-        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อสินค้า`, 'error'); return; }
         
-        // ⭐ ตรวจสอบโครงการ
+        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อสินค้า`, 'error'); return; }
         if (!item.project) { showToast(`รายการที่ ${line}: ขาดชื่อโครงการ`, 'error'); return; }
+        
+        // ตรวจสอบโครงการในระบบ
         const projectExists = projects.some(p => p.name === item.project);
         if (!projectExists) { showToast(`รายการที่ ${line}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error'); return; }
+
+        // ⭐ ตรวจสอบความถูกต้องของรหัส (กรณีชื่อซ้ำ)
+        const existingInv = inventory.find(inv => inv.name === item.name && inv.project === item.project);
+        if (existingInv) {
+            // ถ้ามีรหัสมาใน CSV และรหัสไม่ตรงกับของเดิม
+            if (item.id && item.id !== existingInv.id) {
+                showToast(`รายการที่ ${line} ("${item.name}"): มีในระบบแล้วด้วยรหัส "${existingInv.id}" \n(แต่ในไฟล์ระบุ "${item.id}" ซึ่งไม่ตรงกัน)`, 'error');
+                return;
+            }
+        } else {
+            // กรณีสินค้าใหม่: ถ้าระบุรหัสมา ต้องเช็คว่าซ้ำกับสินค้าอื่นหรือไม่
+            if (item.id && inventory.some(inv => inv.id === item.id)) {
+                showToast(`รายการที่ ${line}: รหัส "${item.id}" ถูกใช้งานแล้วกับสินค้าอื่น`, 'error');
+                return;
+            }
+        }
     }
 
     setIsLoading(true);
     const date = new Date().toLocaleString('th-TH');
+    let currentInvList = [...inventory];
     
-    // ⭐ ตัวแปรสำคัญที่หายไป (Fix ReferenceError)
-    let currentInvList = [...inventory]; 
+    // หาเลข Run Number สูงสุดปัจจุบันเพื่อเตรียม Auto Gen
     let runNoCount = inventory.length;
 
     // 2. Process Data
     for (const item of importInvData) {
-        // ⭐ เช็คซ้ำโดยดู "โครงการ" ด้วย (ชื่อ+ประเภท+โครงการ ตรงกัน = รวมยอด)
+        // เช็คของเดิม (ชื่อ+โครงการ ตรงกัน)
         const existingIndex = currentInvList.findIndex(inv => 
             inv.name === item.name && 
-            inv.stockType === item.stockType && 
             inv.project === item.project
         );
 
         if (existingIndex !== -1) {
-            // ✅ Merge Logic
+            // ✅ Merge Logic (ของเดิม)
             const existingItem = currentInvList[existingIndex];
-            const newQty = existingItem.qty + item.qty;
             
             const updatedItem = {
                 ...existingItem,
-                qty: newQty,
+                // ไม่ต้องแก้ ID เพราะ Validation บังคับให้ตรง หรือถ้าว่างก็ใช้ของเดิม
+                qty: existingItem.qty + item.qty,
                 price: item.price > 0 ? item.price : existingItem.price,
-                note: item.note ? (existingItem.note ? `${existingItem.note} | ${item.note}` : item.note) : existingItem.note
+                note: item.note ? (existingItem.note ? `${existingItem.note} | ${item.note}` : item.note) : existingItem.note,
+                lastUpdated: date
             };
             currentInvList[existingIndex] = updatedItem;
+            
             const { images, ...itemForServer } = updatedItem;
             saveInventoryToSheet(itemForServer);
-            
             addInvLog('Import Merge', updatedItem.name, `+${item.qty}`, `นำเข้าเพิ่มยอด (${item.stockType}) โครงการ ${item.project}`, [], null, updatedItem.id);
-
-        } else {
-            // ✅ New Item Logic
-            runNoCount++;
-            let runNo = String(runNoCount).padStart(3, '0');
-            let finalId = `INV-${runNo}`;
             
-            // หา ID ว่าง
-            while (currentInvList.some(inv => inv.id === finalId)) {
+        } else {
+            // ✅ New Item Logic (ของใหม่)
+            
+            // ⭐ จัดการ ID: ถ้าว่าง ให้ Auto Gen
+            let finalId = item.id;
+            if (!finalId) {
                 runNoCount++;
-                runNo = String(runNoCount).padStart(3, '0');
+                let runNo = String(runNoCount).padStart(3, '0');
                 finalId = `INV-${runNo}`;
+                
+                // กันซ้ำ (Loop เช็ค)
+                while (currentInvList.some(inv => inv.id === finalId)) {
+                    runNoCount++;
+                    runNo = String(runNoCount).padStart(3, '0');
+                    finalId = `INV-${runNo}`;
+                }
             }
 
             const newItem = {
@@ -1595,9 +1620,10 @@ const confirmImportInventory = async () => {
                 image: null,
                 images: [],
                 note: item.note,
-                project: item.project // ⭐ บันทึกโครงการ
+                project: item.project
             };
             currentInvList.push(newItem);
+            
             const { images, ...itemForServer } = newItem;
             saveInventoryToSheet(itemForServer);
             
@@ -1761,77 +1787,102 @@ const handleRemoveCurrentInvImage = () => {
         setEditingStockItem(prev => ({ ...prev, image: null }));
     }
 };
-      // 3. แก้ไขสินค้า (Update Inventory - Full Edit)
-      const handleUpdateInventory = async () => {
-          if (!editingStockItem) return;
-          
-          setIsLoading(true);
-          try {
-              const date = new Date().toLocaleString('th-TH');
-              const originalItem = inventory.find(i => i.id === editingStockItem.id);
+      // --- LOGIC: UPDATE INVENTORY (UPDATED: Editable ID & Project Log) ---
+const handleUpdateInventory = async () => {
+    if (!editingStockItem) return;
 
-              // Upload New Images
-              let newUploadedFiles = [];
-              if (editingStockItem.newImages && editingStockItem.newImages.length > 0) {
-                  const uploadPromises = editingStockItem.newImages.map(imgObj => {
-                      return new Promise((resolve, reject) => {
-                           const reader = new FileReader();
-                           reader.readAsDataURL(imgObj.file);
-                           reader.onload = () => {
-                               google.script.run
-                                .withSuccessHandler(resolve)
-                                .withFailureHandler(reject)
-                                .uploadAssetImage(reader.result, imgObj.file.name);
-                           };
-                      });
-                  });
-                  newUploadedFiles = await Promise.all(uploadPromises);
-              }
+    // ⭐ 1. Validation: เช็คชื่อซ้ำหรือรหัสซ้ำ (ในโครงการเดียวกัน)
+    // เช็คว่ารหัสนี้ มีคนอื่นใช้ไปหรือยัง (ในโครงการเดียวกัน)
+    const isDuplicateId = inventory.some(i => 
+        i.id === editingStockItem.id && 
+        i.project === editingStockItem.project && 
+        i.id !== editingStockItem.originalId // ไม่นับตัวเอง
+    );
 
-              // Prepare Data
-              const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].name : editingStockItem.image;
-              
-              const updatedItem = {
-                  ...editingStockItem,
-                  lastUpdated: date,
-                  image: mainImage,
-                  // รวม images เดิม และใหม่ (ถ้ามี logic เก็บ array)
-                  images: [], 
-                  newImages: []
-              };
+    if (isDuplicateId) {
+        showToast(`รหัส "${editingStockItem.id}" มีอยู่แล้วในโครงการ ${editingStockItem.project}`, 'error');
+        return;
+    }
 
-              // Compare Changes for Log
-              let changes = [];
-              if (originalItem) {
-                  if (originalItem.name !== updatedItem.name) changes.push(`Name: ${originalItem.name} -> ${updatedItem.name}`);
-                  if (originalItem.qty !== updatedItem.qty) changes.push(`Qty: ${originalItem.qty} -> ${updatedItem.qty}`);
-                  if (originalItem.price !== updatedItem.price) changes.push(`Price: ${originalItem.price} -> ${updatedItem.price}`);
-                  if (originalItem.stockType !== updatedItem.stockType) changes.push(`Type: ${originalItem.stockType} -> ${updatedItem.stockType}`);
-                  if (originalItem.note !== updatedItem.note) changes.push(`Note Updated`);
-                  if (newUploadedFiles.length > 0) changes.push(`Added ${newUploadedFiles.length} photos`);
-              }
-              const changeLog = changes.length > 0 ? changes.join(', ') : 'Update Info';
+    setIsLoading(true);
+    try {
+        const date = new Date().toLocaleString('th-TH');
+        // หา Item ตัวเดิมจาก ID เดิม
+        const originalItem = inventory.find(i => i.id === editingStockItem.originalId);
 
-              // Save & Sync
-              setInventory(prev => prev.map(i => i.id === editingStockItem.id ? updatedItem : i));
-              const { images, newImages, ...itemForServer } = updatedItem;
-              saveInventoryToSheet(itemForServer);
+        // Upload New Images (เหมือนเดิม)
+        let newUploadedFiles = [];
+        if (editingStockItem.newImages && editingStockItem.newImages.length > 0) {
+            const uploadPromises = editingStockItem.newImages.map(imgObj => {
+                return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.readAsDataURL(imgObj.file);
+                        reader.onload = () => {
+                            google.script.run
+                            .withSuccessHandler(resolve)
+                            .withFailureHandler(reject)
+                            .uploadAssetImage(reader.result, imgObj.file.name);
+                        };
+                });
+            });
+            newUploadedFiles = await Promise.all(uploadPromises);
+        }
 
-              // Log
-              const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-              // ⭐ ส่ง ID ไปด้วย
-              addInvLog('Update Stock', updatedItem.name, 'Edit', changeLog, logAttachments, null, updatedItem.id);
+        const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].name : editingStockItem.image;
+        
+        const updatedItem = {
+            ...editingStockItem,
+            lastUpdated: date,
+            image: mainImage,
+            images: [], 
+            newImages: []
+        };
 
-              setIsLoading(false);
-              setShowEditInvModal(false);
-              setEditingStockItem(null);
-              showToast('แก้ไขข้อมูลสินค้าเรียบร้อย');
-          } catch (error) {
-              setIsLoading(false);
-              console.error(error);
-              showToast("Error: " + error.message, 'error');
-          }
-      };
+        // Compare Changes
+        let changes = [];
+        if (originalItem) {
+            if (originalItem.id !== updatedItem.id) changes.push(`ID: ${originalItem.id} -> ${updatedItem.id}`);
+            if (originalItem.name !== updatedItem.name) changes.push(`Name: ${originalItem.name} -> ${updatedItem.name}`);
+            if (originalItem.qty !== updatedItem.qty) changes.push(`Qty: ${originalItem.qty} -> ${updatedItem.qty}`);
+            if (originalItem.price !== updatedItem.price) changes.push(`Price: ${originalItem.price} -> ${updatedItem.price}`);
+            if (originalItem.note !== updatedItem.note) changes.push(`Note Updated`);
+            if (newUploadedFiles.length > 0) changes.push(`Added ${newUploadedFiles.length} photos`);
+        }
+        
+        const changeLog = changes.length > 0 ? changes.join(', ') : 'Update Info';
+        // ⭐ เพิ่มชื่อโครงการใน Log
+        const projectLogInfo = `โครงการ: ${updatedItem.project || 'ไม่ระบุ'}`;
+
+        // Save & Sync
+        // ⭐ กรณีเปลี่ยน ID: ต้องลบตัวเก่าทิ้งก่อน
+        if (updatedItem.id !== editingStockItem.originalId) {
+             await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Inventory', editingStockItem.originalId));
+        }
+
+        // อัปเดต State (รองรับการเปลี่ยน ID)
+        setInventory(prev => {
+            // กรองตัวเก่าออก (โดยใช้ originalId) แล้วใส่ตัวใหม่เข้าไป
+            return [...prev.filter(i => i.id !== editingStockItem.originalId), updatedItem];
+        });
+
+        const { images, newImages, originalId, ...itemForServer } = updatedItem;
+        saveInventoryToSheet(itemForServer);
+
+        // Log
+        const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+        // ⭐ บันทึก Log แบบละเอียด
+        addInvLog('Update Stock', updatedItem.name, 'Edit', `${projectLogInfo}\n${changeLog}`, logAttachments, null, updatedItem.id);
+        
+        setIsLoading(false);
+        setShowEditInvModal(false);
+        setEditingStockItem(null);
+        showToast('แก้ไขข้อมูลสินค้าเรียบร้อย');
+    } catch (error) {
+        setIsLoading(false);
+        console.error(error);
+        showToast("Error: " + error.message, 'error');
+    }
+};
 
       // 3. จัดการ Checkbox
       const toggleSelectAsset = (id) => {
@@ -3690,73 +3741,125 @@ const getSelectionItems = () => {
           }));
       };
 
-// --- LOGIC: ADD NEW PRODUCT (UPDATED) ---
-      const handleAddNewProduct = async () => {
-          // 1. Validation ตรวจสอบข้อมูล
-          if (!newStockItem.name) { showToast('กรุณาระบุชื่อสินค้า', 'error'); return; }
-          if (newStockItem.qty < 0) { showToast('จำนวนเริ่มต้นต้องไม่ต่ำกว่า 0', 'error'); return; }
-          if (newStockItem.minStock < 0) { showToast('Min Stock ต้องไม่ต่ำกว่า 0', 'error'); return; }
-          if (newStockItem.price < 0) { showToast('ราคาต่อหน่วยต้องไม่ต่ำกว่า 0', 'error'); return; }
+// --- LOGIC: ADD NEW PRODUCT (UPDATED: Log with Project Name) ---
+const handleAddNewProduct = async () => {
+    // 1. Validation พื้นฐาน
+    if (!newStockItem.name) { showToast('กรุณาระบุชื่อสินค้า', 'error'); return; }
+    if (!newStockItem.project) { showToast('กรุณาระบุโครงการ', 'error'); return; }
+    if (newStockItem.qty < 0) { showToast('จำนวนเริ่มต้นต้องไม่ต่ำกว่า 0', 'error'); return; }
+    
+    // 2. ตรวจสอบชื่อซ้ำ (Existing Check)
+    const existingInv = inventory.find(i => i.name === newStockItem.name && i.project === newStockItem.project);
+    
+    if (existingInv) {
+        // Validation: รหัสต้องตรงกับของเดิม
+        if (newStockItem.isAutoId) {
+             showToast(`สินค้า "${newStockItem.name}" มีอยู่ในระบบแล้ว รหัส ${existingInv.id}\n(กรุณาปลดติ๊ก Auto Gen และใช้รหัสเดิม)`, 'error');
+             return;
+        }
+        if (newStockItem.id !== existingInv.id) {
+             showToast(`ข้อมูลไม่ถูกต้อง: ชื่อ "${newStockItem.name}" มีอยู่แล้วด้วยรหัส ${existingInv.id}\n(แต่คุณระบุรหัส ${newStockItem.id})`, 'error');
+             return;
+        }
+    }
 
-          setIsLoading(true);
+    // 3. กำหนดรหัสสินค้า (Final ID)
+    let finalId = newStockItem.id;
+    if (newStockItem.isAutoId) {
+        let runNoCount = inventory.length + 1;
+        let runNo = String(runNoCount).padStart(3, '0');
+        finalId = `INV-${runNo}`;
+        while (inventory.some(inv => inv.id === finalId)) {
+            runNoCount++;
+            runNo = String(runNoCount).padStart(3, '0');
+            finalId = `INV-${runNo}`;
+        }
+    } else {
+        if (!finalId) { showToast('กรุณาระบุรหัสสินค้า (หรือเลือก Auto Gen)', 'error'); return; }
+        const duplicateIdItem = inventory.find(i => i.id === finalId);
+        if (duplicateIdItem && duplicateIdItem.name !== newStockItem.name) {
+            showToast(`รหัส ${finalId} ถูกใช้แล้วกับสินค้า "${duplicateIdItem.name}"`, 'error');
+            return;
+        }
+    }
 
-          try {
-              // 2. Upload Images
-              let uploadedFiles = [];
-              if (newStockItem.images && newStockItem.images.length > 0) {
-                  const uploadPromises = newStockItem.images.map(imgObj => {
-                      return new Promise((resolve, reject) => {
-                          google.script.run
-                            .withSuccessHandler(resolve)
-                            .withFailureHandler(reject)
-                            .uploadAssetImage(imgObj.base64, imgObj.name); // ใช้ฟังก์ชันเดียวกับ Asset ได้
-                      });
-                  });
-                  uploadedFiles = await Promise.all(uploadPromises);
-              }
+    setIsLoading(true);
+    try {
+        // Upload Images
+        let uploadedFiles = [];
+        if (newStockItem.images && newStockItem.images.length > 0) {
+            const uploadPromises = newStockItem.images.map(imgObj => {
+                return new Promise((resolve, reject) => {
+                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
+                });
+            });
+            uploadedFiles = await Promise.all(uploadPromises);
+        }
 
-              const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].name : null;
-              const date = new Date().toLocaleString('th-TH');
+        const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].name : (existingInv ? existingInv.image : null);
+        const date = new Date().toLocaleString('th-TH');
 
-              // 3. Prepare Data
-              const newItem = {
-                  id: `INV-${String(inventory.length + 1).padStart(3, '0')}`,
-                  ...newStockItem,
-                  // ถ้าไม่ได้เลือก หรือเป็นค่าว่าง ให้ Default เป็น System
-                  stockType: newStockItem.stockType || 'System', 
-                  lastUpdated: date,
-                  image: mainImageName,
-                  images: [], // ไม่เก็บ Base64 ลง Sheet
-              };
-
-              // 4. Save & Sync
-              const { images, ...itemForServer } = newItem;
-              saveInventoryToSheet(itemForServer); 
-              
-              setInventory(prev => [...prev, newItem]);
-              
-              // 5. Log
-              const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-              const logNote = newStockItem.note ? `(Note: ${newStockItem.note})` : '';
-              
-              // เพิ่มข้อมูล Stock Type ลงใน Log ด้วย
-              const typeLabel = newItem.stockType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
+        // 4. เตรียมข้อมูลและบันทึก
+        if (existingInv) {
+            // ✅ กรณีมีของเดิม: รวมยอด (Merge)
+            const updatedItem = {
+                ...existingInv,
+                id: finalId,
+                qty: existingInv.qty + newStockItem.qty,
+                price: newStockItem.price > 0 ? newStockItem.price : existingInv.price,
+                // Update Note: เอา Note ใหม่ไปต่อท้าย Note เดิม (ถ้ามี)
+                note: newStockItem.note ? (existingInv.note ? `${existingInv.note} | ${newStockItem.note}` : newStockItem.note) : existingInv.note,
+                lastUpdated: date,
+                image: mainImageName
+            };
+            setInventory(prev => prev.map(i => i.id === existingInv.id ? updatedItem : i));
+            const { images, ...itemForServer } = updatedItem;
+            saveInventoryToSheet(itemForServer);
             
-              addInvLog('Add Item', newItem.name, `+${newItem.qty}`, `รับเข้าโครงการ ${newItem.project || 'ไม่ระบุ'} ${typeLabel} ${logNote}`, logAttachments);
+            // ⭐ LOG: ระบุชื่อโครงการชัดเจน
+            const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+            const logNote = `เพิ่มยอดเข้าโครงการ ${updatedItem.project} (รหัส: ${finalId})${newStockItem.note ? ` | หมายเหตุ: ${newStockItem.note}` : ''}`;
+            
+            addInvLog('Add Stock (Merge)', updatedItem.name, `+${newStockItem.qty}`, logNote, logAttachments, null, finalId);
+            
+        } else {
+            // ✅ กรณีของใหม่: สร้างใหม่ (New)
+            const newItem = {
+                id: finalId,
+                ...newStockItem,
+                stockType: newStockItem.stockType || 'System',
+                lastUpdated: date,
+                image: mainImageName,
+                images: []
+            };
+            const { images, isAutoId, ...itemForServer } = newItem;
+            saveInventoryToSheet(itemForServer);
+            setInventory(prev => [...prev, newItem]);
+            
+            // ⭐ LOG: ระบุชื่อโครงการชัดเจน
+            const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+            const typeLabel = newItem.stockType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
+            const logNote = `สินค้าใหม่ ${typeLabel} เข้าโครงการ ${newItem.project}${newItem.note ? ` | หมายเหตุ: ${newItem.note}` : ''}`;
 
-              setIsLoading(false);
-              setShowAddInvModal(false);
-              
-              // Reset Form (Default: System)
-              setNewStockItem({ name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], note: '', stockType: 'System' });
-              showToast('เพิ่มสินค้าใหม่เรียบร้อย');
+            addInvLog('Add New Item', newItem.name, `Start: ${newItem.qty}`, logNote, logAttachments, null, finalId);
+        }
 
-          } catch (error) {
-              setIsLoading(false);
-              console.error(error);
-              showToast("Error: " + error.message, 'error');
-          }
-      };
+        setIsLoading(false);
+        setShowAddInvModal(false);
+        // Reset ค่าเริ่มต้น (อย่าลืม Reset Project ให้เป็นค่าปัจจุบันหรือว่าง)
+        setNewStockItem({ 
+            name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], note: '', stockType: 'System', 
+            project: globalProjectFilter !== 'All' ? globalProjectFilter : '', 
+            id: '', isAutoId: true 
+        });
+        showToast('บันทึกข้อมูลเรียบร้อย');
+
+    } catch (error) {
+        setIsLoading(false);
+        console.error(error);
+        showToast("Error: " + error.message, 'error');
+    }
+};
 
 // --- LOGIC: ADD ASSET (UPDATED: Check Holder) ---
 const handleAddAsset = async () => {
@@ -4409,17 +4512,29 @@ const handleConfirmVerification = () => {
               rentalUnit: 'Month' 
           }));
 
+const existingInv = inventory.find(inv => inv.name === item.name && inv.project === req.job);
+          
+          // 2. ถ้ามี: ดึงรหัสเดิมมา, ไม่ติ๊ก Auto
+          // 3. ถ้าไม่มี: รหัสว่าง, ติ๊ก Auto ไว้ก่อน
+          const defaultInvId = existingInv ? existingInv.id : '';
+          const defaultAuto = !existingInv;
+
+
           return { 
               ...item,
               originalName: item.name, 
               targetType: defaultTarget, 
-              receiveImages: [], // อันนี้เป็น Array อยู่แล้ว (สำหรับ Inventory)
+              receiveImages: [], 
               assetsToRegister: assetsReg, 
               isRent: req.purchaseType === 'Rent', 
               receivedQty: remaining, 
               actualPrice: item.unitPrice, 
               orderedQty: item.qty,
-              receivedSoFar: receivedSoFar
+              receivedSoFar: receivedSoFar,
+              
+              // ⭐ state ใหม่สำหรับหน้าจอรับของ
+              inventoryId: defaultInvId,
+              isInvAutoId: defaultAuto
           };
       });
 
@@ -4447,6 +4562,33 @@ const handleConfirmReceive = async () => {
         }
     }
 
+    for (const item of receiveItems) {
+        if (item.targetType === 'Inventory' && item.receivedQty > 0) {
+            // 1. ค้นหาว่าชื่อนี้มีในคลังของโครงการนี้หรือไม่
+            const existingInv = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
+            
+            if (existingInv) {
+                // 2. ถ้ามีของเดิม -> ต้องใช้รหัสเดิมเท่านั้น (ห้ามเปลี่ยน)
+                // กรณีเลือก Auto Gen ก็ต้องเช็คด้วยว่ามันจะไปสร้างรหัสใหม่ทับหรือเปล่า (ปกติถ้ามีของเดิมไม่ควร Auto Gen เลขใหม่)
+                
+                const inputId = item.isInvAutoId ? 'Auto Gen' : item.inventoryId;
+                
+                // ถ้าระบุรหัสมาเอง และ รหัสนั้นไม่ตรงกับของเดิม
+                if (!item.isInvAutoId && item.inventoryId !== existingInv.id) {
+                    showToast(`ข้อมูลไม่ถูกต้อง: สินค้าชื่อ "${item.name}" มีอยู่ในระบบแล้ว โดยใช้รหัส "${existingInv.id}"\n(แต่คุณระบุรหัส "${item.inventoryId}")`, 'error');
+                    return; // หยุดการทำงาน
+                }
+                
+                // กรณีติ๊ก Auto Gen ทั้งที่มีของเดิมอยู่แล้ว -> ถือว่าผิดไหม? 
+                // ตามโจทย์ "ป้องกันรหัสไม่ตรง" -> ควรแจ้งเตือนให้ใช้รหัสเดิม
+                if (item.isInvAutoId) {
+                     showToast(`ข้อมูลไม่ถูกต้อง: สินค้าชื่อ "${item.name}" มีอยู่ในระบบแล้วด้วยรหัส "${existingInv.id}"\n(กรุณาปลดติ๊ก Auto Gen และใช้รหัสเดิม)`, 'error');
+                     return;
+                }
+            }
+        }
+    }
+
     setIsLoading(true);
     try {
         const date = new Date().toLocaleString('th-TH');
@@ -4457,33 +4599,73 @@ const handleConfirmReceive = async () => {
             const qtyToReceive = item.receivedQty || 0;
             if (qtyToReceive <= 0) continue;
 
-            // --- กรณี Inventory ---
+       
+
+         // --- กรณี Inventory ---
             if (item.targetType === 'Inventory') {
+                
+                // 1. ✅ ประกาศตัวแปร logImages และทำการอัปโหลดรูป (ถ้ามี)
                 let logImages = [];
-                // ... (Image Upload Logic เหมือนเดิม) ...
                 if (item.receiveImages && item.receiveImages.length > 0) {
                     const uploadPromises = item.receiveImages.map(imgObj => {
                         return new Promise((resolve, reject) => {
-                            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
+                           google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
                         });
                     });
                     const uploaded = await Promise.all(uploadPromises);
                     logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
                 }
 
-                // ⭐ เช็คของเดิมในโครงการนี้
+                // 2. เตรียมรหัสวัสดุ (Final ID)
+                let finalInvId = item.inventoryId;
+                
+                // ถ้าเลือก Auto Gen -> สร้างรหัสใหม่
+                if (item.isInvAutoId) {
+                    let runNoCount = inventory.length + 1;
+                    let runNo = String(runNoCount).padStart(3, '0');
+                    finalInvId = `INV-${runNo}`;
+                    
+                    // กันซ้ำ
+                    while (inventory.some(inv => inv.id === finalInvId)) {
+                        runNoCount++;
+                        runNo = String(runNoCount).padStart(3, '0');
+                        finalInvId = `INV-${runNo}`;
+                    }
+                } else {
+                    // ถ้า Manual -> ต้องกรอกรหัส
+                    if (!finalInvId) {
+                        showToast(`กรุณาระบุรหัสวัสดุ สำหรับรายการ "${item.name}" (หรือเลือก Auto Gen)`, 'error');
+                        setIsLoading(false);
+                        return;
+                    }
+                }
+
+                // 3. ยึดที่ชื่ออย่างเดียว
                 const existing = inventory.find(inv => inv.name === item.name && inv.project === project);
+                
+                // ใช้รูปภาพที่อัปโหลดใหม่ หรือรูปเดิม (ถ้ามี)
                 const mainImageName = logImages.length > 0 ? logImages[0].name : (existing ? existing.image : null);
                 
-                let invId = null;
+                let savedId = null;
+
                 if (existing) {
-                    const updatedInv = { ...existing, qty: existing.qty + qtyToReceive, lastUpdated: date, image: mainImageName };
+                    // ✅ กรณีมีของเดิม: อัปเดตยอด + อัปเดต ID (ตามที่เลือก)
+                    const updatedInv = { 
+                        ...existing, 
+                        id: finalInvId, 
+                        qty: existing.qty + qtyToReceive, 
+                        lastUpdated: date, 
+                        image: mainImageName 
+                    };
+                    
+                    // อัปเดตใน State
                     setInventory(prev => prev.map(inv => inv.id === existing.id ? updatedInv : inv));
                     saveInventoryToSheet(updatedInv);
-                    invId = updatedInv.id;
+                    savedId = finalInvId;
                 } else {
+                    // ✅ กรณีของใหม่: สร้างใหม่เลย
                     const newInv = { 
-                        id: `INV-${Date.now().toString().slice(-4)}`, 
+                        id: finalInvId, 
                         name: item.name, 
                         qty: qtyToReceive, 
                         unit: item.unit || 'หน่วย', 
@@ -4491,18 +4673,18 @@ const handleConfirmReceive = async () => {
                         price: item.actualPrice, 
                         lastUpdated: date, 
                         image: mainImageName,
-                        project: project, // ⭐ ระบุโครงการ
+                        project: project,
                         stockType: 'System'
                     };
                     setInventory(prev => [...prev, newInv]);
                     saveInventoryToSheet(newInv);
-                    invId = newInv.id;
+                    savedId = finalInvId;
                 }
                 
-                // ⭐ Log: ระบุโครงการ
-                addInvLog('Stock In', item.name, `+${qtyToReceive}`, `รับเข้าโครงการ ${project} (Doc: ${selectedRequest.docNumber || selectedRequest.id})`, logImages, selectedRequest.id, invId);
-
-            } else {
+                // บันทึก Log
+                addInvLog('Stock In', item.name, `+${qtyToReceive}`, `รับเข้าโครงการ ${project} (รหัส: ${savedId})`, logImages, selectedRequest.id, savedId);
+            }
+             else {
                 // --- กรณี Asset ---
                 const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
                 for (const assetReg of assetsToProcess) {
@@ -6736,12 +6918,14 @@ filteredRequests.map(req => {
 {hasPermission(16) && (
     <button 
         onClick={() => { 
-            setShowAddInvModal(true); 
-            setNewStockItem({ 
-                name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
-                project: globalProjectFilter !== 'All' ? globalProjectFilter : '' 
-            });
-        }} 
+    setShowAddInvModal(true); 
+    setNewStockItem({ 
+        name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
+        project: globalProjectFilter !== 'All' ? globalProjectFilter : '',
+        id: '', 
+        isAutoId: true // ✅ ตั้งค่าเริ่มต้นเป็น Auto
+    });
+}}
         className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
     >
         <Plus className="w-4 h-4"/> เพิ่ม
@@ -9376,8 +9560,35 @@ const relatedAssets = sourceAssets.filter(a =>
                           <label className="text-xs text-gray-500 font-bold mb-1 block">ชื่อรายการ (Item Name)</label>
                           {item.targetType === 'Inventory' ? (
                               <div className="relative">
-                                  <input type="text" list="inventory-list" className="w-full p-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none" value={item.name} onChange={(e) => { const n = [...receiveItems]; n[idx].name = e.target.value; setReceiveItems(n); }} />
-                                  <Search className="w-4 h-4 text-gray-400 absolute right-3 top-2.5 pointer-events-none"/>
+                                  <input 
+    type="text" 
+    list="inventory-list" 
+    className="w-full p-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none" 
+    value={item.name} 
+    onChange={(e) => { 
+        const val = e.target.value;
+        const n = [...receiveItems];
+        n[idx].name = val; 
+
+        // ⭐⭐ [เพิ่มใหม่] Logic: เช็คชื่อสินค้าเพื่อดึงรหัสวัสดุอัตโนมัติ ⭐⭐
+        if (item.targetType === 'Inventory') {
+            // ค้นหาว่ามีชื่อนี้ในโครงการนี้หรือไม่
+            const existingInv = inventory.find(inv => inv.name === val && inv.project === selectedRequest.job);
+            
+            if (existingInv) {
+                // ✅ เจอของเดิม: ดึงรหัสมาใส่ + ปลดติ๊ก Auto
+                n[idx].inventoryId = existingInv.id;
+                n[idx].isInvAutoId = false; 
+            } else {
+                // ❌ ไม่เจอ (ของใหม่): เคลียร์รหัส + ติ๊ก Auto (หรือจะปล่อยว่างให้กรอกเองก็ได้)
+                // n[idx].inventoryId = ''; 
+                // n[idx].isInvAutoId = true;
+            }
+        }
+
+        setReceiveItems(n); 
+    }} 
+/>
                               </div>
                           ) : (
                               <div className="p-2 bg-gray-50 border border-gray-200 rounded-lg text-sm font-bold text-gray-600">
@@ -9425,18 +9636,53 @@ const relatedAssets = sourceAssets.filter(a =>
                       </div>
                   </div>
 
-                  {/* Row 2: Config & Target */}
                   <div className="flex flex-col md:flex-row gap-4 mb-4 items-end">
-                      {/* ซ่อนราคาด้านบน ถ้าเป็น Asset (ย้ายไปรายตัว) */}
-              {item.targetType === 'Inventory' ? (
-    <div className="w-full md:w-1/3">
-        <label className="text-xs text-gray-500 font-bold mb-1 block">ราคาจริงต่อหน่วย (Actual Price)</label>
-        <input type="number" className="w-full p-2 border border-gray-300 rounded-lg text-sm" value={item.actualPrice} onChange={(e) => { const n = [...receiveItems]; n[idx].actualPrice = parseFloat(e.target.value) || 0; setReceiveItems(n); }} />
-    </div>
-) : (
-    /* ⭐ Revert: ลบช่อง Duration ตรงนี้ออก ให้เป็นช่องว่างเหมือนเดิม */
-    <div className="w-full md:w-1/3"></div>
-)}
+                      
+                      {/* ⭐⭐ [เพิ่มใหม่] ส่วนกรอกรหัสวัสดุ (Inventory ID) ⭐⭐ */}
+                      {item.targetType === 'Inventory' && (
+                          <div className="w-full md:w-1/3">
+                              <div className="flex justify-between items-center mb-1">
+                                  <label className="text-xs text-gray-500 font-bold">รหัสวัสดุ (Material Code)</label>
+                                  <label className="flex items-center gap-1 cursor-pointer">
+                                      <input 
+                                          type="checkbox" 
+                                          className="w-3 h-3 accent-teal-600"
+                                          checked={item.isInvAutoId}
+                                          onChange={(e) => {
+                                              const n = [...receiveItems];
+                                              n[idx].isInvAutoId = e.target.checked;
+                                              // ถ้าติ๊ก Auto ให้เคลียร์ค่าที่กรอก (หรือจะเก็บไว้ก็ได้แล้วแต่ design)
+                                              if(e.target.checked) n[idx].inventoryId = '';
+                                              setReceiveItems(n);
+                                          }}
+                                      />
+                                      <span className="text-[10px] text-teal-600 font-bold">Auto Gen No.</span>
+                                  </label>
+                              </div>
+                              <input 
+                                  type="text" 
+                                  className={`w-full p-2 border border-gray-300 rounded-lg text-sm font-mono ${item.isInvAutoId ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-800 focus:ring-2 focus:ring-teal-500'}`}
+                                  placeholder={item.isInvAutoId ? "ระบบสร้างอัตโนมัติ (INV-xxx)" : "ระบุรหัสวัสดุ..."}
+                                  value={item.inventoryId}
+                                  disabled={item.isInvAutoId}
+                                  onChange={(e) => {
+                                      const n = [...receiveItems];
+                                      n[idx].inventoryId = e.target.value;
+                                      setReceiveItems(n);
+                                  }}
+                              />
+                          </div>
+                      )}
+
+                      {/* (ส่วนแสดงราคาเดิม - ปรับ layout นิดหน่อยถ้าจำเป็น) */}
+                      {item.targetType === 'Inventory' ? (
+                          <div className="w-full md:w-1/3">
+                              <label className="text-xs text-gray-500 font-bold mb-1 block">ราคาจริงต่อหน่วย (Actual Price)</label>
+                              <input type="number" className="w-full p-2 border border-gray-300 rounded-lg text-sm" value={item.actualPrice} onChange={(e) => { const n = [...receiveItems]; n[idx].actualPrice = parseFloat(e.target.value) || 0; setReceiveItems(n); }} />
+                          </div>
+                      ) : (
+                          <div className="w-full md:w-1/3"></div>
+                      )}
                       
                       <div className="w-full md:w-2/3">
                           <label className="text-xs text-gray-500 font-bold mb-1 block">จัดเก็บเข้า (Target Storage)</label>
@@ -9703,19 +9949,66 @@ const relatedAssets = sourceAssets.filter(a =>
                         </button>
                     </div>
 
-                    {/* Name */}
-                    <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1.5">ชื่อสินค้า</label>
-                        <input 
-                            type="text" 
-                            list="existing-inventory"  /* ⭐ เพิ่ม attribute นี้ */
-                            className="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none" 
-                            value={newStockItem.name} 
-                            onChange={e => setNewStockItem({...newStockItem, name: e.target.value})} 
-                            placeholder="ระบุชื่อสินค้า..." 
-                            autoFocus
-                        />
-                    </div>
+
+
+
+{/* ⭐⭐ [1] เพิ่ม: ช่องกรอกรหัสสินค้า (ID + Auto Gen) ⭐⭐ */}
+<div className="flex flex-col gap-1 mb-2">
+    <div className="flex justify-between items-center">
+        <label className="text-sm font-bold text-gray-700">รหัสวัสดุ (Material Code)</label>
+        <label className="flex items-center gap-1.5 cursor-pointer bg-green-50 px-2 py-0.5 rounded border border-green-100">
+            <input 
+                type="checkbox" 
+                className="accent-green-600 w-3.5 h-3.5" 
+                checked={newStockItem.isAutoId} 
+                onChange={(e) => {
+                    // ถ้าติ๊ก Auto ให้เคลียร์ค่า, ถ้าปลด ให้คงค่าเดิมไว้แก้ไข
+                    setNewStockItem({...newStockItem, isAutoId: e.target.checked, id: e.target.checked ? '' : newStockItem.id});
+                }}
+            />
+            <span className="text-xs font-bold text-green-700">Auto Gen</span>
+        </label>
+    </div>
+    <input 
+        type="text" 
+        className={`w-full p-2.5 border rounded-xl text-sm font-mono ${newStockItem.isAutoId ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-800 focus:ring-2 focus:ring-green-500'}`}
+        placeholder={newStockItem.isAutoId ? "ระบบจะสร้างรหัสให้อัตโนมัติ (INV-xxx)" : "ระบุรหัสสินค้า..."} 
+        value={newStockItem.id} 
+        disabled={newStockItem.isAutoId}
+        onChange={e => setNewStockItem({...newStockItem, id: e.target.value})} 
+    />
+</div>
+
+{/* ⭐⭐ [2] แก้ไข: ช่องชื่อสินค้า (Name) ให้ดึงรหัสเดิมอัตโนมัติ ⭐⭐ */}
+<div>
+    <label className="block text-sm font-bold text-gray-700 mb-1.5">ชื่อสินค้า</label>
+    <input 
+        type="text" 
+        list="existing-inventory"
+        className="w-full p-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none" 
+        value={newStockItem.name} 
+        onChange={e => {
+            const val = e.target.value;
+            let updates = { name: val };
+            
+            // ✅ Logic: เช็คชื่อซ้ำในโครงการ -> ดึงรหัสเดิม
+            if (newStockItem.project) {
+                const existing = inventory.find(i => i.name === val && i.project === newStockItem.project);
+                if (existing) {
+                    updates.id = existing.id; // ดึงรหัสเดิม
+                    updates.isAutoId = false; // ปลด Auto Gen เพื่อให้เห็นรหัสและแก้ไขได้
+                    updates.unit = existing.unit; // (แถม) ดึงหน่วยนับเดิม
+                    updates.price = existing.price; // (แถม) ดึงราคาเดิม
+                }
+            }
+            
+            setNewStockItem(prev => ({...prev, ...updates}));
+        }} 
+        placeholder="ระบุชื่อสินค้า..." 
+        autoFocus
+    />
+</div>
+
 
                     {/* Qty & Unit */}
                     <div className="grid grid-cols-2 gap-4">
@@ -10150,9 +10443,10 @@ const relatedAssets = sourceAssets.filter(a =>
                                                 setEditingAssetItem({...viewingItem, originalId: viewingItem.id, newImages: []});
                                                 setShowEditAssetModal(true); 
                                             } else {
-                                                setEditingStockItem({...viewingItem, newImages: []});
-                                                setShowEditInvModal(true);
-                                            }
+    // ⭐ เพิ่ม originalId: viewingItem.id เข้าไป
+    setEditingStockItem({...viewingItem, originalId: viewingItem.id, newImages: []});
+    setShowEditInvModal(true);
+}
                                         }} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200">แก้ไข</button>
                                     )}
                                 </div>
@@ -10670,7 +10964,18 @@ const relatedAssets = sourceAssets.filter(a =>
                         <button onClick={() => setEditingStockItem({...editingStockItem, stockType: 'NonSystem'})} className={`flex-1 py-1.5 text-sm font-bold rounded-md transition-all ${editingStockItem.stockType === 'NonSystem' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500'}`}>ของนอกระบบ</button>
                       </div>
 
-                      <div><label className="text-xs font-bold text-gray-500 mb-1 block">รหัสสินค้า (แก้ไขไม่ได้)</label><input type="text" className="w-full p-2 border rounded bg-gray-100 text-gray-500 font-mono" value={editingStockItem.id} disabled/></div>
+                      <div>
+    <label className="text-xs font-bold text-gray-500 mb-1 block">รหัสสินค้า (แก้ไขได้)</label>
+    <input 
+        type="text" 
+        className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 font-mono text-blue-600 font-bold" 
+        value={editingStockItem.id} 
+        // เพิ่ม onChange เพื่ออัปเดตค่า
+        onChange={e => setEditingStockItem({...editingStockItem, id: e.target.value})}
+    />
+</div>
+
+
                       <div><label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อสินค้า</label><input type="text" className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" value={editingStockItem.name} onChange={e => setEditingStockItem({...editingStockItem, name: e.target.value})}/></div>
                       
                       <div className="grid grid-cols-2 gap-3">
@@ -12115,202 +12420,177 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                       </button>
                   </div>
 
-                  {/* Body */}
-                  <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
-                      
-                      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
-                          <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV (ไม่ต้องใส่ ID)</h4>
-                          <p className="mb-2">เรียงคอลัมน์ดังนี้ (8 ช่อง):</p>
-<div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
-    Name, Type, Qty, Unit, Min_Stock, Price, Note, Project
+                {/* Body */}
+<div className="flex-1 overflow-y-auto p-6 bg-slate-50">
+    
+    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
+        <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV (ภาษาไทยรองรับ)</h4>
+        <p className="mb-2">เรียงคอลัมน์ดังนี้ (9 ช่อง):</p>
+        <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
+            รหัสวัสดุ, ชื่อสินค้า, ประเภท, จำนวน, หน่วย, ขั้นต่ำ, ราคา, หมายเหตุ, โครงการ
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-xs text-blue-700 list-disc pl-4">
+            <li><b>รหัสวัสดุ:</b> ว่างไว้ = ระบบสร้างให้อัตโนมัติ (INV-xxx)</li>
+            <li><b>ชื่อสินค้า:</b> ห้ามว่าง (ถ้ามีในระบบแล้ว = เพิ่มยอด)</li>
+            <li><b>ประเภท:</b> ในระบบ, นอกระบบ (หรือ System, NonSystem)</li>
+            <li><b>จำนวน:</b> ตัวเลขจำนวนที่รับเข้า</li>
+            <li><b>หน่วย:</b> หน่วยนับ (ค่าเริ่มต้น: ชิ้น)</li>
+            <li><b>ขั้นต่ำ:</b> จุดสั่งซื้อ (Min Stock)</li>
+            <li><b>ราคา:</b> ราคาต่อหน่วย</li>
+            <li><b>หมายเหตุ:</b> รายละเอียดเพิ่มเติม</li>
+            <li><b>โครงการ:</b> ชื่อโครงการ (ต้องตรงกับในระบบ)</li>
+        </div>
+    </div>
+
+    <div className="mb-6">
+        <div className="flex items-center gap-3">
+            <label className="cursor-pointer bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2 font-bold">
+                <Upload className="w-4 h-4"/> เลือกไฟล์ CSV...
+                <input type="file" accept=".csv" className="hidden" onChange={handleInvFileImport} />
+            </label>
+            <span className="text-sm text-gray-600 font-medium">{importInvFileName || 'ยังไม่ได้เลือกไฟล์'}</span>
+        </div>
+    </div>
+
+    {/* Table Preview */}
+    {importInvData.length > 0 && (
+        <div className={`transition-all duration-200 ${isImportInvTableExpanded ? "fixed inset-0 z-[200] bg-white flex flex-col" : "bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm relative"}`}>
+            {/* Header Table */}
+            <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 text-xs font-bold text-gray-600 flex justify-between items-center shrink-0">
+                <div className="flex items-center gap-2">
+                    <span>ตัวอย่างข้อมูล ({importInvData.length} รายการ) - แก้ไขได้</span>
+                    <button onClick={() => setIsImportInvTableExpanded(!isImportInvTableExpanded)} className="flex items-center gap-1 bg-white border border-gray-300 px-2 py-0.5 rounded hover:bg-blue-50 text-blue-600 transition-colors shadow-sm">
+                        {isImportInvTableExpanded ? <span>ย่อลง</span> : <span>ขยาย</span>}
+                    </button>
+                </div>
+                <span className="text-orange-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> รหัสวัสดุ: ว่าง = Auto Gen</span>
+            </div>
+
+            {/* Table Content */}
+            <div className={`overflow-x-auto ${isImportInvTableExpanded ? 'flex-1 p-4 bg-slate-50' : 'max-h-[450px]'}`}>
+                <table className={`w-full text-xs text-left whitespace-nowrap ${isImportInvTableExpanded ? 'shadow-md rounded-lg overflow-hidden' : ''}`}>
+                    <thead className="bg-gray-50 text-gray-700 sticky top-0 shadow-sm z-10 font-bold uppercase">
+                        <tr>
+                            <th className="px-3 py-2 w-8 text-center bg-gray-50">#</th>
+                            <th className="px-3 py-2 min-w-[100px] bg-gray-50">รหัสวัสดุ</th>
+                            <th className="px-3 py-2 min-w-[150px] bg-gray-50">ชื่อสินค้า</th>
+                            <th className="px-3 py-2 min-w-[120px] bg-gray-50">โครงการ</th>
+                            <th className="px-3 py-2 w-28 bg-gray-50">ประเภท</th>
+                            <th className="px-3 py-2 w-20 text-center bg-gray-50">จำนวน</th>
+                            <th className="px-3 py-2 w-20 bg-gray-50">หน่วย</th>
+                            <th className="px-3 py-2 w-20 text-center bg-gray-50">ขั้นต่ำ</th>
+                            <th className="px-3 py-2 w-24 text-right bg-gray-50">ราคา</th>
+                            <th className="px-3 py-2 min-w-[150px] bg-gray-50">หมายเหตุ</th>
+                            <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                        {importInvData.map((row, idx) => {
+                            // เช็คว่ามีของเดิมหรือไม่
+                            const existing = inventory.find(i => i.name === row.name && i.project === row.project);
+                            const isDuplicate = !!existing;
+                            
+                            // เช็คว่ารหัสตรงกันหรือไม่ (ถ้ามีของเดิม และใน CSV ใส่รหัสมา)
+                            const isIdMismatch = isDuplicate && row.id && row.id !== existing.id;
+
+                            return (
+                                <tr key={idx} className={`hover:bg-blue-50 transition-colors group ${isDuplicate ? 'bg-yellow-50' : ''}`}>
+                                    <td className="px-2 py-2 text-gray-400 text-center">{idx + 1}</td>
+                                    
+                                    {/* ID (รหัสวัสดุ) */}
+                                    <td className="px-2 py-1 relative">
+                                        <input 
+                                            type="text" 
+                                            className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-mono font-bold ${isIdMismatch ? 'text-red-600' : 'text-blue-600'}`} 
+                                            value={row.id} 
+                                            placeholder={existing ? existing.id : "Auto"}
+                                            onChange={e => { const n = [...importInvData]; n[idx].id = e.target.value; setImportInvData(n); }}
+                                        />
+                                        {isIdMismatch && <span className="text-[9px] text-red-500 block absolute bottom-0">ต้องเป็น {existing.id}</span>}
+                                        {/* ปุ่มดึงรหัสเดิม (ถ้าไม่ตรง หรือ ว่างอยู่) */}
+                                        {isDuplicate && row.id !== existing.id && (
+                                            <button 
+                                                onClick={() => { const n = [...importInvData]; n[idx].id = existing.id; setImportInvData(n); }}
+                                                className="absolute right-0 top-1 text-[9px] bg-green-100 text-green-700 px-1 rounded border border-green-200 hover:bg-green-200"
+                                                title="คลิกเพื่อใช้รหัสเดิมในระบบ"
+                                            >
+                                                ใช้รหัสเดิม
+                                            </button>
+                                        )}
+                                    </td>
+
+                                    {/* Name */}
+                                    <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-bold text-gray-800" value={row.name} onChange={e => { const n = [...importInvData]; n[idx].name = e.target.value; setImportInvData(n); }}/></td>
+
+                                    {/* Project */}
+                                    <td className="px-2 py-1">
+                                        <select className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!projects.some(p => p.name === row.project) ? 'text-red-600 font-bold' : 'text-blue-600'}`} value={row.project} onChange={e => { const n = [...importInvData]; n[idx].project = e.target.value; setImportInvData(n); }}>
+                                            <option value="">เลือก...</option>
+                                            {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                                        </select>
+                                    </td>
+
+                                    {/* Type */}
+                                    <td className="px-2 py-1">
+                                        <select className={`w-full bg-transparent outline-none font-bold ${row.stockType === 'NonSystem' ? 'text-orange-600' : 'text-blue-600'}`} value={row.stockType} onChange={e => { const n = [...importInvData]; n[idx].stockType = e.target.value; setImportInvData(n); }}>
+                                            <option value="System">ในระบบ</option>
+                                            <option value="NonSystem">นอกระบบ</option>
+                                        </select>
+                                    </td>
+
+                                    {/* Qty */}
+                                    <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-center font-bold text-blue-600" value={row.qty} onChange={e => { const n = [...importInvData]; n[idx].qty = parseInt(e.target.value)||0; setImportInvData(n); }}/></td>
+                                    
+                                    {/* Unit */}
+                                    <td className="px-2 py-1">
+                                        <input type="text" list="unit-list" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none" value={row.unit} onChange={e => { const n = [...importInvData]; n[idx].unit = e.target.value; setImportInvData(n); }}/>
+                                        <datalist id="unit-list">{ITEM_UNITS.map(u => <option key={u} value={u}/>)}</datalist>
+                                    </td>
+
+                                    {/* Min */}
+                                    <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-center" value={row.minStock} onChange={e => { const n = [...importInvData]; n[idx].minStock = parseInt(e.target.value)||0; setImportInvData(n); }}/></td>
+                                    
+                                    {/* Price */}
+                                    <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const n = [...importInvData]; n[idx].price = parseFloat(e.target.value)||0; setImportInvData(n); }}/></td>
+                                    
+                                    {/* Note */}
+                                    <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const n = [...importInvData]; n[idx].note = e.target.value; setImportInvData(n); }}/></td>
+
+                                    {/* Delete */}
+                                    <td className="px-2 py-1 text-center">
+                                        <button onClick={() => { const n = importInvData.filter((_, i) => i !== idx); setImportInvData(n); }} className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                                        </button>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+
+            <button
+                onClick={() => {
+                    const newRow = {
+                        id: '', // Auto
+                        project: '', 
+                        name: '',
+                        stockType: 'System', 
+                        qty: 0,
+                        unit: 'ชิ้น',
+                        minStock: 0,
+                        price: 0,
+                        note: ''
+                    };
+                    setImportInvData(prev => [...prev, newRow]);
+                }}
+                className="w-full py-3 bg-gray-50 hover:bg-blue-50 text-blue-600 font-bold text-xs border-t border-gray-200 flex items-center justify-center gap-2 transition-colors"
+            >
+                <Plus className="w-4 h-4"/> เพิ่มแถวใหม่
+            </button>
+        </div>
+    )}
 </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs text-blue-700 list-disc pl-4">
-                              <li><b>Name:</b> ชื่อสินค้า (ถ้าซ้ำ = รวมยอด)</li>
-                              <li><b>Type:</b> System / NonSystem</li>
-                              <li><b>Qty:</b> จำนวนที่รับเข้า</li>
-                              <li><b>Unit:</b> หน่วย (Default: ชิ้น)</li>
-                              <li><b>Min_Stock:</b> (Default: 0)</li>
-                              <li><b>Price:</b> ราคาต่อหน่วย</li>
-                              <li><b>Note:</b> หมายเหตุ</li>
-                              <li><b>Project:</b> ชื่อโครงการ (ต้องตรงกับในระบบ)</li>
-                          </div>
-                      </div>
-
-                      <div className="mb-6">
-                          <div className="flex items-center gap-3">
-                              <label className="cursor-pointer bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2 font-bold">
-                                  <Upload className="w-4 h-4"/> เลือกไฟล์ CSV...
-                                  <input type="file" accept=".csv" className="hidden" onChange={handleInvFileImport} />
-                              </label>
-                              <span className="text-sm text-gray-600 font-medium">{importInvFileName || 'ยังไม่ได้เลือกไฟล์'}</span>
-                          </div>
-                      </div>
-
-{/* ⭐ Preview Table (Editable + Expandable + Add Row) */}
-                      {importInvData.length > 0 && (
-                          <div 
-                              className={`transition-all duration-200 ${
-                                  isImportInvTableExpanded 
-                                      ? "fixed inset-0 z-[200] bg-white flex flex-col" // โหมดเต็มจอ
-                                      : "bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm relative" // โหมดปกติ
-                              }`}
-                          >
-                              {/* Header */}
-                              <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 text-xs font-bold text-gray-600 flex justify-between items-center shrink-0">
-                                  <div className="flex items-center gap-2">
-                                      <span>ตัวอย่างข้อมูล ({importInvData.length} รายการ) - แก้ไขได้</span>
-                                      {/* ปุ่มขยาย/ย่อ */}
-                                      <button 
-                                          onClick={() => setIsImportInvTableExpanded(!isImportInvTableExpanded)}
-                                          className="flex items-center gap-1 bg-white border border-gray-300 px-2 py-0.5 rounded hover:bg-blue-50 text-blue-600 transition-colors shadow-sm"
-                                          title={isImportInvTableExpanded ? "ย่อกลับ (Minimize)" : "ขยายเต็มจอ (Maximize)"}
-                                      >
-                                          {isImportInvTableExpanded ? (
-                                              <>
-                                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                                                  <span>ย่อลง</span>
-                                              </>
-                                          ) : (
-                                              <>
-                                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                                                  <span>ขยาย</span>
-                                              </>
-                                          )}
-                                      </button>
-                                  </div>
-                                  <span className="text-orange-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> ระบบจะ Auto Gen ID ให้</span>
-                              </div>
-
-                              {/* Table Content */}
-                              <div className={`overflow-x-auto ${isImportInvTableExpanded ? 'flex-1 p-4 bg-slate-50' : 'max-h-[450px]'}`}>
-                                  <table className={`w-full text-xs text-left whitespace-nowrap ${isImportInvTableExpanded ? 'shadow-md rounded-lg overflow-hidden' : ''}`}>
-                                      <thead className="bg-gray-50 text-gray-700 sticky top-0 shadow-sm z-10 font-bold uppercase">
-                                          <tr>
-                                              <th className="px-3 py-2 w-8 text-center bg-gray-50">#</th>
-                                              <th className="px-3 py-2 min-w-[150px] bg-gray-50">Name</th>
-                                              <th className="px-3 py-2 min-w-[120px] bg-gray-50">Project</th>
-                                              <th className="px-3 py-2 w-28 bg-gray-50">Type</th>
-                                              <th className="px-3 py-2 w-20 text-center bg-gray-50">Qty</th>
-                                              <th className="px-3 py-2 w-20 bg-gray-50">Unit</th>
-                                              <th className="px-3 py-2 w-20 text-center bg-gray-50">Min</th>
-                                              <th className="px-3 py-2 w-24 text-right bg-gray-50">Price</th>
-                                              <th className="px-3 py-2 min-w-[150px] bg-gray-50">Note</th>
-                                              <th className="px-3 py-2 text-center w-24 bg-gray-50">Action</th>
-                                              <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-gray-100 bg-white">
-                                          {importInvData.map((row, idx) => {
-                                              const isDuplicate = inventory.some(i => i.name === row.name && i.project === row.project && i.stockType === row.stockType);
-                                              return (
-                                                  <tr key={idx} className={`hover:bg-blue-50 transition-colors group ${isDuplicate ? 'bg-yellow-50' : ''}`}>
-                                                      <td className="px-2 py-2 text-gray-400 text-center">{idx + 1}</td>
-                                                      
-                                                      {/* Name */}
-                                                      <td className="px-2 py-1">
-                                                          <input 
-                                                              type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-bold text-gray-800" 
-                                                              value={row.name} 
-                                                              onChange={e => { const n = [...importInvData]; n[idx].name = e.target.value; setImportInvData(n); }}
-                                                          />
-                                                      </td>
-
-                                                      {/* Project */}
-                                                      <td className="px-2 py-1">
-                                                          <select 
-                                                              className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!projects.some(p => p.name === row.project) ? 'text-red-600 font-bold' : 'text-blue-600'}`}
-                                                              value={row.project}
-                                                              onChange={e => { const n = [...importInvData]; n[idx].project = e.target.value; setImportInvData(n); }}
-                                                          >
-                                                              <option value="">เลือก...</option>
-                                                              {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-                                                          </select>
-                                                      </td>
-
-                                                      {/* Type */}
-                                                      <td className="px-2 py-1">
-                                                          <select 
-                                                              className={`w-full bg-transparent outline-none font-bold ${row.stockType === 'NonSystem' ? 'text-orange-600' : 'text-blue-600'}`}
-                                                              value={row.stockType}
-                                                              onChange={e => { const n = [...importInvData]; n[idx].stockType = e.target.value; setImportInvData(n); }}
-                                                          >
-                                                              <option value="System">System</option>
-                                                              <option value="NonSystem">NonSystem</option>
-                                                          </select>
-                                                      </td>
-
-                                                      {/* Qty */}
-                                                      <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-center font-bold text-blue-600" value={row.qty} onChange={e => { const n = [...importInvData]; n[idx].qty = parseInt(e.target.value)||0; setImportInvData(n); }}/></td>
-                                                      
-                                                      {/* Unit */}
-                                                      <td className="px-2 py-1">
-                                                          <input type="text" list="unit-list" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none" value={row.unit} onChange={e => { const n = [...importInvData]; n[idx].unit = e.target.value; setImportInvData(n); }}/>
-                                                          <datalist id="unit-list">{ITEM_UNITS.map(u => <option key={u} value={u}/>)}</datalist>
-                                                      </td>
-
-                                                      {/* Min Stock */}
-                                                      <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-center" value={row.minStock} onChange={e => { const n = [...importInvData]; n[idx].minStock = parseInt(e.target.value)||0; setImportInvData(n); }}/></td>
-                                                      
-                                                      {/* Price */}
-                                                      <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const n = [...importInvData]; n[idx].price = parseFloat(e.target.value)||0; setImportInvData(n); }}/></td>
-                                                      
-                                                      {/* Note */}
-                                                      <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const n = [...importInvData]; n[idx].note = e.target.value; setImportInvData(n); }}/></td>
-
-                                                      {/* Status */}
-                                                      <td className="px-2 py-1 text-center">
-                                                          {isDuplicate ? (
-                                                              <span className="text-[10px] bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded border border-yellow-200 font-bold">รวมยอด</span>
-                                                          ) : (
-                                                              <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded border border-green-200 font-bold">สร้างใหม่</span>
-                                                          )}
-                                                      </td>
-
-                                                      {/* Delete Button (SVG) */}
-                                                      <td className="px-2 py-1 text-center">
-                                                          <button 
-                                                              onClick={() => { const n = importInvData.filter((_, i) => i !== idx); setImportInvData(n); }} 
-                                                              className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                                                              title="ลบรายการนี้"
-                                                          >
-                                                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                                  <path d="M3 6h18"/>
-                                                                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-                                                                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-                                                                  <line x1="10" x2="10" y1="11" y2="17"/>
-                                                                  <line x1="14" x2="14" y1="11" y2="17"/>
-                                                              </svg>
-                                                          </button>
-                                                      </td>
-                                                  </tr>
-                                              );
-                                          })}
-                                      </tbody>
-                                  </table>
-                              </div>
-
-                              {/* ⭐ เพิ่มปุ่ม "เพิ่มแถวใหม่" (Add Row) */}
-                              <button
-                                  onClick={() => {
-                                      const newRow = {
-                                          name: '',
-                                          project: '', 
-                                          stockType: 'System', // Default
-                                          qty: 0,
-                                          unit: 'ชิ้น', // Default
-                                          minStock: 0,
-                                          price: 0,
-                                          note: ''
-                                      };
-                                      setImportInvData(prev => [...prev, newRow]);
-                                  }}
-                                  className="w-full py-3 bg-gray-50 hover:bg-blue-50 text-blue-600 font-bold text-xs border-t border-gray-200 flex items-center justify-center gap-2 transition-colors"
-                              >
-                                  <Plus className="w-4 h-4"/> เพิ่มแถวใหม่ (Add Row)
-                              </button>
-                          </div>
-                      )}
-                  </div>
 
                   {/* Footer */}
                   <div className="p-5 border-t border-gray-100 bg-white flex gap-3 justify-end">
