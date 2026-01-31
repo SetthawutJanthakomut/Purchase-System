@@ -1290,12 +1290,13 @@ const handleRegisterRequestOTP = () => {
               ((req.type === 'Withdraw' || req.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
           );
 
-          // แก้ไข: ลบเงื่อนไข 'PR Issued' ออก ให้เหลือแค่ 'Approved' อย่างเดียว
-          // เพื่อให้ระบบมองข้าม Log การออก PR/PO และไปดึงคนกด "อนุมัติ" ตัวจริงเสมอ
-          const l2Log = historyDesc.find(h => 
-              isActionMatch(h.action, 'Approved') &&
-              h !== l1Log
-          );
+// ⭐ เพิ่มเงื่อนไขกรอง Log ของฝ่ายจัดซื้อออก (ทั้งเปลี่ยนเป็น HO และตรวจสอบผ่าน)
+const l2Log = historyDesc.find(h => 
+    isActionMatch(h.action, 'Approved') && 
+    h !== l1Log &&
+    (!h.note || !h.note.includes('เปลี่ยนเป็น HO')) && // กรอง Log ตอนเปลี่ยนเป็น HO
+    (!h.note || !h.note.includes('ตรวจสอบผ่าน'))      // ⭐ กรอง Log ตอนตรวจสอบผ่าน (Verification Pass)
+);
 
           // ฟังก์ชันดึง User Object
           const getUser = (log) => {
@@ -2257,14 +2258,19 @@ const generateNextReqId = () => {
             if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
             
             if (!isDraft) {
-                if (newOrderMeta.type === 'HO') {
-                    nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
-                } else if (newOrderMeta.type === 'Local') {
-                    nextStatus = 'Pending Head';
-                } else {
-                    nextStatus = 'Pending Head';
-                }
-            }
+    // กรณี 1: เป็น HO และ "เคยผ่านการอนุมัติมาแล้ว" (คือเคส Local -> HO ที่ถูกส่งคืนแก้ไข)
+    if (newOrderMeta.type === 'HO' && existingReq?.isPreviouslyApproved) {
+        nextStatus = 'Pending Check'; // ✅ ส่งกลับไปให้ฝ่ายจัดซื้อตรวจสอบไฟล์ (ข้าม L1/L2)
+    } 
+    // กรณี 2: HO ปกติ (สร้างใหม่ หรือ Full Flow ปกติ)
+    else if (newOrderMeta.type === 'HO') {
+        nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
+    } 
+    // กรณี 3: Local หรืออื่นๆ
+    else {
+        nextStatus = 'Pending Head';
+    }
+}
             
            // ... (ส่วนบนของฟังก์ชันเหมือนเดิม)
 
@@ -4568,7 +4574,8 @@ needApproval: req.isPreviouslyApproved ? false : !hasEmail,
 
 // [ค้นหาฟังก์ชัน handleConfirmVerification เดิม แล้วแทนที่ด้วยโค้ดนี้]
 
-// --- UPDATED CONFIRM VERIFICATION ---
+// [index.html] ฟังก์ชัน handleConfirmVerification (ประมาณบรรทัด 1340)
+
 const handleConfirmVerification = () => {
     const { requestId, needApproval, needContract, note, checks, filesExist, isChangeMode } = verificationData;
     const req = requests.find(r => r.id === requestId);
@@ -4579,63 +4586,78 @@ const handleConfirmVerification = () => {
     let toastMessage = '';
     let toastType = 'success';
 
-    // 1. กรณีไม่ผ่าน -> ส่งคืนแก้ไข (Revise Needed)
+// 🔴 1. กรณีตรวจสอบ "ไม่ผ่าน" -> ส่งคืนแก้ไข (Revise Needed)
     if (!isVerificationPass()) {
-         // ... (Code ส่วนส่งคืนแก้ไข เหมือนเดิม) ...
          let failureReasons = [];
          if (!checks.quotation) failureReasons.push(filesExist.quotation ? "ใบเสนอราคาไม่ถูกต้อง" : "ขาดใบเสนอราคา");
          if (!checks.email) failureReasons.push(filesExist.email ? "เมลอนุมัติไม่ถูกต้อง" : "ขาดเมลอนุมัติ");
          if (!checks.details) failureReasons.push("รายละเอียดสินค้า/ราคาไม่ถูกต้อง");
          const combinedNote = `สิ่งที่ต้องแก้ไข: ${failureReasons.join(', ')} ${note ? `(เพิ่มเติม: ${note})` : ''}`;
          
-         updatedReq = { 
-             ...req, 
-             type: isChangeMode ? 'HO' : req.type,
-             status: 'Revise Needed', 
-             isPreviouslyApproved: isChangeMode ? true : (req.isPreviouslyApproved || false),
-             history: [...req.history, createLog(isChangeMode ? 'Change to HO (Revise)' : 'Return for Revision', actionBy, combinedNote)] 
-         };
-         toastMessage = 'ส่งคืนเอกสารให้ผู้ขอแก้ไขเรียบร้อย';
-         toastType = 'error';
-    } 
-    // 2. กรณีผ่าน (Pass)
-    else {
-         // ⭐⭐ เพิ่ม Validation ตรงนี้: ป้องกันการผ่านถ้ายืนยันว่า "ถูกต้อง" แต่ไม่มีไฟล์ และไม่เลือก Full Flow ⭐⭐
-         if (!filesExist.email && !needApproval) {
-             showToast("ไม่พบไฟล์เมลอนุมัติ: กรุณาติ๊กเลือก 'ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)'", 'error');
-             return; // หยุดการทำงาน ไม่ให้บันทึก
-         }
-
- if (isChangeMode) {
-             // กรณีเปลี่ยนเป็น HO -> ส่ง docNumber: null ไปเพื่อให้ Backend สร้างเลข HPO ใหม่
+         if (isChangeMode) {
+             // ⭐⭐ กรณีเปลี่ยนเป็น HO: ใช้ handleUpdateStatus เพื่อให้ Backend สร้างเลข HPO ทันที
+             // ฟังก์ชันนี้จะส่งข้อมูลไป Backend -> Backend สร้างเลข -> ส่งกลับมาอัปเดตหน้าจออัตโนมัติ
              handleUpdateStatus(
                  req.id, 
-                 'Approved', 
-                 `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว: ${note}`, 
+                 'Revise Needed', 
+                 combinedNote, 
                  [], 
                  { 
                      type: 'HO', 
-                     purchaseType: 'Buy', 
-                     needContract: needContract, 
-                     docNumber: null // ⭐ เคลียร์เลขเก่า เพื่อให้ Backend สร้างเลขใหม่
+                     // สั่งเคลียร์เลขเดิม (เพื่อให้ Backend รู้ว่าต้องสร้างเลขใหม่)
+                     docNumber: null, 
+                     isPreviouslyApproved: true 
                  }
              );
+         } else {
+             // กรณีปกติ (ไม่ได้เปลี่ยนประเภท): ใช้ Logic เดิมบันทึกทับได้เลย
+             updatedReq = { 
+                 ...req, 
+                 status: 'Revise Needed', 
+                 history: [...req.history, createLog('Return for Revision', actionBy, combinedNote)] 
+             };
+             saveRequestToSheet(updatedReq);
+             setRequests(prev => prev.map(r => r.id === updatedReq.id ? updatedReq : r));
+             showToast('ส่งคืนเอกสารให้ผู้ขอแก้ไขเรียบร้อย', 'error');
+         }
+    }
+    // 🟢 2. กรณีตรวจสอบ "ผ่าน" (Pass)
+    else {
+         if (!filesExist.email && !needApproval) {
+             showToast("ไม่พบไฟล์เมลอนุมัติ: กรุณาติ๊กเลือก 'ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)'", 'error');
+             return; 
+         }
+
+        if (isChangeMode) {
+    handleUpdateStatus(
+        req.id, 
+        'Approved', 
+        `เปลี่ยนเป็น HO และตรวจสอบผ่านแล้ว: ${note}`, 
+        [], 
+        { 
+            type: 'HO', 
+            purchaseType: 'Buy', 
+            needContract: needContract, 
+            docNumber: null, // ⭐ ต้องแน่ใจว่าบรรทัดนี้อยู่ตรงนี้
+            isPreviouslyApproved: true, 
+            isFullApprovalFlow: true 
+        }
+    );
+
+
          }
          else if (needApproval) {
-             // กรณีส่งต่ออนุมัติ
+             
              handleUpdateStatus(
                  req.id, 
                  'Pending Head', 
                  `ส่งต่ออนุมัติ: ${note}`, 
                  [], 
-                 { 
-                     isFullApprovalFlow: true, 
-                     needContract: needContract 
-                 }
+                 { isFullApprovalFlow: true, needContract: needContract }
              );
          } 
          else {
-             // กรณีผ่านเลย (Approved) -> Backend จะสร้างเลข Doc No ให้เองเพราะสถานะเป็น Approved
+             // กรณีปกติ: ผ่านเลย
              handleUpdateStatus(
                  req.id, 
                  'Approved', 
@@ -4646,6 +4668,9 @@ const handleConfirmVerification = () => {
          }
     }
 
+    if (updatedReq) {
+        showToast(toastMessage, toastType);
+    }
     setShowVerificationModal(false);
 };
 
@@ -6881,12 +6906,14 @@ filteredRequests.map(req => {
             return null;
         })()}
 
+
+
 {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && 
  (req.type === 'Local' || 
   req.type === 'Withdraw' || 
   req.type === 'Borrow' || 
-  // ⭐ แก้ไข: HO ต้องเป็น Full Flow (มีการขออนุมัติ) เท่านั้นถึงจะแสดงปุ่มพิมพ์
-  (req.type === 'HO' && req.isFullApprovalFlow)
+  // ⭐ แก้ไขเงื่อนไข HO: ยอมรับทั้ง Full Flow หรือรายการที่เคยอนุมัติแล้ว (เคสเปลี่ยนจาก Local)
+  (req.type === 'HO' && (req.isFullApprovalFlow || req.isPreviouslyApproved))
  ) && (
   <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
       <Printer className="w-4 h-4"/> พิมพ์
@@ -8642,12 +8669,14 @@ filteredRequests.map(req => {
                             </>
                         )}
 
+
+
 {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(selectedRequest.status) && 
  (selectedRequest.type === 'Local' ||
   selectedRequest.type === 'Withdraw' || 
   selectedRequest.type === 'Borrow' || 
-  // ⭐ แก้ไข: HO ต้องเป็น Full Flow เท่านั้นถึงจะพิมพ์ได้
-  (selectedRequest.type === 'HO' && selectedRequest.isFullApprovalFlow)
+  // ⭐ แก้ไขเงื่อนไข HO: ยอมรับทั้ง Full Flow หรือรายการที่เคยอนุมัติแล้ว (เคสเปลี่ยนจาก Local)
+  (selectedRequest.type === 'HO' && (selectedRequest.isFullApprovalFlow || selectedRequest.isPreviouslyApproved))
  ) && (
     <button 
         onClick={() => handleOpenPrintPreview(selectedRequest)}
@@ -9625,27 +9654,26 @@ const relatedAssets = sourceAssets.filter(a =>
                  {/* Additional Options */}
                  <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
                      
-                     {/* Full Flow Option: ซ่อนถ้าเป็น Change Mode */}
-                     {!verificationData.isChangeMode && (
-                         <label className={`flex items-start gap-3 cursor-pointer group ${!isVerificationPass() ? 'opacity-50 pointer-events-none' : ''}`}>
-                             <div className="pt-0.5 relative">
-                                 <input 
-                                     type="checkbox" 
-                                     className="peer w-5 h-5 appearance-none border-2 border-gray-300 rounded checked:bg-blue-600 checked:border-blue-600 transition-colors"
-                                     checked={verificationData.needApproval}
-                                     onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})}
-                                 />
-                                 <CheckCircle className="w-3.5 h-3.5 text-white absolute top-[3px] left-[3px] opacity-0 peer-checked:opacity-100 pointer-events-none"/>
-                             </div>
-                             <div>
-                                 <p className="text-sm font-bold text-gray-800 group-hover:text-blue-700 transition-colors">
-                                     ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)
-                                 </p>
-                                 <p className="text-xs text-gray-500">สำหรับเคสต้องการหลักฐานเพิ่มเติม</p>
-                             </div>
-                         </label>
-                     )}
-
+                     
+{!verificationData.isChangeMode && !requests.find(r => r.id === verificationData.requestId)?.isPreviouslyApproved && (
+    <label className={`flex items-start gap-3 cursor-pointer group ${!isVerificationPass() ? 'opacity-50 pointer-events-none' : ''}`}>
+        <div className="pt-0.5 relative">
+            <input 
+                type="checkbox" 
+                className="peer w-5 h-5 appearance-none border-2 border-gray-300 rounded checked:bg-blue-600 checked:border-blue-600 transition-colors"
+                checked={verificationData.needApproval}
+                onChange={(e) => setVerificationData({...verificationData, needApproval: e.target.checked})}
+            />
+            <CheckCircle className="w-3.5 h-3.5 text-white absolute top-[3px] left-[3px] opacity-0 peer-checked:opacity-100 pointer-events-none"/>
+        </div>
+        <div>
+            <p className="text-sm font-bold text-gray-800 group-hover:text-blue-700 transition-colors">
+                ต้องขออนุมัติจาก Level 1/Level 2 เพิ่มเติม (Full Flow)
+            </p>
+            <p className="text-xs text-gray-500">สำหรับเคสต้องการหลักฐานเพิ่มเติม</p>
+        </div>
+    </label>
+)}
                      {/* Contract Option (Only for Rent) */}
                      {requests.find(r => r.id === verificationData.requestId)?.purchaseType === 'Rent' && (
                          <>
@@ -9701,7 +9729,7 @@ const relatedAssets = sourceAssets.filter(a =>
                      ) : verificationData.needApproval ? (
                          <><ArrowUpRight className="w-5 h-5"/> ส่งต่ออนุมัติ (Forward)</>
                      ) : (
-                         <><CheckCircle className="w-5 h-5"/> ยืนยันได้รับของ / ดำเนินการต่อ (Pass)</>
+                         <><CheckCircle className="w-5 h-5"/> ดำเนินการต่อ (Pass)</>
                      )}
                  </button>
              </div>
@@ -11743,8 +11771,12 @@ setShowEditInvModal(true);
 
                   const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
                   let l1Log = historyDesc.find(h => isActionMatch(h.action, 'Pending PM') || ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')));
-                  // ✅ ตัด 'PR Issued' ออก เพื่อให้ระบบมองข้ามไปหาคนกด 'Approved' ตัวจริง
-const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log);
+const l2Log = historyDesc.find(h => 
+    isActionMatch(h.action, 'Approved') && 
+    h !== l1Log &&
+    (!h.note || !h.note.includes('เปลี่ยนเป็น HO')) && // กรอง Log ตอนเปลี่ยนเป็น HO
+    (!h.note || !h.note.includes('ตรวจสอบผ่าน'))      // ⭐ กรอง Log ตอนตรวจสอบผ่าน (Verification Pass)
+);
                   
                   const userReq = getUser(reqLog);
                   const userL1 = getUser(l1Log);
