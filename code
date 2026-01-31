@@ -2070,9 +2070,18 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     
     var req = requests[index];
     
-    // 3. อัปเดตข้อมูล (สถานะ และ ข้อมูลอื่นๆ ถ้ามีส่งมา)
+   // 3. อัปเดตข้อมูล (สถานะ)
     req.status = newStatus;
+
+    // ⭐ [เพิ่มใหม่] จัดการ extraUpdates แบบพิเศษ
     if (extraUpdates) {
+      // ถ้ามีการส่ง docNumber: null มา ให้ลบค่าเดิมทิ้งทันที
+      if (extraUpdates.hasOwnProperty('docNumber') && extraUpdates.docNumber === null) {
+          req.docNumber = null; // ล้างค่าทิ้งเพื่อให้เข้าเงื่อนไขสร้างเลขใหม่ด้านล่าง
+          delete extraUpdates.docNumber; // ลบออกจาก object เพื่อไม่ให้ loop ข้างล่างเอาค่า null มาทับซ้ำ (กันเหนียว)
+      }
+
+      // อัปเดตค่าอื่นๆ ตามปกติ (เช่น type: 'HO')
       Object.keys(extraUpdates).forEach(function(key) {
         req[key] = extraUpdates[key];
       });
@@ -2083,24 +2092,27 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     if (!logObj.date) logObj.date = new Date().toLocaleString('th-TH'); // เติมเวลา
     req.history.push(logObj);
 
-    // ⭐ 5. จุดสำคัญ: สร้างเลขที่เอกสาร (ถ้ายังไม่มี และสถานะผ่านเกณฑ์)
     if (!req.docNumber) {
-        // เช็คว่าสถานะนี้ต้องออกเลขหรือไม่?
         var isBuyReady = ['Local', 'HO'].includes(req.type) && 
-            ['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Contract Pending', 'Contract Signed', 'Shipping', 'Completed'].includes(newStatus);
+            ['Approved', 'Revise Needed', 'Ordered', 'PR Issued', 'PO Issued', 'Contract Pending', 'Contract Signed', 'Shipping', 'Completed'].includes(newStatus);
         
         var isUseReady = ['Withdraw', 'Borrow'].includes(req.type) && 
             ['Ready to Disburse', 'Completed', 'Returned'].includes(newStatus);
 
-        if (isBuyReady || isUseReady) {
-            // นับเลขล่าสุดจากฐานข้อมูลโดยตรง (ปลอดภัยจากการชนกัน)
+        // ⭐ เพิ่มเงื่อนไขพิเศษ: ถ้าเป็น Change Mode (เปลี่ยนประเภท) ให้สร้างเลขทันทีไม่ว่าจะสถานะไหน
+        var isForceGen = extraUpdates && extraUpdates.hasOwnProperty('docNumber') && extraUpdates.docNumber === null;
+
+        if (isBuyReady || isUseReady || isForceGen) {
+            // นับเลขล่าสุดจากฐานข้อมูลโดยตรง
             var count = getNextDocIndex(requests, req.type, req.purchaseType);
             var newDocId = generateDocId(req.type, count, req.purchaseType);
             
-            req.docNumber = newDocId;
+            req.docNumber = newDocId; // ✅ จะได้เลข HPO-xxxx ทันที
             
-            // อัปเดต Note ใน Log ล่าสุด ให้รู้ว่าระบบสร้างเลขให้แล้ว
-            req.history[req.history.length - 1].note += ' (System Gen: ' + newDocId + ')';
+            // อัปเดต Log ให้รู้ว่าเปลี่ยนเลขแล้ว
+            if (req.history.length > 0) {
+                req.history[req.history.length - 1].note += ' (New Doc No: ' + newDocId + ')';
+            }
         }
     }
 
