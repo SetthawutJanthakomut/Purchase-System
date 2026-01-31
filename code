@@ -2147,3 +2147,141 @@ function triggerEmails(request) {
       if (pmEmails) sendApprovalEmail(request, pmEmails, 'PM');
   } 
 }
+
+
+function processStockAudit(adjustments, userBy) {
+  // adjustments = Array ของ { id, name, oldQty, newQty, reason, project }
+  
+  if (!adjustments || adjustments.length === 0) return { success: true, message: 'ไม่มีรายการที่ต้องปรับปรุง' };
+
+  // 1. เตรียมข้อมูลสำหรับ Bulk Upsert Inventory
+  // เราจะอัปเดตเฉพาะรายการที่มีผลต่าง (Diff)
+  const inventoryUpdates = adjustments.map(item => {
+    // ต้องโหลดข้อมูลเดิมมา merge หรือส่งไปเฉพาะ field ที่เปลี่ยน (แต่ Supabase upsert ปกติต้องส่งทั้งก้อนถ้าไม่มี patch)
+    // เพื่อความง่ายและปลอดภัย ให้ส่งข้อมูลใหม่ไปทับเลย โดยใช้ ID เดิม
+    return {
+      id: item.id,
+      // ระวัง: ตรงนี้ต้องแน่ใจว่า item ที่ส่งมามี field ครบถ้วนจากหน้าบ้าน
+      // หรือถ้าจะให้ดี หน้าบ้านควรส่ง object inventory ตัวเต็มที่แก้ qty แล้วมา
+      payload: item.fullObject 
+    };
+  });
+
+  // 2. เตรียม Logs
+  const logRecords = adjustments.map(item => {
+    const diff = item.newQty - item.oldQty;
+    const sign = diff > 0 ? '+' : '';
+    
+    return {
+      id: `LOG-AUDIT-${new Date().getTime()}-${Math.floor(Math.random()*1000)}`,
+      payload: {
+        date: new Date().toLocaleString('th-TH'),
+        action: 'Audit Adjust', // Action พิเศษ
+        item: item.name,
+        change: `${sign}${diff}`, // แสดงผลต่าง เช่น -5 หรือ +2
+        note: `ตรวจนับประจำเดือน: ${item.reason}`,
+        by: userBy,
+        project: item.project,
+        assetId: item.id // ลิงก์กับสินค้า
+      }
+    };
+  });
+
+  // 3. บันทึกลง Supabase (ใช้ Logic เดียวกับ Batch Import)
+  // 3.1 Update Inventory
+  const urlInv = `${SUPABASE_URL}/rest/v1/inventory`;
+  const optInv = {
+    method: 'post',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates'
+    },
+    payload: JSON.stringify(inventoryUpdates)
+  };
+  
+  // 3.2 Insert Logs
+  const urlLog = `${SUPABASE_URL}/rest/v1/logs`;
+  const optLog = {
+    method: 'post',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates'
+    },
+    payload: JSON.stringify(logRecords)
+  };
+
+  try {
+    UrlFetchApp.fetch(urlInv, optInv);
+    UrlFetchApp.fetch(urlLog, optLog);
+    return { success: true, count: adjustments.length };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+
+// --- [Code.gs] SERVER-SIDE PERMISSION CHECK ---
+
+// 1. ฟังก์ชันตรวจสอบสิทธิ์ (เลียนแบบ Logic หน้าบ้าน แต่ทำงานที่หลังบ้าน)
+function validateServerPermission(userId, requiredPermId, targetProject) {
+  // A. ดึงข้อมูล User ล่าสุดจาก Supabase
+  const users = getSheetData('Users');
+  const user = users.find(u => u.id === userId || u.username === userId);
+
+  if (!user) throw new Error("⛔ Access Denied: User not found.");
+  if (user.status !== 'Activated') throw new Error("⛔ Access Denied: Account inactive.");
+  
+  // B. ถ้าเป็น Super Admin ให้ผ่านเลย
+  if (user.isSuperAdmin) return true;
+
+  // C. เตรียมข้อมูลสิทธิ์
+  // ถ้า targetProject เป็น null หรือ 'All' ให้ถือว่าต้องมีสิทธิ์ใน "อย่างน้อย 1 โครงการ" หรือเป็น Global Check
+  // แต่เพื่อความปลอดภัยสูงสุด ควรระบุ Project เสมอถ้าทำได้
+  
+  // กรณี 1: ไม่ระบุโครงการ (Global Action) -> เช็คว่ามีสิทธิ์นี้ใน Project ใด Project หนึ่งไหม
+  if (!targetProject || targetProject === 'All') {
+      const hasPerm = Object.values(user.permissions || {}).some(perms => 
+          perms.includes(2) || perms.includes(requiredPermId)
+      );
+      if (hasPerm) return true;
+  } 
+  // กรณี 2: ระบุโครงการชัดเจน
+  else {
+      const userPerms = user.permissions?.[targetProject] || [];
+      
+      // - เป็น Admin ของโปรเจกต์นี้ (2)
+      if (userPerms.includes(2)) return true;
+
+      // - เป็น Sub-Admin (3) -> ได้สิทธิ์พื้นฐาน (4,5,6,7)
+      if (userPerms.includes(3) && [4, 5, 6, 7].includes(requiredPermId)) return true;
+
+      // - มีสิทธิ์ระบุเฉพาะเจาะจง
+      if (userPerms.includes(requiredPermId)) return true;
+  }
+
+  // ถ้าหลุดทุกเงื่อนไข -> ไม่อนุญาต
+  throw new Error(`⛔ Permission Denied: คุณไม่มีสิทธิ์ทำรายการนี้ (${requiredPermId}) ในโครงการ ${targetProject || 'Any'}`);
+}
+
+// 2. สร้างฟังก์ชันลบแบบปลอดภัย (Secure Delete)
+// ใช้แทน deleteDataFromSheet เดิมที่หน้าบ้านเรียก
+function deleteItemSecure(userId, tableName, id, project) {
+  // แปลง Table Name เป็น Permission ID ที่ต้องใช้
+  let requiredPerm = 0;
+  if (tableName === 'Inventory') requiredPerm = 18; // สิทธิ์ลบสินค้า
+  else if (tableName === 'Assets') requiredPerm = 21; // สิทธิ์ลบทรัพย์สิน
+  else if (tableName === 'Projects') requiredPerm = 26; // สิทธิ์จัดการโครงการ
+
+  if (requiredPerm === 0) throw new Error("Unknown table type");
+
+  // ⭐ ตรวจสอบสิทธิ์ก่อนลบ
+  validateServerPermission(userId, requiredPerm, project);
+
+  // ถ้าผ่าน -> เรียกฟังก์ชันลบของเดิม
+  deleteDataFromSheet(tableName, id);
+  return { success: true };
+}
