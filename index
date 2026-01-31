@@ -3301,8 +3301,7 @@ useEffect(() => {
     let timeoutId;
     setFoundSuggestions([]);
     
-    // ทำงานเฉพาะตอนพิมพ์ชื่อมากกว่า 2 ตัวอักษร
-    if (tempItem.name && tempItem.name.length > 2) {
+  if (tempItem.name && tempItem.name.length > 2 && ['Local', 'HO'].includes(newOrderMeta.type)) {
         timeoutId = setTimeout(() => {
             const lowerName = tempItem.name.toLowerCase();
             let matches = [];
@@ -3361,7 +3360,7 @@ useEffect(() => {
         }, 500);
     }
     return () => clearTimeout(timeoutId);
-}, [tempItem.name, inventory, assets]);
+}, [tempItem.name, inventory, assets, newOrderMeta.type]);
 
 // ฟังก์ชันเลือก Suggestion (Auto Switch Project)
 const selectSuggestion = (item) => {
