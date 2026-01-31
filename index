@@ -380,23 +380,42 @@ const [errorMessage, setErrorMessage] = useState(''); // ⭐ เก็บข้�
 const [showAuditModal, setShowAuditModal] = useState(false);
 const [auditItems, setAuditItems] = useState([]); // เก็บรายการที่กำลังนับ
   
+
+
 // --- STATE: Go to Top Button ---
 const [showGoTop, setShowGoTop] = useState(false);
 
-// ตรวจสอบการ scroll เพื่อแสดง/ซ่อนปุ่ม
+// --- STATE: Go to Bottom Button ---
+const [showGoBottom, setShowGoBottom] = useState(true);
+
+// ฟังก์ชันสำหรับเลื่อนลงล่างสุด
+const scrollToBottom = () => {
+    const contentArea = document.querySelector('.flex-1.overflow-auto');
+    if (contentArea) {
+        contentArea.scrollTo({ 
+            top: contentArea.scrollHeight, 
+            behavior: 'smooth' 
+        });
+    }
+};
+
+// ตรวจสอบการ scroll เพื่อซ่อนปุ่มเมื่อถึงล่างสุด (เพิ่มใน useEffect เดิม)
 useEffect(() => {
     const handleScroll = () => {
-        // หา element ที่เก็บเนื้อหาหลัก (เนื่องจากแอปใช้โครงสร้าง flex-1 overflow-auto)
         const contentArea = document.querySelector('.flex-1.overflow-auto');
-        if (contentArea && contentArea.scrollTop > 300) {
-            setShowGoTop(true);
-        } else {
-            setShowGoTop(false);
+        if (contentArea) {
+            // แสดงปุ่ม Top เมื่อเลื่อนลงมามากกว่า 300px
+            setShowGoTop(contentArea.scrollTop > 300);
+            
+            // ซ่อนปุ่ม Bottom เมื่อเลื่อนถึงเกือบด้านล่างสุด (ห่างจากพื้น 50px)
+            const isAtBottom = contentArea.scrollHeight - contentArea.scrollTop <= contentArea.clientHeight + 50;
+            setShowGoBottom(!isAtBottom);
         }
     };
 
     const contentArea = document.querySelector('.flex-1.overflow-auto');
     if (contentArea) {
+        
         contentArea.addEventListener('scroll', handleScroll);
         return () => contentArea.removeEventListener('scroll', handleScroll);
     }
@@ -408,6 +427,29 @@ const scrollToTop = () => {
         contentArea.scrollTo({ top: 0, behavior: 'smooth' });
     }
 };
+
+// --- [NEW] Component ปุ่มเลื่อนใน Modal ---
+    const ModalScrollButtons = ({ targetId }) => (
+        <div className="absolute bottom-6 right-6 flex flex-col gap-2 z-[60] no-print">
+            <button 
+                onClick={() => document.getElementById(targetId)?.scrollTo({ top: 0, behavior: 'smooth' })}
+                className="bg-white/80 backdrop-blur text-gray-500 hover:text-blue-600 p-2.5 rounded-full shadow-lg border border-gray-200 hover:bg-blue-50 transition-all transform hover:scale-110"
+                title="เลื่อนขึ้นบนสุด"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <button 
+                onClick={() => {
+                    const el = document.getElementById(targetId);
+                    el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+                }}
+                className="bg-white/80 backdrop-blur text-gray-500 hover:text-blue-600 p-2.5 rounded-full shadow-lg border border-gray-200 hover:bg-blue-50 transition-all transform hover:scale-110"
+                title="เลื่อนลงล่างสุด"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+        </div>
+    );
 
       
       const [showProjectModal, setShowProjectModal] = useState(false); // Modal แก้ไข/เพิ่ม
@@ -6991,9 +7033,13 @@ filteredRequests.map(req => {
 
 
 
-                          {/* ปุ่ม Checklist - แสดงเฉพาะ Admin (2) หรือผู้ที่มีสิทธิ์จัดการสินค้า (16, 17, 18) */}
+{/* ปุ่ม Checklist - แสดงเฉพาะ Admin (2) หรือผู้ที่มีสิทธิ์จัดการสินค้า (16, 17, 18) */}
 {(hasPermission(2) || hasPermission(16) || hasPermission(17) || hasPermission(18)) && (
-    <button onClick={() => openChecklistModal('Inventory')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
+    <button 
+        onClick={() => openChecklistModal('Inventory')} 
+        className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm"
+        title="พิมพ์ใบเช็คลิสต์สำหรับเดินตรวจนับของ (Print Checklist)" // ⭐ Tooltip
+    >
         <ClipboardList className="w-4 h-4"/> พิมพ์
     </button>
 )}
@@ -7002,45 +7048,52 @@ filteredRequests.map(req => {
 {hasPermission(16) && (
     <button 
         onClick={() => { 
-    setShowAddInvModal(true); 
-    setNewStockItem({ 
-        name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
-        project: globalProjectFilter !== 'All' ? globalProjectFilter : '',
-        id: '', 
-        isAutoId: true // ✅ ตั้งค่าเริ่มต้นเป็น Auto
-    });
-}}
+            setShowAddInvModal(true); 
+            setNewStockItem({ 
+                name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], stockType: 'System',
+                project: globalProjectFilter !== 'All' ? globalProjectFilter : '',
+                id: '', 
+                isAutoId: true 
+            });
+        }}
         className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
+        title="เพิ่มรายการสินค้าใหม่เข้าสู่ระบบ (Add New Item)" // ⭐ Tooltip
     >
         <Plus className="w-4 h-4"/> เพิ่ม
     </button>
 )}
 
-
 {hasPermission(17) && ( // ต้องมีสิทธิ์แก้ไขสินค้า
     <button 
         onClick={() => {
-            // เตรียมข้อมูล: คัดลอก Inventory ปัจจุบันมาใส่ Audit Items
-            // เพิ่ม field 'countedQty' (ค่าเริ่มต้นเท่ากับ qty เดิม) และ 'reason'
             const itemsToAudit = filteredInventory.map(i => ({
                 ...i,
-                countedQty: i.qty, // Default ให้เท่าเดิมก่อน
+                countedQty: i.qty,
                 reason: ''
             }));
             setAuditItems(itemsToAudit);
             setShowAuditModal(true);
         }}
         className="bg-orange-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-orange-700 shadow-sm"
+        title="เข้าสู่โหมดตรวจนับสต็อกจริง เพื่อปรับปรุงยอด (Stock Audit)" // ⭐ Tooltip
     >
         <ClipboardList className="w-4 h-4"/> ตรวจนับ
     </button>
 )}
-                          {hasPermission(22) && (
-                          <>
-                                <button onClick={() => setShowImportInvModal(true)} className="bg-teal-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-teal-700 transition-colors shadow-sm"><Download className="w-4 h-4 rotate-180"/> Import</button>
-                                
-                             </>
-                           )}
+
+{hasPermission(22) && (
+    <>
+        <button 
+            onClick={() => setShowImportInvModal(true)} 
+            className="bg-teal-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-teal-700 transition-colors shadow-sm"
+            title="นำเข้าข้อมูลสินค้าจำนวนมากจากไฟล์ CSV (Import)" // ⭐ Tooltip
+        >
+            <Download className="w-4 h-4 rotate-180"/> Import
+        </button>     
+    </>
+)}
+
+
                          </div>
                       </div>
 
@@ -7199,9 +7252,13 @@ filteredRequests.map(req => {
                     <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
 
 
-                  {/* ปุ่ม Checklist - แสดงเฉพาะ Admin (2) หรือผู้ที่มีสิทธิ์จัดการทรัพย์สิน (19, 20, 21) */}
+                {/* ปุ่ม Checklist - แสดงเฉพาะ Admin (2) หรือผู้ที่มีสิทธิ์จัดการทรัพย์สิน (19, 20, 21) */}
 {(hasPermission(2) || hasPermission(19) || hasPermission(20) || hasPermission(21)) && (
-    <button onClick={() => openChecklistModal('Asset')} className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm">
+    <button 
+        onClick={() => openChecklistModal('Asset')} 
+        className="bg-indigo-50 text-indigo-700 text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded hover:bg-indigo-100 border border-indigo-200 shadow-sm"
+        title="พิมพ์ทะเบียนทรัพย์สินสำหรับตรวจสอบ (Print Asset List)" // ⭐ Tooltip
+    >
         <ClipboardList className="w-4 h-4"/> พิมพ์
     </button>
 )}
@@ -7218,6 +7275,7 @@ filteredRequests.map(req => {
             });
         }} 
         className="bg-indigo-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-indigo-700"
+        title="ลงทะเบียนทรัพย์สินใหม่ (Register New Asset)" // ⭐ Tooltip
     >
         <Plus className="w-4 h-4"/> เพิ่ม
     </button>
@@ -7228,10 +7286,11 @@ filteredRequests.map(req => {
     <button 
         onClick={() => setShowImportAssetModal(true)} 
         className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
+        title="นำเข้าข้อมูลทรัพย์สินจากไฟล์ CSV (Import)" // ⭐ Tooltip
     >
         <Download className="w-4 h-4 rotate-180"/> Import
     </button>
-)}   
+)}
                  </div>
               </div>
               
@@ -7927,18 +7986,32 @@ filteredRequests.map(req => {
  
             </div>
 
+{/* ปุ่ม Go to Bottom (Minimal - อยู่ด้านบนของปุ่ม Top) */}
+            {showGoBottom && (
+                <button
+                    onClick={scrollToBottom}
+                    className="fixed bottom-20 right-6 z-[100] bg-white text-gray-600 border border-gray-200 hover:bg-gray-100 hover:text-black p-3 rounded-full shadow-lg transition-all transform hover:scale-110 flex items-center justify-center no-print"
+                    title="เลื่อนลงด้านล่าง"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m6 9 6 6 6-6"/>
+                    </svg>
+                </button>
+            )}
+
+            {/* ปุ่ม Go to Top (Minimal - อยู่ล่างสุด) */}
             {showGoTop && (
                 <button
                     onClick={scrollToTop}
-                    className="fixed bottom-6 right-6 z-[100] bg-blue-600 text-white p-3 rounded-full shadow-2xl hover:bg-blue-700 transition-all transform hover:scale-110 flex flex-col items-center gap-1 animate-in fade-in slide-in-from-bottom-5 no-print"
+                    className="fixed bottom-6 right-6 z-[100] bg-blue-600 text-white hover:bg-blue-700 p-3 rounded-full shadow-lg transition-all transform hover:scale-110 flex items-center justify-center no-print"
                     title="กลับไปด้านบน"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <path d="m18 15-6-6-6 6"/>
                     </svg>
-                    <span className="text-[10px] font-bold">ขึ้นบน</span>
                 </button>
             )}
+
           </main>
     
        {/* เปลี่ยน z-[80] เป็น z-[250] เพื่อให้ซ้อนทับหน้า Verification ได้ */}
@@ -10388,7 +10461,7 @@ const relatedAssets = sourceAssets.filter(a =>
 {/* --- ITEM DETAIL & HISTORY MODAL (FIXED CLOSE BUTTON & REF LINK) --- */}
       {showItemDetailModal && (
           <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[150] p-4 backdrop-blur-sm animate-in fade-in">
-             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 relative">
                 
                 {/* --- HEADER (FIXED: Added Close Button) --- */}
                 <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-white sticky top-0 z-20">
@@ -10414,7 +10487,7 @@ const relatedAssets = sourceAssets.filter(a =>
                     </button>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto bg-slate-50">
+                <div id="history-modal-scroll" className="flex-1 overflow-y-auto bg-slate-50 scroll-smooth">
                     
 {/* --- 1. ITEM DETAILS SECTION --- */}
                     {viewingItem && (
@@ -10483,6 +10556,7 @@ const relatedAssets = sourceAssets.filter(a =>
                         </button>
                     </>
                 )}
+
 
                 {/* 2. ⭐ กรณีถูกเลื่อน/ปิดอยู่ (Snoozed) -> แสดงปุ่ม กลับมาแจ้งเตือน (Enable) */}
                 {isSnoozed && hasPermission(17) && (
@@ -10844,29 +10918,32 @@ setShowEditInvModal(true);
                             </table>
                             {filteredLogs.length === 0 && <div className="p-12 text-center text-gray-400 flex flex-col items-center"><Search className="w-12 h-12 mb-3 opacity-20"/>ไม่พบรายการประวัติที่ค้นหา</div>}
                             
-                            {/* ⭐⭐⭐ เพิ่มปุ่ม Load More ตรงนี้ ⭐⭐⭐ */}
-                            <div className="p-4 text-center bg-gray-50 border-t border-gray-200">
-                                <button 
-                                    onClick={() => {
-                                        if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
-                                        setIsLoading(true);
-                                        // เรียกฟังก์ชัน backend เพื่อโหลดข้อมูลจำนวนมาก
-                                        google.script.run.withSuccessHandler((logs) => {
-                                            if (logs) setInvLogs(logs);
-                                            setIsLoading(false);
-                                            showToast('โหลดประวัติครบถ้วนแล้ว');
-                                        }).getRecentLogs(2000); // 👈 ระบุจำนวนที่ต้องการโหลดเพิ่ม
-                                    }}
-                                    className="text-blue-600 hover:text-blue-800 text-sm font-bold underline transition-colors flex items-center justify-center gap-2 mx-auto"
-                                >
-                                    <RefreshCw size={14}/> โหลดประวัติย้อนหลังเพิ่มเติม (Load More Logs)
-                                </button>
-                            </div>
+                         
 
                         </div>
                     </div>
 
                 </div>
+                <ModalScrollButtons targetId="history-modal-scroll" />
+                {/* ⭐ ปุ่ม Load More แบบลอย (Floating Button) มุมซ้ายล่าง */}
+          {!viewingItem && (
+              <button 
+                  onClick={() => {
+                      if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
+                      setIsLoading(true);
+                      google.script.run.withSuccessHandler((logs) => {
+                          if (logs) setInvLogs(logs);
+                          setIsLoading(false);
+                          showToast('โหลดประวัติครบถ้วนแล้ว');
+                      }).getRecentLogs(2000);
+                  }}
+                  className="absolute bottom-6 left-6 z-[60] bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-600 hover:text-white px-4 py-3 rounded-full shadow-xl transition-all transform hover:scale-105 flex items-center gap-2 font-bold text-xs group no-print"
+                  title="โหลดข้อมูลเก่าเพิ่ม"
+              >
+                  <RefreshCw size={16} className="group-hover:rotate-180 transition-transform duration-500"/> 
+                  <span>โหลดเพิ่ม (Load More)</span>
+              </button>
+          )}
              </div>
           </div>
       )}
@@ -13045,7 +13122,7 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
             )}
 
             {/* 4. Content Area */}
-            <div className="p-0 overflow-y-auto flex-1 bg-gray-50/50 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+            <div id="user-modal-scroll" className="p-0 overflow-y-auto flex-1 bg-gray-50/50 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent relative scroll-smooth">
                 
              {/* Tab 1: Info (แก้ไข: ปิดการแก้ไขอีเมล) */}
            {/* Tab 1: Info (แก้ไข: ปรับสิทธิ์ตามต้องการ) */}
@@ -13537,24 +13614,7 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                                 </tbody>
                             </table>
                             
-                            {/* ⭐⭐⭐ เพิ่มปุ่ม Load More ตรงนี้ ⭐⭐⭐ */}
-                            <div className="p-4 text-center border-t border-gray-100 bg-gray-50">
-                                <button 
-                                    onClick={() => {
-                                        if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
-                                        setIsLoading(true);
-                                        // เรียกฟังก์ชัน backend เพื่อโหลดข้อมูลจำนวนมาก (เช่น 1000 หรือ 5000 รายการ)
-                                        google.script.run.withSuccessHandler((logs) => {
-                                            if (logs) setInvLogs(logs);
-                                            setIsLoading(false);
-                                            showToast('โหลดประวัติทั้งหมดเรียบร้อย');
-                                        }).getRecentLogs(2000); // 👈 ระบุจำนวนที่ต้องการโหลดเพิ่ม
-                                    }}
-                                    className="text-indigo-600 hover:text-indigo-800 text-sm font-bold underline flex items-center justify-center gap-1 mx-auto transition-colors"
-                                >
-                                    <Clock size={14}/> โหลดประวัติเพิ่มเติม (Load All History)
-                                </button>
-                            </div>
+                          
                             
                         </div>
                     );
@@ -13840,6 +13900,26 @@ const l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !==
                     );
                 })()}
             </div>
+            <ModalScrollButtons targetId="user-modal-scroll" />
+            {/* ⭐ ปุ่ม Load More แบบลอย (เฉพาะแท็บ History) */}
+            {userDetailTab === 'history' && (
+                <button 
+                    onClick={() => {
+                        if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
+                        setIsLoading(true);
+                        google.script.run.withSuccessHandler((logs) => {
+                            if (logs) setInvLogs(logs);
+                            setIsLoading(false);
+                            showToast('โหลดประวัติทั้งหมดเรียบร้อย');
+                        }).getRecentLogs(2000);
+                    }}
+                    className="absolute bottom-6 left-6 z-[60] bg-white text-blue-600 border border-blue-200 hover:bg-blue-600 hover:text-white px-4 py-3 rounded-full shadow-xl transition-all transform hover:scale-105 flex items-center gap-2 font-bold text-xs group no-print"
+                    title="โหลดข้อมูลเก่าเพิ่ม"
+                >
+                    <RefreshCw size={16} className="group-hover:rotate-180 transition-transform duration-500"/> 
+                    <span>โหลดเพิ่ม (Load More)</span>
+                </button>
+            )}
         </div>
     </div>
 )}
