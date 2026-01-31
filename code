@@ -1813,12 +1813,52 @@ function batchImportInventory(items, logs) {
     });
   }
   
-  // 2. บันทึก Logs (วนลูปเรียกฟังก์ชันเดิมฝั่ง Server)
+  // 2. บันทึก Logs
   if (logs && logs.length > 0) {
     logs.forEach(log => {
       try {
-        // ใช้ saveDataToSheet เพื่อหุ้มข้อมูลลง column 'payload' เหมือนปกติ
-        saveDataToSheet('Logs', null, log); 
+        // ⭐ แก้ไข: สร้าง ID ให้ Log (ห้ามเป็น null) และเพิ่มวันที่
+        const logId = `LOG-INV-${new Date().getTime()}-${Math.floor(Math.random() * 10000)}`;
+        
+        // เติมวันที่แบบไทย ถ้ายังไม่มี (เพื่อให้แสดงผลในตารางได้)
+        if (!log.date) log.date = new Date().toLocaleString('th-TH');
+
+        // บันทึกโดยใช้ ID ที่สร้างใหม่
+        saveDataToSheet('Logs', logId, log); 
+      } catch (e) {
+         console.error("Error saving log", e);
+      }
+    });
+  }
+  
+  return { success: true };
+}
+
+// --- ฟังก์ชันบันทึกข้อมูลนำเข้าแบบรวดเร็ว (Batch Save) ---
+function batchImportInventory(items, logs) {
+  // 1. บันทึกรายการสินค้า
+  if (items && items.length > 0) {
+    items.forEach(item => {
+      try {
+        syncInventory(item); 
+      } catch (e) {
+        console.error("Error saving item: " + item.id, e);
+      }
+    });
+  }
+  
+  // 2. บันทึก Logs (แก้ไขให้สร้าง ID ตามรูปแบบเดิม)
+  if (logs && logs.length > 0) {
+    logs.forEach(log => {
+      try {
+        // เติมวันที่ถ้ายังไม่มี
+        if (!log.date) log.date = new Date().toLocaleString('th-TH');
+
+        // ⭐ สร้าง ID ตามรูปแบบเดิม: วันที่_เลขสุ่ม
+        const logId = log.date + '_' + Math.floor(Math.random() * 1000);
+
+        // บันทึกโดยใช้ ID นี้
+        saveDataToSheet('Logs', logId, log); 
       } catch (e) {
          console.error("Error saving log", e);
       }
@@ -1835,18 +1875,25 @@ function batchImportAssets(assets, logs) {
   if (assets && assets.length > 0) {
     assets.forEach(asset => {
       try {
-        syncAsset(asset); // เรียกฟังก์ชันเดิมที่มีอยู่แล้ว
+        syncAsset(asset); 
       } catch (e) {
         console.error("Error saving asset: " + asset.id, e);
       }
     });
   }
 
-  // 2. บันทึก Logs
+  // 2. บันทึก Logs (แก้ไขให้สร้าง ID ตามรูปแบบเดิม)
   if (logs && logs.length > 0) {
     logs.forEach(log => {
       try {
-        saveDataToSheet('Logs', null, log);
+        // เติมวันที่ถ้ายังไม่มี
+        if (!log.date) log.date = new Date().toLocaleString('th-TH');
+
+        // ⭐ สร้าง ID ตามรูปแบบเดิม: วันที่_เลขสุ่ม
+        const logId = log.date + '_' + Math.floor(Math.random() * 1000);
+
+        // บันทึกโดยใช้ ID นี้
+        saveDataToSheet('Logs', logId, log);
       } catch (e) {
         console.error("Error saving log", e);
       }
@@ -1854,4 +1901,81 @@ function batchImportAssets(assets, logs) {
   }
   
   return { success: true };
+}
+
+
+
+
+// ⭐ ฟังก์ชันอัปเดตข้อมูลโครงการแบบ Cascade (เปลี่ยนทุกที่ที่เกี่ยวข้อง)
+function updateProjectGlobalData(newProject, oldId, oldName) {
+  console.log(`[UpdateProject] Renaming from ${oldName} (${oldId}) to ${newProject.name} (${newProject.id})`);
+
+  // --- Helper: ฟังก์ชันดึงข้อมูลเฉพาะกิจ (ป้องกัน Error) ---
+  const getTableData = (table) => {
+    const res = callSupabase(table, 'get', null, '?select=id,payload');
+    try {
+      const data = JSON.parse(res);
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  // ----------------------------------------------------
+
+  // 1. บันทึกข้อมูลโครงการใหม่ (Upsert)
+  saveDataToSheet('Projects', newProject.id, newProject);
+
+  // 2. ถ้ารหัสโครงการ (ID) เปลี่ยน -> ลบตัวเก่าทิ้ง
+  if (oldId && oldId !== newProject.id) {
+    deleteDataFromSheet('Projects', oldId);
+  }
+
+  // 3. ถ้าชื่อโครงการเปลี่ยน -> ไล่อัปเดตตารางอื่นๆ
+  if (oldName && oldName !== newProject.name) {
+     
+     // A. ตาราง Requests (เอกสาร)
+     const requests = getTableData('Requests');
+     requests.forEach(row => {
+        let req = row.payload;
+        if (req.job === oldName) {
+           req.job = newProject.name;
+           saveDataToSheet('Requests', row.id, req);
+        }
+     });
+
+     // B. ตาราง Inventory (สินค้า)
+     const inventory = getTableData('Inventory');
+     inventory.forEach(row => {
+        let inv = row.payload;
+        if (inv.project === oldName) {
+           inv.project = newProject.name;
+           saveDataToSheet('Inventory', row.id, inv);
+        }
+     });
+
+     // C. ตาราง Assets (ทรัพย์สิน)
+     const assets = getTableData('Assets');
+     assets.forEach(row => {
+        let ast = row.payload;
+        if (ast.project === oldName) {
+           ast.project = newProject.name;
+           saveDataToSheet('Assets', row.id, ast);
+        }
+     });
+
+     // D. ตาราง Users (สิทธิ์การใช้งาน)
+     const users = getTableData('Users');
+     users.forEach(row => {
+        let u = row.payload;
+        if (u.permissions && u.permissions[oldName]) {
+           // ย้ายสิทธิ์ไปชื่อใหม่
+           u.permissions[newProject.name] = u.permissions[oldName];
+           // ลบสิทธิ์ชื่อเก่า
+           delete u.permissions[oldName];
+           saveDataToSheet('Users', row.id, u);
+        }
+     });
+  }
+  
+  return { success: true, message: 'อัปเดตข้อมูลโครงการเรียบร้อย (มีผลทั้งระบบ)' };
 }
