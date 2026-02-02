@@ -2073,12 +2073,16 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
    // 3. อัปเดตข้อมูล (สถานะ)
     req.status = newStatus;
 
-    // ⭐ [เพิ่มใหม่] จัดการ extraUpdates แบบพิเศษ
+   // ⭐ [แก้ไข] สร้างตัวแปรเก็บสถานะไว้ก่อน (Flag) ว่าต้องการสร้างเลขใหม่หรือไม่
+    var shouldGenNewDoc = false; 
+
     if (extraUpdates) {
-      // ถ้ามีการส่ง docNumber: null มา ให้ลบค่าเดิมทิ้งทันที
+      // ถ้ามีการส่ง docNumber: null มา 
       if (extraUpdates.hasOwnProperty('docNumber') && extraUpdates.docNumber === null) {
-          req.docNumber = null; // ล้างค่าทิ้งเพื่อให้เข้าเงื่อนไขสร้างเลขใหม่ด้านล่าง
-          delete extraUpdates.docNumber; // ลบออกจาก object เพื่อไม่ให้ loop ข้างล่างเอาค่า null มาทับซ้ำ (กันเหนียว)
+          req.docNumber = null; // ล้างเลขเดิม
+          shouldGenNewDoc = true; // ✅ จำสถานะไว้ว่าต้องสร้างใหม่
+          
+          delete extraUpdates.docNumber; // ลบออกจาก object เพื่อไม่ให้ loop เอาค่า null มาทับ
       }
 
       // อัปเดตค่าอื่นๆ ตามปกติ (เช่น type: 'HO')
@@ -2089,9 +2093,10 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
 
     // 4. บันทึกประวัติ (History)
     if (!req.history) req.history = [];
-    if (!logObj.date) logObj.date = new Date().toLocaleString('th-TH'); // เติมเวลา
+    if (!logObj.date) logObj.date = new Date().toLocaleString('th-TH');
     req.history.push(logObj);
 
+    // 5. Generate Doc ID Logic
     if (!req.docNumber) {
         var isBuyReady = ['Local', 'HO'].includes(req.type) && 
             ['Approved', 'Revise Needed', 'Ordered', 'PR Issued', 'PO Issued', 'Contract Pending', 'Contract Signed', 'Shipping', 'Completed'].includes(newStatus);
@@ -2099,15 +2104,15 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
         var isUseReady = ['Withdraw', 'Borrow'].includes(req.type) && 
             ['Ready to Disburse', 'Completed', 'Returned'].includes(newStatus);
 
-        // ⭐ เพิ่มเงื่อนไขพิเศษ: ถ้าเป็น Change Mode (เปลี่ยนประเภท) ให้สร้างเลขทันทีไม่ว่าจะสถานะไหน
-        var isForceGen = extraUpdates && extraUpdates.hasOwnProperty('docNumber') && extraUpdates.docNumber === null;
+        // ⭐ [แก้ไข] ใช้ตัวแปร shouldGenNewDoc ที่เราเก็บไว้ตอนแรก แทนการเช็คจาก extraUpdates ซ้ำ
+        var isForceGen = shouldGenNewDoc; 
 
         if (isBuyReady || isUseReady || isForceGen) {
             // นับเลขล่าสุดจากฐานข้อมูลโดยตรง
             var count = getNextDocIndex(requests, req.type, req.purchaseType);
             var newDocId = generateDocId(req.type, count, req.purchaseType);
             
-            req.docNumber = newDocId; // ✅ จะได้เลข HPO-xxxx ทันที
+            req.docNumber = newDocId; 
             
             // อัปเดต Log ให้รู้ว่าเปลี่ยนเลขแล้ว
             if (req.history.length > 0) {
