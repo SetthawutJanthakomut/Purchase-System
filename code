@@ -778,7 +778,7 @@ function deleteDataFromSheet(sheetName, id) {
 
 function uploadFileToDrive(base64Data, fileName) {
   try {
-    const FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; 
+    const FOLDER_ID = "1bLG6dp7SJVEMvDudKKZnoCpriUPrJyOU"; 
     const folder = DriveApp.getFolderById(FOLDER_ID);
     const contentType = base64Data.substring(5, base64Data.indexOf(';'));
     const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
@@ -807,7 +807,7 @@ function getOrCreateSubFolder(parentFolderId, subFolderName) {
 
 function uploadAssetImage(base64Data, fileName) {
   try {
-    const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; 
+    const MAIN_FOLDER_ID = "1bLG6dp7SJVEMvDudKKZnoCpriUPrJyOU"; 
     const SUB_FOLDER_NAME = "Asset_Images"; 
     const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
     const contentType = base64Data.substring(5, base64Data.indexOf(';'));
@@ -1246,7 +1246,7 @@ function toggleAnnouncementStatus(id, isActive) {
 
 function uploadUserSignature(base64Data, fileName) {
   try {
-    const MAIN_FOLDER_ID = "1M57m68rI8bM-BBqRlh_LzZHuDWPZVdwz"; // ใช้ ID โฟลเดอร์หลักเดิม
+    const MAIN_FOLDER_ID = "1bLG6dp7SJVEMvDudKKZnoCpriUPrJyOU"; // ใช้ ID โฟลเดอร์หลักเดิม
     const SUB_FOLDER_NAME = "User_Signatures"; // ชื่อโฟลเดอร์เก็บลายเซ็น
     const targetFolder = getOrCreateSubFolder(MAIN_FOLDER_ID, SUB_FOLDER_NAME);
     
