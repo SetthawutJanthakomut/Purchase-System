@@ -251,28 +251,38 @@ const STATUS_LABELS = {
 
 
 
-const StatusBadge = ({ status, type }) => {
+const StatusBadge = ({ status, type, onClick }) => { // ⭐ รับ onClick มาด้วย
       let color = 'bg-gray-100 text-gray-800';
       let label = STATUS_LABELS[status] || status;
 
-      // ⭐ Logic ใหม่: ถ้าเป็น เบิก/ยืม และสถานะ Pending Head ให้เปลี่ยนชื่อ
       if (status === 'Pending Head' && (type === 'Withdraw' || type === 'Borrow')) {
           label = 'รออนุมัติ Level 1 / Level 2';
       }
 
       if (status === 'Draft') color = 'bg-gray-200 text-gray-600 border border-gray-300';
       else if (status === 'Revise Needed') color = 'bg-red-50 text-red-600 border border-red-200 animate-pulse';
-      else if (status.includes('Pending') || status === 'PR Issued') color = 'bg-amber-100 text-amber-800';
+      else if (status.includes('Pending') || status === 'PR Issued') color = 'bg-amber-100 text-amber-800 border border-amber-200';
       else if (status === 'Contract Pending') color = 'bg-amber-100 text-amber-800 border border-amber-200';
-      else if (status === 'Approved') color = 'bg-cyan-100 text-cyan-800';
-      else if (status === 'Ready to Disburse') color = 'bg-purple-100 text-purple-800';
-      else if (['Ordered', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received'].includes(status)) color = 'bg-blue-100 text-blue-800';
-      else if (status === 'Completed') color = 'bg-green-100 text-green-800';
-      else if (status === 'Returned') color = 'bg-teal-100 text-teal-800';
-      else if (status === 'Rejected') color = 'bg-red-100 text-red-800';
+      else if (status === 'Approved') color = 'bg-cyan-100 text-cyan-800 border border-cyan-200';
+      else if (status === 'Ready to Disburse') color = 'bg-purple-100 text-purple-800 border border-purple-200';
+      else if (['Ordered', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received'].includes(status)) color = 'bg-blue-100 text-blue-800 border border-blue-200';
+      else if (status === 'Completed') color = 'bg-green-100 text-green-800 border border-green-200';
+      else if (status === 'Returned') color = 'bg-teal-100 text-teal-800 border border-teal-200';
+      else if (status === 'Rejected') color = 'bg-red-100 text-red-800 border border-red-200';
       
-      return <span className={`px-2 py-1 rounded-full text-xs font-semibold ${color}`}>{label}</span>;
-    };
+      // ⭐ เพิ่ม cursor-pointer และ onClick
+      return (
+        <span 
+            onClick={onClick}
+            className={`px-2 py-1 rounded-full text-xs font-bold border flex items-center gap-1 w-fit transition-transform active:scale-95 ${color} ${onClick ? 'cursor-pointer hover:shadow-sm hover:brightness-95' : ''}`}
+            title={onClick ? "คลิกเพื่อดูผู้รับผิดชอบ" : ""}
+        >
+            {label} 
+            {/* เพิ่มไอคอนเล็กๆ แสดงว่ากดดูได้ */}
+            {onClick && <Info size={10} className="opacity-50"/>}
+        </span>
+      );
+};
 
     const DocIdBadge = ({ type, id }) => {
         if (!id) return null;
@@ -2515,6 +2525,54 @@ useEffect(() => {
 const [isCostEditMode, setIsCostEditMode] = useState(false);
       const [tempCostRequest, setTempCostRequest] = useState(null);
 
+      // --- STATE: Who can act modal ---
+const [showActorModal, setShowActorModal] = useState(false);
+const [actorList, setActorList] = useState({ title: '', status: '', users: [] });
+
+// --- Helper: ค้นหาคนที่มีสิทธิ์ในสถานะปัจจุบัน ---
+const handleShowActors = (req) => {
+    let permId = null;
+    let title = 'ผู้มีสิทธิ์ดำเนินการ';
+
+    // กำหนดสิทธิ์ที่ต้องใช้ตามสถานะ
+    switch (req.status) {
+        case 'Pending Head': permId = 8; title = 'รออนุมัติ Level 1'; break;
+        case 'Pending PM': permId = 9; title = 'รออนุมัติ Level 2'; break;
+        case 'Pending Check': permId = 10; title = 'รอตรวจสอบเอกสาร'; break;
+        case 'Approved': 
+            if (req.type === 'Local') { permId = 12; title = 'รอสั่งซื้อ (Local)'; }
+            else if (req.type === 'HO' && req.purchaseType === 'Buy') { permId = 11; title = 'รอออก PR'; }
+            else { permId = 14; title = 'รอทำสัญญา/ดำเนินการ'; } // HO Rent
+            break;
+        case 'PR Issued': permId = 12; title = 'รอออก PO'; break;
+        case 'PO Issued': permId = 13; title = 'รออัปเดตการส่งของ'; break;
+        case 'Ordered': permId = 15; title = 'รอรับของ (Local)'; break;
+        case 'Shipping': permId = 15; title = 'รอรับของ (HO)'; break;
+        case 'Ready to Disburse': permId = 24; title = 'รอจ่ายของ (Store)'; break;
+        case 'Contract Pending': permId = 14; title = 'รอทำสัญญา'; break;
+        case 'Contract Signed': permId = 13; title = 'รอส่งมอบ'; break;
+        default: 
+            showToast('สถานะนี้ไม่มีผู้ดำเนินการต่อ (จบกระบวนการ/รอผู้ขอแก้ไข)', 'info');
+            return;
+    }
+
+    // กรองรายชื่อ User ที่มีสิทธิ์นี้ในโครงการนี้
+    const validUsers = allUsers.filter(u => {
+        if (u.status !== 'Activated') return false;
+        if (u.isSuperAdmin) return true;
+        
+        const perms = u.permissions?.[req.job] || [];
+        return perms.includes(2) || perms.includes(permId); // Admin(2) หรือมีสิทธิ์เฉพาะ
+    });
+
+    setActorList({
+        title: title,
+        status: req.status,
+        users: validUsers
+    });
+    setShowActorModal(true);
+};
+
       const [expandedChart, setExpandedChart] = useState(null);
       const [drillDownState, setDrillDownState] = useState({ SubJob: null, matCode: null });
       
@@ -3572,46 +3630,46 @@ const getItemLatestImages = (item) => {
 
 
 
+// --- LOGIC: Filter Selection Items (Updated Search Logic) ---
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
     const targetProject = newOrderMeta.job;
     
     if (!targetProject) return [];
 
-    // เตรียมข้อมูล Active Requests
-    const activeRequests = requests.filter(r => 
-        r.id !== editingId &&
-        !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
-        r.job === targetProject
-    );
+    let items = [];
 
     // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> รวมยอด System + NonSystem
     if (type === 'Withdraw') {
-        // 1. คำนวณยอดจอง (Reserved) แยกตามชื่อสินค้า
+        const activeRequests = requests.filter(r => 
+            r.id !== editingId &&
+            !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
+            r.job === targetProject &&
+            r.type === 'Withdraw'
+        );
+
         const reservesByName = {};
-        activeRequests.filter(r => r.type === 'Withdraw').forEach(req => {
+        activeRequests.forEach(req => {
             req.items.forEach(item => {
                 reservesByName[item.name] = (reservesByName[item.name] || 0) + (item.qty || 0);
             });
         });
 
-        // 2. จัดกลุ่มสินค้าตามชื่อ (Group by Name)
         const groupedMap = {};
         inventory
             .filter(i => i.project === targetProject)
             .forEach(inv => {
                 if (!groupedMap[inv.name]) {
                     groupedMap[inv.name] = {
-                        ...inv, // ใช้ข้อมูลพื้นฐานจากตัวแรกที่เจอ
-                        qty: 0, // รอคำนวณใหม่
+                        ...inv, 
+                        qty: 0, 
                         sysStock: 0,
                         nonStock: 0,
                         totalRaw: 0,
-                        isGrouped: true // Flag ไว้เช็คตอนแสดงผล
+                        isGrouped: true 
                     };
                 }
                 
-                // บวกยอดตามประเภท
                 groupedMap[inv.name].totalRaw += inv.qty;
                 if (inv.stockType === 'NonSystem') {
                     groupedMap[inv.name].nonStock += inv.qty;
@@ -3620,66 +3678,51 @@ const getSelectionItems = () => {
                 }
             });
 
-        // 3. คำนวณยอดคงเหลือจริง (หักยอดจอง) และแปลงกลับเป็น Array
-        return Object.values(groupedMap).map(item => {
+        items = Object.values(groupedMap).map(item => {
             const reserved = reservesByName[item.name] || 0;
             const realAvailable = Math.max(0, item.totalRaw - reserved);
-            
             return {
                 ...item,
-                qty: realAvailable, // ยอดที่เบิกได้จริง (รวม)
-                reserved: reserved  // เก็บยอดจองไว้โชว์ (ถ้าต้องการ)
+                qty: realAvailable, 
+                reserved: reserved
             };
-        }).filter(i => i.qty > 0); // กรองเฉพาะที่มีของให้เบิก
+        }).filter(i => i.qty > 0);
+    } 
+    // 🔵 กรณี 2: ยืม (Borrow) หรือ ซื้อ (Local/HO)
+    else {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const projectInventory = inventory.filter(i => i.project === targetProject && i.qty > 0);
+        
+        const projectAssets = assets.filter(a => {
+            if (a.project !== targetProject) return false;
+            if (a.status !== 'Available') return false;
+            if (a.ownerType === 'Rent' && a.rentalEnd) {
+                const endDate = new Date(a.rentalEnd);
+                if (!isNaN(endDate.getTime())) {
+                    endDate.setHours(0, 0, 0, 0);
+                    if (endDate < today) return false;
+                }
+            }
+            return true;
+        });
+
+        if (type === 'Local') items = projectInventory;
+        else if (type === 'HO') items = [...projectInventory, ...projectAssets];
+        else if (type === 'Borrow') items = projectAssets;
     }
 
-    let projectInventory = inventory
-        .filter(i => i.project === targetProject)
-        .map(inv => {
-             // ... Logic เดิม ...
-             return inv; 
-        })
-        .filter(i => i.qty > 0);
-
-// 2. กรอง Assets
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const busyAssetIds = new Set(
-        activeRequests
-            .filter(r => r.type === 'Borrow')
-            .flatMap(r => r.items)
-            .map(i => i.assetId)
-            .filter(id => id)
-    );
-    const projectAssets = assets.filter(a => {
-        if (a.project !== targetProject) return false;
-        if (a.status !== 'Available') return false;
-        if (type === 'Borrow' && busyAssetIds.has(a.id)) return false;
-        if (a.ownerType === 'Rent' && a.rentalEnd) {
-            const endDate = new Date(a.rentalEnd);
-            if (!isNaN(endDate.getTime())) {
-                endDate.setHours(0, 0, 0, 0);
-                if (endDate < today) return false;
-            }
-        }
-        return true;
-    });
-
-    // รวมรายการ
-    let items = [];
-    if (type === 'Local') items = projectInventory;
-    else if (type === 'HO') items = [...projectInventory, ...projectAssets];
-    else if (type === 'Borrow') items = projectAssets;
-
-    // Search Logic
+    // ⭐ Logic Search: ค้นหาจากชื่อ หรือ รหัส (รองรับทั้ง Grouped และ Individual)
     if (selectionSearch) {
         const lower = selectionSearch.toLowerCase();
         items = items.filter(i => 
             i.name.toLowerCase().includes(lower) || 
-            (i.serial && i.serial.toLowerCase().includes(lower)) ||
-            (i.id && i.id.toLowerCase().includes(lower))
+            (i.id && i.id.toLowerCase().includes(lower)) || 
+            (i.serial && i.serial.toLowerCase().includes(lower))
         );
     }
+    
     return items;
 };
 
@@ -4356,82 +4399,99 @@ const handleUpdateAsset = async (e) => {
     }
 };
       
-// --- HELPER: คำนวณงบประมาณ (Budget Calculation - UPDATED LOGIC) ---
-      const getBudgetStats = (req, code, type) => {
-          if (!req || !req.job) return { budget: 0, used: 0, pending: 0, current: 0 };
-          const projectData = projects.find(p => p.name === req.job);
-          if (!projectData) return { budget: 0, used: 0, pending: 0, current: 0 };
-          const list = type === 'SubJob' ? projectData.subJobs : projectData.matCodes;
-          const target = list?.find(x => x.code === code);
-          const budget = target?.budget || 0;
+// --- HELPER: คำนวณงบประมาณ (รองรับทั้งแบบกลุ่ม และ ราย Code) ---
+const getBudgetStats = (req, identifier, type, isGroup = false) => {
+    if (!req || !req.job || !identifier) return { budget: 0, used: 0, pending: 0, current: 0 };
+    const projectData = projects.find(p => p.name === req.job);
+    if (!projectData) return { budget: 0, used: 0, pending: 0, current: 0 };
 
-          // Helper: คำนวณยอดเงินแบบละเอียด (Assets > Logs > Estimate)
-          const calculateRequestTotal = (r) => {
-              const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.matCode) === code);
-              const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
-              
-              return items.reduce((sum, item) => {
-                  // 1. ข้อมูล Assets
-                  const relatedAssets = assets.filter(a => a.currentRequestId === r.id && a.name === item.name);
-                  // 2. ข้อมูล Logs
-                  const receivedLogs = item.receivedLog || [];
-                  
-                  let itemTotal = 0;
-                  let receivedCount = 0;
+    const defs = type === 'SubJob' ? (projectData.subJobs || []) : (projectData.matCodes || []);
+    
+    // 1. ระบุ Target Codes ที่จะนำมาคำนวณ
+    let targetCodes = [];
+    let totalBudget = 0;
 
-                  // Priority A: Assets
-                  if (relatedAssets.length > 0) {
-                        itemTotal += relatedAssets.reduce((s, asset) => {
-                             const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                             const duration = isRent ? (asset.duration || item.duration || 1) : 1;
-                             return s + (price * duration);
-                        }, 0);
-                        receivedCount = relatedAssets.length;
-                  } 
-                  // Priority B: Logs
-                  else if (receivedLogs.length > 0) {
-                        itemTotal += receivedLogs.reduce((s, log) => {
-                             const duration = isRent ? (log.duration || 1) : 1;
-                             return s + (log.qty * log.price * duration);
-                        }, 0);
-                        receivedCount = item.receivedTotal || 0;
-                 }
+    if (isGroup) {
+        // 🟢 โหมดกลุ่ม: identifier คือชื่อกลุ่ม -> หา Codes ทั้งหมดในกลุ่มนั้น
+        targetCodes = defs
+            .filter(d => (d.group || 'Others (อื่นๆ)') === identifier)
+            .map(d => d.code);
+        
+        // รวมงบของทั้งกลุ่ม
+        totalBudget = defs
+            .filter(d => targetCodes.includes(d.code))
+            .reduce((sum, d) => sum + (Number(d.budget) || 0), 0);
+    } else {
+        // 🔵 โหมดรายตัว: identifier คือรหัส Code -> ใช้ Code นั้นตัวเดียว
+        targetCodes = [identifier];
+        const targetDef = defs.find(d => d.code === identifier);
+        totalBudget = targetDef ? (Number(targetDef.budget) || 0) : 0;
+    }
 
-                  // Priority C: Estimate Remainder
-                  // ⭐ [แก้ไขใหม่] เช็คสถานะ Completed เพื่อตัดยอดคงเหลือทิ้ง
-                  if (r.status !== 'Completed') {
-                      const remainingQty = Math.max(0, item.qty - receivedCount);
-                      const estimateDuration = isRent ? (item.duration || 1) : 1;
-                      const estimatePrice = item.unitPrice || 0;
-                      itemTotal += (remainingQty * estimatePrice * estimateDuration);
-                  }
+    if (targetCodes.length === 0) return { budget: 0, used: 0, pending: 0, current: 0 };
 
-                  return sum + itemTotal;
-              }, 0);
-          };
+    // 2. ฟังก์ชันคำนวณยอดเงิน (ใช้ Logic: Assets > Logs > Estimate)
+    const calculateValue = (r) => {
+        // กรองเฉพาะ Item ที่ตรงกับ Target Codes
+        const relevantItems = r.items.filter(i => targetCodes.includes(type === 'SubJob' ? i.subJob : i.matCode));
+        const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
+        
+        return relevantItems.reduce((sum, item) => {
+            const relatedAssets = assets.filter(a => 
+                a.currentRequestId === r.id && 
+                a.name === item.name &&
+                (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+            );
+            const receivedLogs = item.receivedLog || [];
+            
+            let itemVal = 0;
+            let cnt = 0;
 
-          let used = 0;
-          let pending = 0;
+            if (relatedAssets.length > 0) {
+                itemVal += relatedAssets.reduce((s, asset) => {
+                    const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+                    const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+                    return s + (price * duration);
+                }, 0);
+                cnt = relatedAssets.length;
+            } else if (receivedLogs.length > 0) {
+                itemVal += receivedLogs.reduce((s, log) => {
+                    const duration = isRent ? (log.duration || 1) : 1;
+                    return s + (log.qty * log.price * duration);
+                }, 0);
+                cnt = item.receivedTotal || 0;
+            }
 
-          requests.forEach(r => {
-              if (r.id === req.id || r.job !== req.job) return;
-              if (!['Local', 'HO'].includes(r.type)) return;
+            if (r.status !== 'Completed') {
+                const rem = Math.max(0, item.qty - cnt);
+                const dur = isRent ? (item.duration || 1) : 1;
+                itemVal += (rem * (item.unitPrice || 0) * dur);
+            }
+            return sum + itemVal;
+        }, 0);
+    };
 
-              const total = calculateRequestTotal(r);
+    // 3. วนลูปคำนวณยอดสะสมจากทุก Request
+    let used = 0;
+    let pending = 0;
+    let current = 0;
 
-              // Completed = Used, Others = Pending
-              if (r.status === 'Completed') {
-                  used += total;
-              } else if (!['Draft', 'Rejected', 'Returned'].includes(r.status)) {
-                  pending += total;
-              }
-          });
+    requests.forEach(r => {
+        if (r.job !== req.job || !['Local', 'HO'].includes(r.type)) return;
+        
+        const val = calculateValue(r);
 
-          // ยอดใบปัจจุบัน (Current)
-          const current = calculateRequestTotal(req);
+        if (r.id === req.id) {
+            current += val;
+        } else if (r.status === 'Completed') {
+            used += val;
+        } else if (!['Draft', 'Rejected', 'Returned'].includes(r.status)) {
+            pending += val;
+        }
+    });
 
-          return { budget, used, pending, current };
-      };
+    return { budget: totalBudget, used, pending, current };
+};
 
   // 1. ฟังก์ชันเปิดไฟล์ (รองรับทั้ง URL และ Base64)
 // --- HELPER: FILE VIEWING (UPDATED) ---
@@ -5231,8 +5291,23 @@ const handleConfirmDisburse = async () => {
             setAssets(updatedAssets);
         }
 
+        const updatedItems = req.items.map((item, idx) => {
+            const dItem = disburseItems[idx]; // จับคู่ด้วยลำดับ (Index)
+            let totalPaid = 0;
+
+            if (req.type === 'Withdraw') {
+                // กรณีเบิก: รวมยอด ในระบบ + นอกระบบ
+                totalPaid = (dItem.useSys || 0) + (dItem.useNon || 0);
+            } else {
+                // กรณียืม: จ่ายเต็มตามจำนวน (เพราะเลือกรายชิ้น)
+                totalPaid = item.qty;
+            }
+
+            return { ...item, receivedTotal: totalPaid }; // บันทึกยอด
+        });
+
         // 4. Update Request Status
-        handleUpdateStatus(req.id, 'Completed', `จ่ายของ/ยืมของเรียบร้อย ${disburseData.note}`, logImages);
+        handleUpdateStatus(req.id, 'Completed', `จ่ายของ/ยืมของเรียบร้อย ${disburseData.note}`, logImages, { items: updatedItems });
         
         setShowDisburseModal(false);
         showToast('บันทึกข้อมูลเรียบร้อย');
@@ -6816,7 +6891,14 @@ filteredRequests.map(req => {
               )}
           </h4>
         </div>
-        <StatusBadge status={req.status} type={req.type} />
+        <StatusBadge 
+    status={req.status} 
+    type={req.type} 
+    onClick={(e) => { 
+        e.stopPropagation(); // ป้องกันไม่ให้ไปเปิด Detail Modal
+        handleShowActors(req); 
+    }} 
+/>
       </div>
       
       <ProgressBar request={req} />
@@ -8233,13 +8315,40 @@ filteredRequests.map(req => {
                           <div className="col-span-8">
                               <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อรายการ {newOrderMeta.type === 'Borrow' && '(เลือกจากทะเบียนทรัพย์สิน)'}</label>
                               <div className="relative">
-                                <input 
-                                    type="text" 
-                                    className="w-full p-2.5 pl-3 pr-10 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" 
-                                    placeholder={newOrderMeta.type === 'Borrow' ? "กดปุ่มด้านขวาเพื่อเลือก..." : "ระบุชื่อสินค้า..."}
-                                    value={tempItem.name} 
-                                    onChange={e => setTempItem({...tempItem, name: e.target.value})} 
-                                />
+                                {(() => {
+            // เช็คว่าเป็นโหมดที่ "ห้ามพิมพ์" หรือไม่ (เบิก/ยืม)
+            const isStrictSelection = ['Withdraw', 'Borrow'].includes(newOrderMeta.type);
+
+            return (
+                <input 
+                    type="text" 
+                    // 1. ถ้าเป็น เบิก/ยืม ให้ล็อก ReadOnly และกดแล้วเปิด Modal
+                    readOnly={isStrictSelection}
+                    onClick={() => {
+                        if (isStrictSelection) setShowSelectionModal(true);
+                    }}
+                    
+                    // 2. ปรับ Style: ถ้าล็อกให้เป็นสีเทาและมี cursor pointer, ถ้าซื้อให้เป็นสีขาวปกติ
+                    className={`w-full p-2.5 pl-3 pr-10 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none ${
+                        isStrictSelection 
+                        ? 'bg-gray-50 cursor-pointer font-bold text-gray-700' // เบิก/ยืม (ห้ามพิมพ์)
+                        : 'bg-white' // สั่งซื้อ (พิมพ์ได้ปกติ)
+                    }`}
+                    
+                    // 3. Placeholder ต่างกัน
+                    placeholder={isStrictSelection ? "คลิกเพื่อเลือกรายการ..." : "ระบุชื่อสินค้า..."}
+                    
+                    value={tempItem.name} 
+                    
+                    // 4. OnChange: ยอมให้พิมพ์เฉพาะตอน "สั่งซื้อ" เท่านั้น
+                    onChange={e => {
+                        if (!isStrictSelection) {
+                            setTempItem({...tempItem, name: e.target.value});
+                        }
+                    }} 
+                />
+            );
+        })()}
                                 <button 
                                     type="button"
                                     onClick={() => setShowSelectionModal(true)} 
@@ -8638,7 +8747,11 @@ filteredRequests.map(req => {
                      <div>
                          <div className="flex items-center gap-3">
                              <h3 className="font-bold text-xl text-gray-800">{selectedRequest.id}</h3>
-                             <StatusBadge status={selectedRequest.status} type={selectedRequest.type} />
+                             <StatusBadge 
+    status={selectedRequest.status} 
+    type={selectedRequest.type} 
+    onClick={() => handleShowActors(selectedRequest)}
+/>
                          </div>
                          <p className="text-sm text-gray-500 mt-1">วันที่: {selectedRequest.created} | ผู้ขอ: {selectedRequest.requester}</p>
                      </div>
@@ -8890,53 +9003,49 @@ filteredRequests.map(req => {
             </h4>
             
             <div className="space-y-3">
-                {groupKeys.map((key) => {
-                    const group = groups[key];
-                    const badgeColor = group.type === 'SubJob' ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-purple-100 text-purple-700 border-purple-200';
-                    
-                    // 4. คำนวณยอดรวมของกลุ่ม (Aggregate Stats)
-                    const groupStats = group.codes.reduce((acc, code) => {
-                        const s = getBudgetStats(selectedRequest, code, group.type);
-                        acc.budget += s.budget;
-                        acc.used += s.used;
-                        acc.pending += s.pending;
-                        acc.current += s.current;
-                        return acc;
-                    }, { budget: 0, used: 0, pending: 0, current: 0 });
+               
+{groupKeys.map((key) => {
+    const group = groups[key];
+    const badgeColor = group.type === 'SubJob' ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-purple-100 text-purple-700 border-purple-200';
+    
+    // 🟢 1. คำนวณยอดกลุ่ม (ส่ง isGroup = true)
+    const groupStats = getBudgetStats(selectedRequest, group.name, group.type, true);
 
-                    return (
-                        <div key={key} className="animate-in fade-in">
-                            {/* แสดงผลระดับ Group */}
-                            {renderProgressBar(
-                                groupStats, 
-                                `${group.type}|${group.name}`, 
-                                badgeColor, 
-                                true, 
-                                key
-                            )}
+    return (
+        <div key={key} className="animate-in fade-in">
+            {/* แสดง Progress Bar ของกลุ่ม */}
+            {renderProgressBar(
+                groupStats, 
+                `${group.type}|${group.name}`, 
+                badgeColor, 
+                true, // เป็น Group
+                key
+            )}
 
-                            {/* แสดงผลระดับ Code (เมื่อกดขยาย) */}
-                            {expandedBudgetGroups[key] && (
-                                <div className="space-y-1 animate-in slide-in-from-top-2 duration-200 origin-top">
-                                    {group.codes.map(code => {
-                                        const codeStats = getBudgetStats(selectedRequest, code, group.type);
-                                        return (
-                                            <div key={code}>
-                                                {renderProgressBar(
-                                                    codeStats, 
-                                                    code, 
-                                                    'bg-gray-100 text-gray-600 border-gray-300', 
-                                                    false, 
-                                                    null
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-                    );
-                })}
+            {/* ส่วนย่อย (เมื่อกดขยาย) */}
+            {expandedBudgetGroups[key] && (
+                <div className="space-y-1 animate-in slide-in-from-top-2 duration-200 origin-top">
+                    {group.codes.map(code => {
+                        // 🔵 2. คำนวณยอดราย Code (ส่ง isGroup = false หรือไม่ส่งค่า Default)
+                        const codeStats = getBudgetStats(selectedRequest, code, group.type, false);
+                        
+                        return (
+                            <div key={code}>
+                                {renderProgressBar(
+                                    codeStats, 
+                                    code, 
+                                    'bg-gray-100 text-gray-600 border-gray-300', 
+                                    false, // ไม่ใช่ Group
+                                    null
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+})}
             </div>
         </div>
     );
@@ -11999,21 +12108,36 @@ const l2Log = historyDesc.find(h =>
 /* ================================================================================== */
 
 <> 
-    {/* 1. ส่วนเตรียมข้อมูล "สโตร์ผู้รับของ" และสถานะงาน */}
+    {/* 1. ส่วนเตรียมข้อมูล "สโตร์" (แยก จ่ายของ vs รับของ) */}
     {(() => {
-        // ค้นหา Log ล่าสุดที่มีการรับของ (Completed, Partially Received หรือ Shipping ที่มีการรับ)
-        const receiverLog = historyDesc.find(h => 
-            h.action === 'Partially Received' || 
-            h.action === 'Completed' || 
-            h.action === 'Received' ||
-            (h.note && h.note.includes('รับของ'))
-        );
+        // --- ⭐ [แก้ไขใหม่] Logic หาคนเซ็นช่องสโตร์ ---
+        let storeLog = null;
+        let storeLabel = "สโตร์ผู้รับของ"; // Default
+
+        // กรณี 1: เบิกวัสดุ (Withdraw) -> คนเซ็นคือคนที่กด "จ่ายของ" (Disburse -> Completed)
+        if (selectedRequest.type === 'Withdraw') {
+            storeLabel = "สโตร์ผู้จ่ายของ";
+            storeLog = historyDesc.find(h => 
+                h.action === 'Completed' || // สถานะตอนกดจ่ายของจบงาน
+                h.action === 'Received' ||  // เผื่อเคสเก่า
+                (h.note && h.note.includes('จ่ายของ'))
+            );
+        } 
+        // กรณี 2: สั่งซื้อ (Local/HO) -> คนเซ็นคือคนที่กด "รับของ" (Receive)
+        else {
+            storeLog = historyDesc.find(h => 
+                h.action === 'Partially Received' || 
+                h.action === 'Completed' || 
+                h.action === 'Received' ||
+                (h.note && h.note.includes('รับของ'))
+            );
+        }
         
-        // ดึงข้อมูล User ผู้รับของ
-        const userReceiver = getUser(receiverLog);
-        const nameReceiver = userReceiver ? `${userReceiver.firstName} ${userReceiver.lastName}` : (receiverLog ? receiverLog.user.replace(' (Email)', '') : '..........................');
-        const sigReceiver = userReceiver?.signature ? getDriveImageUrl(userReceiver.signature) : null;
-        const dateReceiver = receiverLog ? formatDateTh(receiverLog.date) : '....../....../......';
+        // ดึงข้อมูล User สโตร์
+        const userStore = getUser(storeLog);
+        const nameStore = userStore ? `${userStore.firstName} ${userStore.lastName}` : (storeLog ? storeLog.user.replace(' (Email)', '') : '..........................');
+        const sigStore = userStore?.signature ? getDriveImageUrl(userStore.signature) : null;
+        const dateStore = storeLog ? formatDateTh(storeLog.date) : '....../....../......';
 
         // ตัวแปรเช็คสถานะงาน
         const isJobClosed = ['Completed', 'Returned', 'Rejected'].includes(selectedRequest.status);
@@ -12171,9 +12295,7 @@ const l2Log = historyDesc.find(h =>
     })}
 </tbody>
             </table>
-
-            {/* --- ส่วนลายเซ็น (Signature) --- */}
-            <div className="mt-8 signature-section break-inside-avoid">
+<div className="mt-8 signature-section break-inside-avoid">
                 <div className={`grid ${selectedRequest.type === 'Withdraw' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
                     
                     {/* 1. ผู้ขอ */}
@@ -12188,37 +12310,36 @@ const l2Log = historyDesc.find(h =>
                         </div>
                     </div>
 
-                    {/* 2. สโตร์ผู้รับของ (⭐ Logic 1: แสดงเมื่อมีการรับของแล้ว) */}
+                    {/* 2. สโตร์ (ผู้จ่ายของ หรือ ผู้รับของ) */}
                     <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">สโตร์ผู้รับของ</div>
+                        {/* ⭐ แสดงชื่อหัวข้อตามเงื่อนไข (storeLabel) */}
+                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">{storeLabel}</div>
                         <div className="flex-1 flex items-center justify-center">
-                            {/* แสดงลายเซ็นถ้ามีข้อมูลคนรับของ */}
-                            {sigReceiver ? 
-                                <img src={sigReceiver} className="max-h-16 max-w-full object-contain"/> : 
+                            {/* ⭐ แสดงลายเซ็น (sigStore) */}
+                            {sigStore ? 
+                                <img src={sigStore} className="max-h-16 max-w-full object-contain"/> : 
                                 <span className="text-gray-300 text-xs">..........................</span>
                             }
                         </div>
                         <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                            <div className="font-bold">{nameReceiver}</div>
-                            <div>วันที่: {dateReceiver}</div>
+                            <div className="font-bold">{nameStore}</div>
+                            <div>วันที่: {dateStore}</div>
                         </div>
                     </div>
 
                     {/* 3. ผู้อนุมัติ L1 */}
-<div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-    {/* ⭐ แก้ไข: เปลี่ยนชื่อหัวข้อตามประเภทคำขอ */}
-    <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">
-        {['Withdraw', 'Borrow'].includes(selectedRequest.type) ? 'ผู้อนุมัติ' : 'ผู้อนุมัติ (Level 1)'}
-    </div>
-    
-    <div className="flex-1 flex items-center justify-center">
-        {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
-    </div>
-    <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-        <div className="font-bold">{nameL1}</div>
-        <div>วันที่: {dateL1}</div>
-    </div>
-</div>
+                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">
+                            {['Withdraw', 'Borrow'].includes(selectedRequest.type) ? 'ผู้อนุมัติ' : 'ผู้อนุมัติ (Level 1)'}
+                        </div>
+                        <div className="flex-1 flex items-center justify-center">
+                            {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                        </div>
+                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                            <div className="font-bold">{nameL1}</div>
+                            <div>วันที่: {dateL1}</div>
+                        </div>
+                    </div>
 
                     {/* 4. ผู้อนุมัติ L2 (แสดงเฉพาะงานซื้อ) */}
                     {selectedRequest.type !== 'Withdraw' && (
@@ -12239,6 +12360,7 @@ const l2Log = historyDesc.find(h =>
         );
     })()}
 </>
+
                             )}
                             </>
                         );
@@ -14485,6 +14607,48 @@ const l2Log = historyDesc.find(h =>
                         ยืนยันและปรับยอด (Confirm Adjust)
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+)}
+
+
+{/* --- ACTOR LIST MODAL --- */}
+{showActorModal && (
+    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[300] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden">
+            <div className="px-5 py-3 border-b bg-blue-50 flex justify-between items-center">
+                <div>
+                    <h3 className="font-bold text-blue-800 text-sm">ผู้รับผิดชอบขั้นตอน:</h3>
+                    <p className="text-xs text-blue-600 font-bold mt-0.5">{actorList.title}</p>
+                </div>
+                <button onClick={() => setShowActorModal(false)} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+            </div>
+            
+            <div className="p-0 max-h-[300px] overflow-y-auto">
+                {actorList.users.length > 0 ? (
+                    <div className="divide-y divide-gray-100">
+                        {actorList.users.map((u, i) => (
+                            <div key={i} className="px-5 py-3 flex items-center gap-3 hover:bg-gray-50">
+                                <div className="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center font-bold text-xs">
+                                    {u.firstName.charAt(0)}
+                                </div>
+                                <div>
+                                    <p className="text-sm font-bold text-gray-800">{u.firstName} {u.lastName}</p>
+                                    <p className="text-xs text-gray-500">{u.empId} {u.role === 'Admin' && ' (Admin)'}</p>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="p-8 text-center text-gray-400 text-sm">
+                        <User size={24} className="mx-auto mb-2 opacity-30"/>
+                        <p>ไม่พบผู้มีสิทธิ์ในขั้นตอนนี้</p>
+                    </div>
+                )}
+            </div>
+            <div className="p-3 bg-gray-50 text-center border-t">
+                <button onClick={() => setShowActorModal(false)} className="text-xs font-bold text-gray-500 hover:text-gray-800">ปิดหน้าต่าง</button>
             </div>
         </div>
     </div>
