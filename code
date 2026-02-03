@@ -1,6 +1,9 @@
+
+
 // --- CONFIGURATION ---
-const SUPABASE_URL = 'https://zaugfyldiqcpfhfaxapc.supabase.co'; // ใส่ Project URL ของคุณ
-const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); // ✅ ดึงจากตู้เซฟ
+// ⭐ เปลี่ยนมาดึงจาก Script Properties แทนการใส่ URL ตรงๆ
+const SUPABASE_URL = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY');
 
 
 
