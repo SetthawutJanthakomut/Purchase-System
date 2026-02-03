@@ -56,7 +56,7 @@
       'Settings',
       'Lock',
       'Menu', // ⭐ เพิ่มไอคอน Menu ตรงนี้
-      'EyeOff',
+      'Eye', 'EyeOff',
       'BellOff', 'Megaphone'// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
     ];
     const lucideReact = {};
@@ -976,6 +976,8 @@ const hasPermission = (permId, project = globalProjectFilter) => {
         const [view, setView] = useState('login'); 
         const [loading, setLoading] = useState(false);
         
+
+        
         // State สำหรับ OTP (Register/Forgot Password)
         const [otpSent, setOtpSent] = useState(false);
         const [refCode, setRefCode] = useState('');
@@ -1172,14 +1174,45 @@ const handleRegisterRequestOTP = () => {
                                 <div><label className="text-xs font-bold text-slate-500 flex items-center gap-1"><User size={12}/> ชื่อผู้ใช้งาน</label><input name="username" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all" value={formData.username} onChange={handleChange} /></div>
                                 
                                 <div>
-                                    <label className="text-xs font-bold text-slate-500 flex items-center gap-1"><Lock size={12}/> รหัสผ่าน</label>
-                                    <div className="relative">
-                                        <input name="password" type={showPassword ? "text" : "password"} required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all pr-10" value={formData.password} onChange={handleChange} />
-                                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" tabIndex="-1">
-                                            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                                        </button>
-                                    </div>
-                                </div>
+    <label className="text-xs font-bold text-slate-500 flex items-center gap-1">
+        <Lock size={12}/> รหัสผ่าน
+    </label>
+    <div className="relative">
+        <input 
+    name="password" 
+    type={showPassword ? "text" : "password"} 
+    required 
+    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all pr-10" 
+    value={formData.password} 
+    onChange={handleChange} 
+/>
+
+{/* ⭐ ปุ่มกดสลับสถานะ (ใช้ SVG โดยตรง) */}
+<button 
+    type="button" 
+    onClick={() => setShowPassword(!showPassword)} 
+    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" 
+    tabIndex="-1"
+    title={showPassword ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"}
+>
+    {showPassword ? (
+        // 👁️‍🗨️ ไอคอนตาปิด (Eye Off - SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>
+            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>
+            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>
+            <line x1="2" x2="22" y1="2" y2="22"/>
+        </svg>
+    ) : (
+        // 👁️ ไอคอนตาเปิด (Eye - SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+            <circle cx="12" cy="12" r="3"/>
+        </svg>
+    )}
+</button>
+    </div>
+</div>
 
                                 <div className="flex justify-between items-center">
                                     
@@ -2572,6 +2605,122 @@ const handleShowActors = (req) => {
     });
     setShowActorModal(true);
 };
+
+// --- Helper: ดึงข้อมูลผู้มีสิทธิ์ (Updated: รองรับหลายสิทธิ์) ---
+    const getActorData = (req, allUsers) => {
+        let permIds = []; // ⭐ เปลี่ยนเป็น Array เพื่อเก็บได้หลายสิทธิ์
+        let title = '';
+
+        switch (req.status) {
+            case 'Pending Head': 
+                title = 'รออนุมัติ Level 1'; 
+                // ⭐ แก้ไข: กรณีเบิก/ยืม ให้ทั้ง L1(8) และ L2(9) มีสิทธิ์อนุมัติ
+                if (req.type === 'Withdraw' || req.type === 'Borrow') {
+                    permIds = [8, 9]; 
+                } else {
+                    permIds = [8];
+                }
+                break;
+            case 'Pending PM': 
+                title = 'รออนุมัติ Level 2'; 
+                permIds = [9]; 
+                break;
+            case 'Pending Check': 
+                title = 'รอตรวจสอบเอกสาร'; 
+                permIds = [10]; 
+                break;
+            case 'Approved': 
+                if (req.type === 'Local') { permIds = [12]; title = 'รอสั่งซื้อ (Local)'; }
+                else if (req.type === 'HO' && req.purchaseType === 'Buy') { permIds = [11]; title = 'รอออก PR'; }
+                else { permIds = [14, 13]; title = 'รอทำสัญญา/ดำเนินการ'; } // รวมสิทธิ์สัญญา(14) และส่งของ(13) เผื่อกรณีข้ามขั้นตอน
+                break;
+            case 'PR Issued': permIds = [12]; title = 'รอออก PO'; break;
+            case 'PO Issued': permIds = [13]; title = 'รออัปเดตการส่งของ'; break;
+            case 'Ordered': permIds = [15]; title = 'รอรับของ (Local)'; break;
+            case 'Shipping': permIds = [15]; title = 'รอรับของ (HO)'; break;
+            case 'Ready to Disburse': permIds = [24]; title = 'รอจ่ายของ (Store)'; break;
+            case 'Contract Pending': permIds = [14]; title = 'รอทำสัญญา'; break;
+            case 'Contract Signed': permIds = [13]; title = 'รอส่งมอบ'; break;
+            default: return null;
+        }
+
+        // กรอง User ทั้งหมดที่มีสิทธิ์
+        const validUsers = allUsers.filter(u => {
+            if (u.status !== 'Activated') return false;
+            if (u.isSuperAdmin) return true; // ⭐ Super Admin เห็นเสมอ
+
+            const perms = u.permissions?.[req.job] || [];
+            
+            // ⭐ ตรวจสอบ: เป็น Admin ของโปรเจกต์ (2) หรือ มีสิทธิ์ใดสิทธิ์หนึ่งใน permIds
+            const isProjectAdmin = perms.includes(2);
+            const hasSpecificRight = permIds.some(id => perms.includes(id));
+
+            return isProjectAdmin || hasSpecificRight;
+        });
+
+        return { title, users: validUsers };
+    };
+
+    // --- Component: Tooltip แสดงผู้มีสิทธิ์ ---
+    const StatusWithTooltip = ({ request, allUsers, children }) => {
+        const [isVisible, setIsVisible] = useState(false);
+        const [isLocked, setIsLocked] = useState(false); // สถานะคลิกเพื่อค้างไว้
+        const [actorData, setActorData] = useState(null);
+
+        useEffect(() => {
+            if (isVisible || isLocked) {
+                setActorData(getActorData(request, allUsers));
+            }
+        }, [isVisible, isLocked, request, allUsers]);
+
+        return (
+            <div 
+                className="relative inline-block"
+                onMouseEnter={() => setIsVisible(true)}
+                onMouseLeave={() => !isLocked && setIsVisible(false)}
+            >
+                {/* ตัว Badge เดิม */}
+                <div 
+                    onClick={(e) => {
+                        e.stopPropagation(); // กันไม่ให้เปิดหน้ารายละเอียด
+                        setIsLocked(!isLocked); // สลับสถานะล็อค
+                    }}
+                    className="cursor-pointer"
+                >
+                    {children}
+                </div>
+
+                {/* ส่วน Tooltip Popup */}
+                {(isVisible || isLocked) && actorData && actorData.users.length > 0 && (
+                    <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-xl shadow-xl border border-gray-200 z-50 animate-in fade-in slide-in-from-top-2 overflow-hidden">
+                        {/* หัวข้อ */}
+                        <div className="bg-slate-50 px-3 py-2 border-b border-gray-100 flex justify-between items-center">
+                            <div>
+                                <p className="text-[10px] font-bold text-gray-500">ขั้นตอนปัจจุบัน</p>
+                                <p className="text-xs font-bold text-blue-700">{actorData.title}</p>
+                            </div>
+                            {isLocked && <span className="text-[9px] bg-red-100 text-red-600 px-1.5 rounded border border-red-200">Pin</span>}
+                        </div>
+                        
+                        {/* รายชื่อ */}
+                        <div className="max-h-48 overflow-y-auto p-1 custom-scrollbar">
+                            {actorData.users.map((u, i) => (
+                                <div key={i} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded transition-colors">
+                                    <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-bold text-gray-600">
+                                        {u.firstName?.charAt(0)}
+                                    </div>
+                                    <div className="overflow-hidden">
+                                        <p className="text-xs font-bold text-gray-800 truncate">{u.firstName} {u.lastName}</p>
+                                        <p className="text-[9px] text-gray-400">{u.empId} {u.role === 'Admin' ? '(Admin)' : ''}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
 
       const [expandedChart, setExpandedChart] = useState(null);
       const [drillDownState, setDrillDownState] = useState({ SubJob: null, matCode: null });
@@ -6891,14 +7040,14 @@ filteredRequests.map(req => {
               )}
           </h4>
         </div>
-        <StatusBadge 
-    status={req.status} 
-    type={req.type} 
-    onClick={(e) => { 
-        e.stopPropagation(); // ป้องกันไม่ให้ไปเปิด Detail Modal
-        handleShowActors(req); 
-    }} 
-/>
+       {/* ใช้ Component ใหม่ครอบ StatusBadge */}
+<StatusWithTooltip request={req} allUsers={allUsers}>
+    <StatusBadge 
+        status={req.status} 
+        type={req.type} 
+        // ไม่ต้องส่ง onClick ไปที่นี่แล้ว เพราะจัดการที่ Wrapper
+    />
+</StatusWithTooltip>
       </div>
       
       <ProgressBar request={req} />
@@ -9609,12 +9758,15 @@ const relatedAssets = sourceAssets.filter(a =>
                                         <div key={idx} className="ml-6 relative">
                                             <div className={`absolute -left-[31px] top-0 w-4 h-4 rounded-full border-2 border-white ${idx===0 ? 'bg-blue-500 ring-2 ring-blue-100' : 'bg-gray-300'}`}></div>
                                             <div className="flex justify-between items-start">
-                                            <span className="text-xs font-bold text-gray-900">
-  {/* ⭐ ถ้าเจอคำว่า Pending PM ให้เปลี่ยนเป็น Pending Level 2 ทันที */}
-  {log.action === 'Pending PM' ? 'Pending Level 2' : log.action}
-</span>
-                                            
-                                            </div>
+    <span className="text-xs font-bold text-gray-900">
+        {/* ⭐ ถ้าเจอคำว่า Pending PM ให้เปลี่ยนเป็น Pending Level 2 ทันที */}
+        {log.action === 'Pending PM' ? 'Pending Level 2' : log.action}
+    </span>
+    {/* ⭐ เพิ่ม Timestamp ตรงนี้ */}
+    <span className="text-[10px] text-gray-400 whitespace-nowrap ml-2 font-mono">
+        {log.date}
+    </span>
+</div>
                                             <p className="text-xs text-gray-500 mt-0.5">โดย: {log.user}</p>
                                             {log.note && (<div className={`mt-2 text-xs p-3 rounded-lg border ${log.action === 'Return for Revision' || log.note.includes('ส่งคืนแก้ไข') ? 'bg-red-50 text-red-700 border-red-200 font-medium' : 'bg-gray-50 text-gray-600 border-gray-100'}`}>{log.action === 'Return for Revision' && <AlertCircle className="w-3 h-3 inline mr-1 mb-0.5"/>}{log.note}</div>)}
                                         </div>
@@ -11062,7 +11214,7 @@ setShowEditInvModal(true);
                 </div>
                 <ModalScrollButtons targetId="history-modal-scroll" />
                 {/* ⭐ ปุ่ม Load More แบบลอย (Floating Button) มุมซ้ายล่าง */}
-          {!viewingItem && (
+          
               <button 
                   onClick={() => {
                       if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
@@ -11079,7 +11231,7 @@ setShowEditInvModal(true);
                   <RefreshCw size={16} className="group-hover:rotate-180 transition-transform duration-500"/> 
                   <span>โหลดเพิ่ม (Load More)</span>
               </button>
-          )}
+          
              </div>
           </div>
       )}
