@@ -301,169 +301,153 @@ function findApproverEmails(projectName, permId) {
   return result;
 }
 
-// --- HELPER: สร้าง HTML สำหรับ Budget Tracking (UPDATED: Actual Price Logic) ---
+// --- HELPER: สร้าง HTML สำหรับ Budget Tracking แบบกลุ่ม (Group Only) ตาม Logic หน้าเว็บ ---
 function getBudgetInfoForEmail_FullDetail(req) {
   // 1. กรองเฉพาะ HO / Local เท่านั้น
   if (!['Local', 'HO'].includes(req.type)) return '';
-  
-  // 2. หา SubJob / Mat. Code ที่เกี่ยวข้องในใบนี้
-  const uniqueSubJobs = [...new Set(req.items.map(i => i.subJob).filter(val => val))];
-  const uniqueMatCodes = [...new Set(req.items.map(i => i.MatCode).filter(val => val))];
 
-  if (uniqueSubJobs.length === 0 && uniqueMatCodes.length === 0) return '';
-
-  // โหลดข้อมูลเพื่อคำนวณ
+  // 2. โหลดข้อมูลที่จำเป็น
   const projects = getSheetData('Projects');
   const projectData = projects.find(p => p.name === req.job);
-  
   if (!projectData) return '';
-  
+
   const allRequests = getSheetData('Requests');
-  const allAssets = getSheetData('Assets'); // ⭐ โหลด Assets มาเพื่อคำนวณราคาจริง
-  
-  const budgetList = [
-      ...uniqueSubJobs.map(c => ({code: c, type: 'SubJob'})),
-      ...uniqueMatCodes.map(c => ({code: c, type: 'MatCode'}))
-  ];
+  const allAssets = getSheetData('Assets');
 
-  let html = `
-    <div style="margin-top: 20px; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: 'Sarabun', sans-serif;">
-      <div style="background-color: #fff8e1; padding: 12px 15px; border-bottom: 1px solid #ffe0b2;">
-        <h3 style="margin: 0; font-size: 16px; color: #f57c00;">ติดตามงบประมาณ (Budget Tracking)</h3>
-      </div>
-      <div style="padding: 15px;">
-  `;
+  // 3. ฟังก์ชันคำนวณยอดเงินรายรายการ (Logic เดียวกับ index.html)
+  const calculateItemTotal = (r, item) => {
+    const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
+    const relatedAssets = allAssets.filter(a => 
+        a.currentRequestId === r.id && 
+        a.name === item.name &&
+        (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+    );
+    const receivedLogs = item.receivedLog || [];
+    
+    let itemVal = 0;
+    let cnt = 0;
 
-  // ฟังก์ชันคำนวณยอดเงิน (Logic เดียวกับหน้าเว็บ)
-  const calculateTotal = (r, code, type) => {
-      const items = r.items.filter(i => (type === 'SubJob' ? i.subJob : i.MatCode) === code);
-      const isRent = r.type === 'HO' && r.purchaseType === 'Rent';
+    if (relatedAssets.length > 0) {
+        itemVal += relatedAssets.reduce((s, asset) => {
+            const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
+            const duration = isRent ? (asset.duration || item.duration || 1) : 1;
+            return s + (price * duration);
+        }, 0);
+        cnt = relatedAssets.length;
+    } else if (receivedLogs.length > 0) {
+        itemVal += receivedLogs.reduce((s, log) => {
+            const duration = isRent ? (log.duration || 1) : 1;
+            return s + (log.qty * log.price * duration);
+        }, 0);
+        cnt = item.receivedTotal || 0;
+    }
 
-      return items.reduce((sum, item) => {
-          // 1. หา Assets ที่เกี่ยวข้อง
-          const relatedAssets = allAssets.filter(a => a.currentRequestId === r.id && a.name === item.name);
-          // 2. หา Logs
-          const receivedLogs = item.receivedLog || [];
-          
-          let itemVal = 0;
-          let cnt = 0;
-
-          // Priority A: Assets
-          if (relatedAssets.length > 0) {
-              itemVal += relatedAssets.reduce((s, asset) => {
-                    const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
-                    const duration = isRent ? (asset.duration || item.duration || 1) : 1;
-                    return s + (price * duration);
-              }, 0);
-              cnt = relatedAssets.length;
-          } 
-          // Priority B: Logs
-          else if (receivedLogs.length > 0) {
-              itemVal += receivedLogs.reduce((s, log) => {
-                    const duration = isRent ? (log.duration || 1) : 1;
-                    return s + (log.qty * log.price * duration);
-              }, 0);
-              cnt = item.receivedTotal || 0;
-          }
-
-          // Priority C: Estimate Remainder
-          // ⭐ [แก้ไขใหม่] ถ้าสถานะเป็น Completed (จบงาน/Force Close) ไม่ต้องเอาเศษที่เหลือมาคิดเงิน
-          if (r.status !== 'Completed') { 
-              const rem = Math.max(0, item.qty - cnt);
-              const dur = isRent ? (item.duration || 1) : 1;
-              const estPrice = item.unitPrice || 0;
-              itemVal += (rem * estPrice * dur);
-          }
-
-          return sum + itemVal;
-      }, 0);
+    if (r.status !== 'Completed') {
+        const rem = Math.max(0, item.qty - cnt);
+        const dur = isRent ? (item.duration || 1) : 1;
+        itemVal += (rem * (item.unitPrice || 0) * dur);
+    }
+    return itemVal;
   };
 
-  budgetList.forEach(item => {
-      // ค้นหางบประมาณตั้งต้น
-      const list = item.type === 'SubJob' ? projectData.subJobs : projectData.MatCodes;
-      const target = list ? list.find(x => x.code === item.code) : null;
-      const budget = target ? (target.budget || 0) : 0;
+  // 4. จัดกลุ่มข้อมูล (Grouping Logic)
+  const groups = {};
+  req.items.forEach(item => {
+    ['SubJob', 'matCode'].forEach(type => {
+      const code = type === 'SubJob' ? item.subJob : item.matCode;
+      if (!code) return;
 
-      if (budget === 0) return; // ข้ามถ้างบเป็น 0
+      const defs = type === 'SubJob' ? projectData.subJobs : projectData.matCodes;
+      const targetDef = defs?.find(d => d.code === code);
+      const groupName = targetDef?.group || 'Others (อื่นๆ)';
+      const groupKey = `${type}|${groupName}`;
 
-      // --- คำนวณยอด ---
-      let used = 0;    // Completed
-      let pending = 0; // Waiting
+      if (!groups[groupKey]) {
+        groups[groupKey] = { type, name: groupName, codes: new Set(), budget: 0, used: 0, pending: 0, current: 0 };
+      }
+      groups[groupKey].codes.add(code);
+    });
+  });
+
+  // 5. คำนวณยอดสะสมของกลุ่ม
+  Object.keys(groups).forEach(key => {
+    const group = groups[key];
+    const defs = group.type === 'SubJob' ? projectData.subJobs : projectData.matCodes;
+    
+    // รวมงบประมาณทั้งกลุ่ม
+    group.budget = defs.filter(d => d.group === group.name || (!d.group && group.name === 'Others (อื่นๆ)'))
+                        .reduce((sum, d) => sum + (d.budget || 0), 0);
+
+    // วนลูปคำนวณยอดสะสม
+    allRequests.forEach(r => {
+      if (r.job !== req.job || !['Local', 'HO'].includes(r.type)) return;
       
-      allRequests.forEach(r => {
-          // กรองเฉพาะโครงการเดียวกัน (สำคัญ! ป้องกันยอดเบิ้ล)
-          if (r.job !== req.job) return; 
-          
-          if (r.id === req.id) return; // ข้ามใบปัจจุบัน (จะไปคิดในช่อง current)
-          if (!['Local', 'HO'].includes(r.type)) return;
-
-          const rTotal = calculateTotal(r, item.code, item.type);
-
-          if (r.status === 'Completed') {
-              used += rTotal;
-          } else if (!['Draft', 'Rejected', 'Returned'].includes(r.status)) {
-              pending += rTotal;
-          }
+      r.items.forEach(item => {
+        const itemCode = group.type === 'SubJob' ? item.subJob : item.matCode;
+        if (group.codes.has(itemCode)) {
+          const val = calculateItemTotal(r, item);
+          if (r.id === req.id) group.current += val;
+          else if (r.status === 'Completed') group.used += val;
+          else if (!['Draft', 'Rejected', 'Returned'].includes(r.status)) group.pending += val;
+        }
       });
+    });
+  });
 
-      // ยอดใบปัจจุบัน (Current)
-      const current = calculateTotal(req, item.code, item.type);
+  // 6. สร้าง HTML (Progress Bar) ล้อตาม Logic
+  let html = `
+    <div style="margin-top: 20px; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: 'Sarabun', sans-serif;">
+      <div style="background-color: #fff8e1; padding: 12px; border-bottom: 1px solid #ffe0b2;">
+        <h3 style="margin: 0; font-size: 14px; color: #f57c00;">ติดตามงบประมาณรายกลุ่ม (Group Budget Tracking)</h3>
+      </div>
+      <div style="padding: 15px; background-color: #ffffff;">
+  `;
 
-      const totalUsed = used + pending + current;
-      const remaining = budget - totalUsed;
-      const isOver = totalUsed > budget;
+  Object.keys(groups).sort().forEach(key => {
+    const g = groups[key];
+    if (g.budget === 0) return;
 
-      // คำนวณ % ความกว้าง
-      const usedPct = Math.min((used / budget) * 100, 100);
-      const pendingPct = Math.min((pending / budget) * 100, 100 - usedPct);
-      const currentPct = Math.min((current / budget) * 100, 100 - usedPct - pendingPct);
+    const totalUsed = g.used + g.pending + g.current;
+    const isOver = totalUsed > g.budget;
+    const usedPct = Math.min((g.used / g.budget) * 100, 100);
+    const pendingPct = Math.min((g.pending / g.budget) * 100, 100 - usedPct);
+    const currentPct = Math.min((g.current / g.budget) * 100, 100 - usedPct - pendingPct);
 
-      // สร้าง HTML แยกแต่ละส่วน
-      html += `
-        <div style="margin-bottom: 20px; border-bottom: 1px dashed #eee; padding-bottom: 15px;">
-           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap;">
-              <div style="margin-bottom: 4px;">
-                 <span style="background-color: ${item.type === 'SubJob' ? '#e8eaf6' : '#f3e5f5'}; color: ${item.type === 'SubJob' ? '#3f51b5' : '#7b1fa2'}; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">${item.type}</span>
-                 <strong style="font-size: 14px; margin-left: 5px;">${item.code}</strong> 
-                 <span style="color:#888; font-size: 12px;">(งบ: ${budget.toLocaleString()})</span>
-              </div>
-              <div style="font-size: 13px; font-weight: bold; ${isOver ? 'color: #d32f2f; background: #ffebee; padding: 2px 5px; border-radius: 4px;' : 'color: #333;'}">
-                 ใช้รวม: ${totalUsed.toLocaleString()} ${isOver ? '<span style="color:red; font-size:10px;">(เกินงบ!)</span>' : ''}
-              </div>
-           </div>
-
-           <div style="height: 10px; width: 100%; background-color: #f1f1f1; border-radius: 5px; overflow: hidden; display: flex; margin-bottom: 8px;">
-              <div style="width: ${usedPct}%; background-color: #4caf50;" title="ใช้แล้ว"></div>
-              <div style="width: ${pendingPct}%; background-color: #ffc107;" title="รออนุมัติใบอื่น"></div>
-              <div style="width: ${currentPct}%; background-color: #ff9800;" title="ใบนี้"></div>
-           </div>
-           
-           <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: #555;">
-              <div style="display: flex; align-items: center;">
-                 <div style="width: 8px; height: 8px; background-color: #4caf50; border-radius: 50%; margin-right: 4px;"></div>
-                 ใช้แล้ว (${used.toLocaleString()})
-              </div>
-              <div style="display: flex; align-items: center;">
-                 <div style="width: 8px; height: 8px; background-color: #ffc107; border-radius: 50%; margin-right: 4px;"></div>
-                 รออนุมัติ (${pending.toLocaleString()})
-              </div>
-              <div style="display: flex; align-items: center;">
-                 <div style="width: 8px; height: 8px; background-color: #ff9800; border-radius: 50%; margin-right: 4px;"></div>
-                 ใบนี้ (${current.toLocaleString()})
-              </div>
-              
-              <div style="margin-left: auto; font-weight: bold; font-size: 12px; color: ${remaining < 0 ? '#d32f2f' : '#2e7d32'};">
-                 คงเหลือ: ${remaining.toLocaleString()}
-              </div>
-           </div>
+    html += `
+      <div style="margin-bottom: 18px;">
+        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+          <div style="font-weight:bold;">
+            <span style="background:${g.type === 'SubJob' ? '#e8eaf6' : '#f3e5f5'}; color:${g.type === 'SubJob' ? '#3f51b5' : '#7b1fa2'}; padding:2px 5px; border-radius:4px; font-size:10px; margin-right:5px;">${g.type === 'SubJob' ? 'SubJob' : 'Mat. Code'}</span>
+            ${g.name}
+          </div>
+          <div style="font-weight:bold; color:${isOver ? '#d32f2f' : '#333'}">
+            ใช้รวม: ${totalUsed.toLocaleString()} / ${g.budget.toLocaleString()} 
+            ${isOver ? '<span style="color:red; font-size:10px;">(เกินงบ!)</span>' : ''}
+          </div>
         </div>
-      `;
+        <div style="height: 10px; width: 100%; background: #f1f1f1; border-radius: 5px; overflow: hidden; display: flex;">
+          <div style="width: ${usedPct}%; background: #4caf50;"></div>
+          <div style="width: ${pendingPct}%; background: #ffc107;"></div>
+          <div style="width: ${currentPct}%; background: #ff9800;"></div>
+        </div>
+        <table style="width: 100%; font-size: 10px; color: #666; margin-top: 4px;">
+          <tr>
+            <td>● ใช้แล้ว (${g.used.toLocaleString()})</td>
+            <td>● รออนุมัติ (${g.pending.toLocaleString()})</td>
+            <td>● ใบนี้ (${g.current.toLocaleString()})</td>
+            <td style="text-align: right; font-weight:bold; color:${(g.budget-totalUsed) < 0 ? '#d32f2f' : '#2e7d32'}">
+              เหลือ: ${(g.budget - totalUsed).toLocaleString()}
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
   });
 
   html += `</div></div>`;
   return html;
 }
+
 
 function sendApprovalEmail(req, targetEmail, targetRole) {
   console.log(`[SendEmail] ===== START =====`);
@@ -1499,29 +1483,26 @@ function setupBudgetSummaryTrigger() {
 }
 
 /**
- * ฟังก์ชันหลักสำหรับส่งเมลสรุปยอด Budget
+ * ฟังก์ชันหลักสำหรับส่งเมลสรุปยอด Budget (แสดงเฉพาะยอดใช้จริง ไม่รวมรออนุมัติ)
  */
 function sendWeeklyBudgetSummary() {
   console.log("[BudgetSummary] Starting report generation...");
   
-  // 1. โหลดข้อมูลทั้งหมด
   const projects = getSheetData('Projects');
   const requests = getSheetData('Requests');
   const assets = getSheetData('Assets');
   const users = getSheetData('Users');
-  
+
   if (!projects || projects.length === 0) {
     console.log("[BudgetSummary] No projects found.");
     return;
   }
 
-  // 2. คำนวณยอดเงินของแต่ละ Project / Code
-  const reportData = projects.map(proj => {
-    // เตรียมโครงสร้างข้อมูล
+  projects.forEach(proj => {
+    // --- Step A: คำนวณยอดเงิน ---
     const subJobs = (proj.subJobs || []).map(s => ({ ...s, type: 'SubJob', used: 0, pending: 0 }));
-    const MatCodes = (proj.MatCodes || []).map(e => ({ ...e, type: 'MatCode', used: 0, pending: 0 }));
-    
-    // ฟังก์ชันคำนวณยอดเงิน (Logic เดียวกับ getBudgetInfoForEmail_FullDetail)
+    const matCodes = (proj.matCodes || []).map(e => ({ ...e, type: 'MatCode', used: 0, pending: 0 }));
+
     const calculateItemValue = (req, item) => {
         const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
         const relatedAssets = assets.filter(a => a.currentRequestId === req.id && a.name === item.name);
@@ -1530,7 +1511,6 @@ function sendWeeklyBudgetSummary() {
         let val = 0;
         let cnt = 0;
 
-        // A. Assets (แม่นยำสุด)
         if (relatedAssets.length > 0) {
             val += relatedAssets.reduce((s, asset) => {
                 const price = isRent ? (asset.rentalPrice || 0) : (asset.price || 0);
@@ -1538,9 +1518,7 @@ function sendWeeklyBudgetSummary() {
                 return s + (price * duration);
             }, 0);
             cnt = relatedAssets.length;
-        } 
-        // B. Logs (รองลงมา)
-        else if (receivedLogs.length > 0) {
+        } else if (receivedLogs.length > 0) {
             val += receivedLogs.reduce((s, log) => {
                 const duration = isRent ? (log.duration || 1) : 1;
                 return s + (log.qty * log.price * duration);
@@ -1548,23 +1526,15 @@ function sendWeeklyBudgetSummary() {
             cnt = item.receivedTotal || 0;
         }
 
-        // C. Estimate (ส่วนที่เหลือ)
-        const rem = Math.max(0, item.qty - cnt);
-        
-        // ⭐ เพิ่มเงื่อนไข: ถ้ายังไม่จบงาน ให้คิดยอดที่เหลือ
-        // แต่ถ้าสถานะ req เป็น Completed แล้ว ให้ข้ามส่วนนี้ไปเลย
         if (req.status !== 'Completed') {
+            const rem = Math.max(0, item.qty - cnt);
             const dur = isRent ? (item.duration || 1) : 1;
-            const estPrice = item.unitPrice || 0;
-            val += (rem * estPrice * dur);
+            val += (rem * (item.unitPrice || 0) * dur);
         }
-        
         return val;
     };
 
-    // วนลูป Request ทั้งหมดเพื่อเติมตัวเลข
     requests.forEach(req => {
-        // กรองเฉพาะ request ของ project นี้ และเป็นประเภทที่มี budget
         if (req.job !== proj.name) return;
         if (!['Local', 'HO'].includes(req.type)) return;
         
@@ -1575,209 +1545,219 @@ function sendWeeklyBudgetSummary() {
 
         req.items.forEach(item => {
             const amount = calculateItemValue(req, item);
-            
-            // เติมยอดลง SubJob
             if (item.subJob) {
                 const target = subJobs.find(s => s.code === item.subJob);
                 if (target) {
-                    if (isCompleted) target.used += amount;
-                    else target.pending += amount;
+                    isCompleted ? target.used += amount : target.pending += amount;
                 }
             }
-            // เติมยอดลง MatCode
-            if (item.MatCode) {
-                const target = MatCodes.find(e => e.code === item.MatCode);
+            if (item.matCode) {
+                const target = matCodes.find(e => e.code === item.matCode);
                 if (target) {
-                    if (isCompleted) target.used += amount;
-                    else target.pending += amount;
+                    isCompleted ? target.used += amount : target.pending += amount;
                 }
             }
         });
     });
 
-    return {
-      name: proj.name,
-      subJobs: subJobs.sort((a,b) => a.code.localeCompare(b.code)),
-      MatCodes: MatCodes.sort((a,b) => a.code.localeCompare(b.code))
+    // --- Step B: จัดกลุ่มข้อมูล ---
+    const groups = {};
+    const processGroup = (list) => {
+        list.forEach(item => {
+            const gName = item.group || 'Others (อื่นๆ)';
+            const key = `${item.type}|${gName}`; 
+            
+            if (!groups[key]) {
+                groups[key] = { 
+                    key: key,
+                    type: item.type,
+                    name: gName, 
+                    budget: 0, 
+                    used: 0, 
+                    pending: 0, 
+                    items: [] 
+                };
+            }
+            groups[key].budget += (item.budget || 0);
+            groups[key].used += item.used;
+            groups[key].pending += item.pending;
+            groups[key].items.push(item);
+        });
     };
-  });
+    
+    processGroup(subJobs);
+    processGroup(matCodes);
 
-  // 3. สร้าง HTML Template
-  let htmlContent = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .header { background-color: #1e3a8a; padding: 25px; color: white; text-align: center; }
-        .header h1 { margin: 0; font-size: 24px; }
-        .header p { margin: 5px 0 0; opacity: 0.8; font-size: 14px; }
-        .content { padding: 20px; }
-        .project-card { border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 25px; overflow: hidden; }
-        .project-header { background-color: #f8fafc; padding: 12px 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #1e293b; font-size: 16px; border-left: 5px solid #2563eb; }
-        .table-container { padding: 0 15px 15px 15px; }
-        .budget-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; }
-        .budget-table th { background-color: #eff6ff; color: #1e40af; text-align: left; padding: 8px; font-weight: bold; border-bottom: 2px solid #bfdbfe; }
-        .budget-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; color: #334155; }
-        .budget-table tr:last-child td { border-bottom: none; }
-        .bar-bg { width: 80px; height: 6px; background-color: #e2e8f0; border-radius: 3px; overflow: hidden; display: flex; }
-        .bar-used { background-color: #10b981; height: 100%; }
-        .bar-pending { background-color: #f59e0b; height: 100%; }
-        .num { font-family: 'Courier New', monospace; font-weight: bold; }
-        .text-red { color: #dc2626; font-weight: bold; }
-        .text-green { color: #16a34a; }
-        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-right: 5px; }
-        .badge-sub { background: #e0e7ff; color: #3730a3; }
-        .badge-ep { background: #f3e8ff; color: #6b21a8; }
-        .footer { background-color: #f1f5f9; padding: 15px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>สรุปยอดงบประมาณประจำสัปดาห์</h1>
-          <p>ข้อมูล ณ วันที่ ${new Date().toLocaleString('th-TH')}</p>
-        </div>
-        <div class="content">
-  `;
+    if (Object.keys(groups).length === 0) return;
 
-  reportData.forEach(proj => {
-    // ข้ามโครงการที่ไม่มีงบประมาณเลย
-    if (proj.subJobs.length === 0 && proj.MatCodes.length === 0) return;
+    // --- Step C: สร้าง HTML ---
+    let htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; padding: 20px; }
+          .container { max-width: 800px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .header { background-color: #1e3a8a; padding: 25px; color: white; text-align: center; }
+          .header h1 { margin: 0; font-size: 22px; }
+          .header h2 { margin: 5px 0 0; font-size: 18px; color: #bfdbfe; }
+          
+          .summary-box { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+          .summary-header-sub { font-weight: bold; color: #1e40af; border-bottom: 2px solid #bfdbfe; padding-bottom: 8px; margin-bottom: 12px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+          .summary-header-mat { font-weight: bold; color: #9a3412; border-bottom: 2px solid #fed7aa; padding-bottom: 8px; margin-bottom: 12px; font-size: 16px; display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+          .summary-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; border-bottom: 1px dashed #f1f5f9; padding-bottom: 6px; }
+          
+          .group-section { margin-bottom: 25px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+          .group-header { padding: 10px 15px; font-weight: bold; font-size: 15px; display: flex; justify-content: space-between; }
+          
+          .bg-sub { background-color: #eff6ff; color: #1e3a8a; border-left: 5px solid #2563eb; }
+          .bg-mat { background-color: #fff7ed; color: #9a3412; border-left: 5px solid #f97316; }
 
-    htmlContent += `
-      <div class="project-card">
-        <div class="project-header">${proj.name}</div>
-        <div class="table-container">
+          .budget-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          .budget-table th { background-color: #f8fafc; color: #475569; text-align: right; padding: 8px; border-bottom: 1px solid #e2e8f0; }
+          .budget-table th:first-child { text-align: left; }
+          .budget-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; text-align: right; color: #334155; }
+          .budget-table td:first-child { text-align: left; }
+          
+          .num { font-family: 'Courier New', monospace; font-weight: bold; }
+          .text-red { color: #dc2626; }
+          .text-green { color: #16a34a; }
+          .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-right: 5px; }
+          .badge-sub { background: #dbeafe; color: #1e40af; }
+          .badge-mat { background: #ffedd5; color: #9a3412; }
+          .text-sub { color: #1e40af; }
+          .text-mat { color: #c2410c; }
+          .footer { background-color: #f1f5f9; padding: 15px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>สรุปงบประมาณรายสัปดาห์</h1>
+            <h2>โครงการ: ${proj.name}</h2>
+            <p style="font-size: 12px; margin-top:5px; opacity: 0.8;">ข้อมูล ณ วันที่ ${new Date().toLocaleString('th-TH')}</p>
+          </div>
+          <div style="padding: 20px;">
     `;
 
-    // รวม List ทั้งสองแบบเพื่อแสดงผล
-    const allItems = [
-       ...proj.subJobs.map(i => ({...i, badge: 'SubJob'})),
-       ...proj.MatCodes.map(i => ({...i, badge: 'MatCode'}))
-    ];
+    // --- ส่วนสรุป (Summary Box) ---
+    htmlContent += `<div class="summary-box">`;
+    const sortedKeys = Object.keys(groups).sort();
+    
+    const renderSummaryRow = (gKey) => {
+        const g = groups[gKey];
+        // ⭐ คำนวณเฉพาะยอดใช้จริง (Used) ไม่รวม Pending
+        const totalUsed = g.used; 
+        const remaining = g.budget - totalUsed;
+        const pct = g.budget > 0 ? (totalUsed / g.budget) * 100 : 0;
+        
+        return `
+            <div class="summary-row">
+                <div style="font-weight:bold; color:#333;">${g.name}</div>
+                <div style="text-align:right;">
+                    <span style="color:#64748b; font-size:12px;">งบ: ${g.budget.toLocaleString()}</span> | 
+                    <span style="color:#2563eb;">ใช้จริง: ${totalUsed.toLocaleString()}</span> | 
+                    <span style="font-weight:bold; color:${remaining < 0 ? '#dc2626' : '#16a34a'};">เหลือ: ${remaining.toLocaleString()}</span>
+                    <span style="font-size:10px; background:#f1f5f9; padding:1px 4px; border-radius:3px; margin-left:5px; border:1px solid #e2e8f0;">${pct.toFixed(1)}%</span>
+                </div>
+            </div>
+        `;
+    };
 
-    if (allItems.length > 0) {
-      htmlContent += `
-        <table class="budget-table">
-          <thead>
-            <tr>
-              <th width="35%">รหัส / รายการ</th>
-              <th width="20%" style="text-align:right">งบประมาณ</th>
-              <th width="20%" style="text-align:right">ใช้จริง + รออนุมัติ</th>
-              <th width="15%" style="text-align:right">คงเหลือ</th>
-              <th width="10%" style="text-align:center">%</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      allItems.forEach(item => {
-         const budget = item.budget || 0;
-         if (budget === 0) return; // ซ่อนรายการที่งบเป็น 0 เพื่อความสะอาด
-
-         const totalUsed = item.used + item.pending;
-         const remaining = budget - totalUsed;
-         const pctUsed = Math.min((item.used / budget) * 100, 100);
-         const pctPending = Math.min((item.pending / budget) * 100, 100 - pctUsed);
-         const totalPct = ((totalUsed / budget) * 100);
-         const isOver = totalUsed > budget;
-
-         const badgeClass = item.badge === 'SubJob' ? 'badge-sub' : 'badge-ep';
-
-         htmlContent += `
-            <tr>
-              <td>
-                <span class="badge ${badgeClass}">${item.badge}</span> 
-                <strong>${item.code}</strong><br/>
-                <span style="color:#94a3b8; font-size:10px;">${item.description || ''}</span>
-              </td>
-              <td class="num" style="text-align:right; color:#64748b;">${budget.toLocaleString()}</td>
-              <td class="num" style="text-align:right;">
-                 <div>${totalUsed.toLocaleString()}</div>
-                 <div style="font-size:9px; color:#64748b;">(Used: ${item.used.toLocaleString()}, Wait: ${item.pending.toLocaleString()})</div>
-              </td>
-              <td class="num" style="text-align:right; ${remaining < 0 ? 'color:#dc2626;' : 'color:#16a34a;'}">
-                 ${remaining.toLocaleString()}
-              </td>
-              <td style="text-align:center;">
-                 <div class="bar-bg">
-                    <div class="bar-used" style="width:${pctUsed}%"></div>
-                    <div class="bar-pending" style="width:${pctPending}%"></div>
-                 </div>
-                 <div style="font-size:10px; margin-top:2px; font-weight:bold; ${isOver ? 'color:red;' : 'color:#64748b;'}">
-                    ${totalPct.toFixed(1)}%
-                 </div>
-              </td>
-            </tr>
-         `;
-      });
-
-      htmlContent += `</tbody></table>`;
-    } else {
-      htmlContent += `<p style="text-align:center; color:#999; padding:20px;">ไม่มีข้อมูล Code งบประมาณ</p>`;
+    const subJobKeys = sortedKeys.filter(k => groups[k].type === 'SubJob');
+    if (subJobKeys.length > 0) {
+        htmlContent += `<div class="summary-header-sub">🏗️ สรุปงานโครงสร้าง (SubJob)</div>`;
+        subJobKeys.forEach(k => htmlContent += renderSummaryRow(k));
     }
 
-    htmlContent += `</div></div>`;
+    const matCodeKeys = sortedKeys.filter(k => groups[k].type === 'MatCode');
+    if (matCodeKeys.length > 0) {
+        htmlContent += `<div class="summary-header-mat">🧱 สรุปหมวดวัสดุ (Mat. Code)</div>`;
+        matCodeKeys.forEach(k => htmlContent += renderSummaryRow(k));
+    }
+    htmlContent += `</div>`;
+
+    // --- ส่วนตารางรายละเอียด (Detailed Tables) ---
+    const renderDetailTable = (gKey) => {
+        const g = groups[gKey];
+        const headerClass = g.type === 'SubJob' ? 'bg-sub' : 'bg-mat';
+        
+        let tableHtml = `
+            <div class="group-section">
+                <div class="group-header ${headerClass}">
+                    <span>${g.name}</span>
+                    <span style="font-size:12px; font-weight:normal; opacity:0.8;">งบกลุ่ม: ${g.budget.toLocaleString()}</span>
+                </div>
+                <table class="budget-table">
+                    <thead>
+                        <tr>
+                            <th width="40%">รายการ (Code)</th>
+                            <th width="20%">งบประมาณ</th>
+                            <th width="20%">ใช้จริง</th> <th width="20%">คงเหลือ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        g.items.sort((a,b) => a.code.localeCompare(b.code)).forEach(item => {
+            const budget = item.budget || 0;
+            // ⭐ คำนวณเฉพาะยอดใช้จริง (item.used)
+            const totalUsed = item.used;
+            const remaining = budget - totalUsed;
+            
+            const badgeClass = item.type === 'SubJob' ? 'badge-sub' : 'badge-mat';
+            const textClass = item.type === 'SubJob' ? 'text-sub' : 'text-mat';
+            const label = item.type === 'SubJob' ? 'Sub' : 'Mat';
+
+            tableHtml += `
+                <tr>
+                    <td>
+                        <span class="badge ${badgeClass}">${label}</span>
+                        <strong class="${textClass}">${item.code}</strong><br/>
+                        <span style="color:#94a3b8; font-size:10px;">${item.description || ''}</span>
+                    </td>
+                    <td class="num">${budget.toLocaleString()}</td>
+                    <td class="num">${totalUsed.toLocaleString()}</td>
+                    <td class="num ${remaining < 0 ? 'text-red' : 'text-green'}">${remaining.toLocaleString()}</td>
+                </tr>
+            `;
+        });
+        tableHtml += `</tbody></table></div>`;
+        return tableHtml;
+    };
+
+    subJobKeys.forEach(k => htmlContent += renderDetailTable(k));
+    matCodeKeys.forEach(k => htmlContent += renderDetailTable(k));
+
+    htmlContent += `</div><div class="footer">ระบบ PurchaseHub System | อีเมลอัตโนมัติ</div></div></body></html>`;
+
+    // --- Step D: ส่งเมล ---
+    const targetPerms = [2, 3, 8, 9, 10];
+    const recipientEmails = users.filter(u => {
+        if (u.status !== 'Activated') return false;
+        if (u.isSuperAdmin) return true;
+        if (u.permissions && u.permissions[proj.name]) {
+            return u.permissions[proj.name].some(p => targetPerms.includes(Number(p)));
+        }
+        return false;
+    }).map(u => u.email).filter(e => e && e.includes('@'));
+
+    const uniqueRecipients = [...new Set(recipientEmails)];
+
+    if (uniqueRecipients.length > 0) {
+        try {
+            GmailApp.sendEmail(
+                uniqueRecipients[0], 
+                `[PurchaseHub] สรุปงบประมาณรายสัปดาห์: ${proj.name}`,
+                "อุปกรณ์ของคุณไม่รองรับ HTML", 
+                { htmlBody: htmlContent, bcc: uniqueRecipients.slice(1).join(',') }
+            );
+            console.log(`[BudgetSummary] Sent for ${proj.name}`);
+        } catch (e) { console.error(`Failed to send for ${proj.name}: ${e}`); }
+    }
   });
-
-  htmlContent += `
-        </div>
-        <div class="footer">
-           ระบบ PurchaseHub System | อีเมลอัตโนมัติ กรุณาอย่าตอบกลับ
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-
-  // 4. หาอีเมลผู้รับ (Filter ตาม Role ที่กำหนด)
-  // Target Permissions: 2(Admin), 3(Sub-Admin), 8(Head), 9(PM), 10(Verify)
-  const targetPerms = [2, 3, 8, 9, 10];
-  
-  const recipientEmails = users.filter(u => {
-      // 1. Super Admin ได้รับเสมอ
-      if (u.isSuperAdmin) return true;
-      
-      // 2. เช็ค Status
-      if (u.status !== 'Activated') return false;
-
-      // 3. เช็คสิทธิ์ในทุก Project (Permission 2,3,8,9,10)
-      if (u.permissions) {
-          return Object.values(u.permissions).some(perms => 
-              perms.some(p => targetPerms.includes(Number(p)))
-          );
-      }
-      return false;
-  }).map(u => u.email).filter(e => e && e.includes('@')); // เอาเฉพาะ Email ที่ถูกต้อง
-
-  // ลบ Email ซ้ำ
-  const uniqueRecipients = [...new Set(recipientEmails)];
-
-  console.log(`[BudgetSummary] Recipients: ${uniqueRecipients.join(', ')}`);
-
-  if (uniqueRecipients.length > 0) {
-    try {
-        // ส่ง Bcc เพื่อความเป็นส่วนตัวและไม่ให้ List ยาวเกินไป
-        GmailApp.sendEmail(
-            uniqueRecipients[0], // ส่งหาคนแรก
-            `[PurchaseHub] รายงานสรุปงบประมาณ (Weekly Budget Report)`,
-            "อุปกรณ์ของคุณไม่รองรับ HTML กรุณาดูผ่านแอปอีเมลที่ทันสมัย", 
-            {
-                htmlBody: htmlContent,
-                bcc: uniqueRecipients.slice(1).join(',') // คนที่เหลือใส่ Bcc
-            }
-        );
-        console.log("✅ Email sent successfully.");
-    } catch (e) {
-        console.error("❌ Failed to send email: " + e.toString());
-    }
-  } else {
-      console.log("⚠️ No recipients found matching the criteria.");
-  }
+  console.log("[BudgetSummary] Completed.");
 }
-
 
 // --- ฟังก์ชันสำหรับอัปเดต ID ในประวัติ (Logs) เมื่อมีการเปลี่ยนรหัสสินค้า ---
 function updateLogItemId(oldId, newId) {
@@ -2301,4 +2281,10 @@ function deleteItemSecure(userId, tableName, id, project) {
   // ถ้าผ่าน -> เรียกฟังก์ชันลบของเดิม
   deleteDataFromSheet(tableName, id);
   return { success: true };
+}
+
+
+function checkMailQuota() {
+  var remaining = MailApp.getRemainingDailyQuota();
+  Logger.log("คุณสามารถส่งเมลได้อีก: " + remaining + " ฉบับในวันนี้");
 }
