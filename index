@@ -986,6 +986,8 @@ const hasPermission = (permId, project = globalProjectFilter) => {
         // State สำหรับ UI
         
         const [showPassword, setShowPassword] = useState(false);
+        const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+        const [showRegisterConfirm, setShowRegisterConfirm] = useState(false);
 
         const [formData, setFormData] = useState({
             username: '', password: '', confirmPassword: '', email: '', empId: '', firstName: '', lastName: '', otp: '', newPassword: ''
@@ -1228,37 +1230,107 @@ const handleRegisterRequestOTP = () => {
                             </form>
                         )}
 
-                        {/* --- REGISTER FORM --- */}
-                        {view === 'register' && (
-                            <form onSubmit={handleRegisterConfirm} className="space-y-4">
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div><label className="text-xs font-bold text-slate-500">ชื่อ</label><input name="firstName" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
-                                    <div><label className="text-xs font-bold text-slate-500">นามสกุล</label><input name="lastName" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
-                                </div>
-                                <div><label className="text-xs font-bold text-slate-500">รหัสพนักงาน</label><input name="empId" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
-                                <div><label className="text-xs font-bold text-slate-500">อีเมล (รับ OTP)</label><input name="email" type="email" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
-                                <div><label className="text-xs font-bold text-slate-500">ชื่อผู้ใช้งาน</label><input name="username" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
-                                <div><label className="text-xs font-bold text-slate-500">รหัสผ่าน (6+ ตัวอักษร/ตัวเลข)</label><input name="password" type="password" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
-                                {!otpSent && <div><label className="text-xs font-bold text-slate-500">ยืนยันรหัสผ่าน</label><input name="confirmPassword" type="password" required className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>}
-                                
-                                {otpSent && (
-                                    <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-center animate-in fade-in">
-                                        <p className="text-xs text-blue-600 mb-2">Ref: <b>{refCode}</b> | กรอก OTP 4 หลักที่ส่งไปอีเมล</p>
-                                        <input name="otp" type="text" maxLength="4" required className="w-32 mx-auto p-3 text-center text-xl font-bold bg-white border rounded-lg outline-none focus:ring-4 focus:ring-blue-200" placeholder="0000" onChange={handleChange} />
-                                        <div className="mt-2"><button type="button" onClick={handleRegisterRequestOTP} disabled={countdown > 0} className={`text-xs underline ${countdown>0?'text-gray-400':'text-blue-600'}`}>{countdown>0 ? `ขอใหม่ใน ${countdown} วิ` : 'ขอรหัสใหม่'}</button></div>
-                                    </div>
-                                )}
+               {view === 'register' && (
+    <form onSubmit={handleRegisterConfirm} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+            <div>
+                {/* ⭐ แนะนำภาษาไทย */}
+                <label className="text-xs font-bold text-slate-500">ชื่อ (ภาษาไทย)</label>
+                <input name="firstName" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} placeholder="สมชาย" />
+            </div>
+            <div>
+                <label className="text-xs font-bold text-slate-500">นามสกุล (ภาษาไทย)</label>
+                <input name="lastName" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} placeholder="ใจดี" />
+            </div>
+        </div>
+        
+        <div><label className="text-xs font-bold text-slate-500">รหัสพนักงาน</label><input name="empId" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+        
+        <div><label className="text-xs font-bold text-slate-500">อีเมล (รับ OTP)</label><input name="email" type="email" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} /></div>
+        
+        <div>
+            {/* ⭐ แนะนำภาษาอังกฤษ */}
+            <label className="text-xs font-bold text-slate-500">ชื่อผู้ใช้งาน (English)</label>
+            <input name="username" required disabled={otpSent} className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none" onChange={handleChange} placeholder="somchai.j" />
+        </div>
 
-                                {!otpSent ? (
-                                    <button type="button" onClick={handleRegisterRequestOTP} disabled={loading} className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-lg mt-4">{loading?'Checking...':'ขอรหัส OTP'}</button>
-                                ) : (
-                                    <div className="flex gap-2 mt-4">
-                                        <button type="button" onClick={() => setOtpSent(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold">แก้ไข</button>
-                                        <button type="submit" disabled={loading} className="flex-[2] py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold shadow-lg">{loading?'Verifying...':'ยืนยันลงทะเบียน'}</button>
-                                    </div>
-                                )}
-                            </form>
+        {/* ⭐ ช่องรหัสผ่าน (มีปุ่มเปิด/ปิด) */}
+        <div>
+            <label className="text-xs font-bold text-slate-500">รหัสผ่าน (6+ ตัวอักษร/ตัวเลข)</label>
+            <div className="relative">
+                <input 
+                    name="password" 
+                    type={showRegisterPassword ? "text" : "password"} 
+                    required 
+                    disabled={otpSent} 
+                    className="w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none pr-10" 
+                    onChange={handleChange} 
+                />
+                <button 
+                    type="button" 
+                    onClick={() => setShowRegisterPassword(!showRegisterPassword)} 
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    tabIndex="-1"
+                >
+                    {showRegisterPassword ? (
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+                    ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    )}
+                </button>
+            </div>
+        </div>
+
+        {/* ⭐ ช่องยืนยันรหัสผ่าน (มีปุ่มเปิด/ปิด) */}
+        {!otpSent && (
+            <div>
+                <label className="text-xs font-bold text-slate-500">ยืนยันรหัสผ่าน</label>
+                <div className="relative">
+                    <input 
+                        name="confirmPassword" 
+                        type={showRegisterConfirm ? "text" : "password"} 
+                        required 
+                        className={`w-full p-3 bg-slate-50 border rounded-lg text-sm outline-none pr-10 ${formData.confirmPassword && formData.password !== formData.confirmPassword ? 'border-red-500 focus:ring-red-200' : ''}`} 
+                        onChange={handleChange} 
+                    />
+                    <button 
+                        type="button" 
+                        onClick={() => setShowRegisterConfirm(!showRegisterConfirm)} 
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        tabIndex="-1"
+                    >
+                        {showRegisterConfirm ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+                        ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
                         )}
+                    </button>
+                </div>
+                {/* แจ้งเตือนถ้ารหัสไม่ตรง */}
+                {formData.confirmPassword && formData.password !== formData.confirmPassword && (
+                    <p className="text-[10px] text-red-500 mt-1">* รหัสผ่านไม่ตรงกัน</p>
+                )}
+            </div>
+        )}
+        
+        {otpSent && (
+            <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-center animate-in fade-in">
+                <p className="text-xs text-blue-600 mb-2">Ref: <b>{refCode}</b> | กรอก OTP 4 หลักที่ส่งไปอีเมล</p>
+                <input name="otp" type="text" maxLength="4" required className="w-32 mx-auto p-3 text-center text-xl font-bold bg-white border rounded-lg outline-none focus:ring-4 focus:ring-blue-200" placeholder="0000" onChange={handleChange} />
+                <div className="mt-2"><button type="button" onClick={handleRegisterRequestOTP} disabled={countdown > 0} className={`text-xs underline ${countdown>0?'text-gray-400':'text-blue-600'}`}>{countdown>0 ? `ขอใหม่ใน ${countdown} วิ` : 'ขอรหัสใหม่'}</button></div>
+            </div>
+        )}
+
+        {!otpSent ? (
+            <button type="button" onClick={handleRegisterRequestOTP} disabled={loading} className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-lg mt-4">{loading?'Checking...':'ขอรหัส OTP'}</button>
+        ) : (
+            <div className="flex gap-2 mt-4">
+                <button type="button" onClick={() => setOtpSent(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold">แก้ไข</button>
+                <button type="submit" disabled={loading} className="flex-[2] py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold shadow-lg">{loading?'Verifying...':'ยืนยันลงทะเบียน'}</button>
+            </div>
+        )}
+    </form>
+)}
 
                         {/* --- FORGOT PASSWORD FORM --- */}
                         {view === 'forgot' && (
@@ -1971,11 +2043,11 @@ const handleRemoveCurrentInvImage = () => {
     }
 };
 
-// --- LOGIC: UPDATE INVENTORY (Fix: Update Log References) ---
+// --- LOGIC: UPDATE INVENTORY (UPDATED: Full History Log) ---
 const handleUpdateInventory = async () => {
     if (!editingStockItem) return;
 
-    // 1. Validation: เช็คชื่อซ้ำในประเภทเดียวกัน
+    // 1. Validation: เช็คชื่อซ้ำ
     const duplicateName = inventory.find(i => 
         i.name === editingStockItem.name && 
         i.project === editingStockItem.project && 
@@ -1993,13 +2065,13 @@ const handleUpdateInventory = async () => {
         const date = new Date().toLocaleString('th-TH');
         const currentType = editingStockItem.stockType || 'System';
         
-        // 2. สร้าง ID เต็ม (Real ID)
+        // 2. สร้าง ID เต็ม
         let inputId = editingStockItem.id;
-        if (inputId.includes('|')) inputId = inputId.split('|')[0]; // ตัดส่วนท้ายออกก่อน
+        if (inputId.includes('|')) inputId = inputId.split('|')[0]; 
         
         let finalId = `${inputId}|${editingStockItem.project}|${currentType}`;
         
-        // 3. เช็ค ID ซ้ำ (ถ้าซ้ำให้รันเลขต่อ)
+        // 3. เช็ค ID ซ้ำ
         if (finalId !== editingStockItem.originalId) { 
              let counter = 1;
              while (inventory.some(i => i.id === finalId && i.id !== editingStockItem.originalId)) {
@@ -2034,48 +2106,63 @@ const handleUpdateInventory = async () => {
             newImages: []
         };
 
-        // ⭐ 6. จัดการกรณีเปลี่ยนรหัส (Change ID Logic) ⭐
+        // ⭐ 6. Compare Changes (บันทึกประวัติการเปลี่ยนแปลงทั้งหมด) ⭐
+        // ดึงข้อมูลเดิมมาเปรียบเทียบ
+        const originalItem = inventory.find(i => i.id === editingStockItem.originalId);
+        let changes = [];
+
+        if (originalItem) {
+            // แปลง Type เป็นภาษาไทยเพื่อความสวยงาม
+            const oldType = originalItem.stockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ';
+            const newType = currentType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ';
+
+            if (getDisplayId(originalItem.id) !== getDisplayId(finalId)) changes.push(`รหัส: ${getDisplayId(originalItem.id)} -> ${getDisplayId(finalId)}`);
+            if (originalItem.stockType !== currentType) changes.push(`ประเภท: ${oldType} -> ${newType}`);
+            if (originalItem.name !== updatedItem.name) changes.push(`ชื่อ: ${originalItem.name} -> ${updatedItem.name}`);
+            if (originalItem.qty !== updatedItem.qty) changes.push(`คงเหลือ: ${originalItem.qty} -> ${updatedItem.qty}`);
+            if (originalItem.unit !== updatedItem.unit) changes.push(`หน่วยนับ: ${originalItem.unit} -> ${updatedItem.unit}`);
+            if (originalItem.minStock !== updatedItem.minStock) changes.push(`Min Stock: ${originalItem.minStock} -> ${updatedItem.minStock}`);
+            if (originalItem.price !== updatedItem.price) changes.push(`ราคา: ${originalItem.price} -> ${updatedItem.price}`);
+            if (originalItem.note !== updatedItem.note) changes.push(`หมายเหตุ: ${originalItem.note||'-'} -> ${updatedItem.note||'-'}`);
+            
+            if (newUploadedFiles.length > 0) changes.push("เปลี่ยนรูปใหม่ (แทนที่รูปเดิม)");
+        }
+
+        const changeLog = changes.length > 0 ? changes.join('\n- ') : 'แก้ไขข้อมูล (ไม่มีการเปลี่ยนแปลงค่า)';
+
+        // 7. จัดการกรณีเปลี่ยนรหัส (Change ID Logic)
         if (editingStockItem.originalId !== finalId) {
-             // 6.1 ลบสินค้าตัวเก่าออกจาก Sheet
              await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Inventory', editingStockItem.originalId)); 
              
-             // 6.2 ⭐ สั่ง Backend อัปเดต ID ใน Logs (ต้องมีฟังก์ชันนี้ใน Backend หรือ Loop แก้เอง)
-             // (ในที่นี้เขียนแบบ Loop แก้ที่หน้าบ้าน แล้วส่งไปบันทึกทีละตัว หรือถ้ามีฟังก์ชัน updateLogItemId ใน Backend ให้เรียกใช้แทน)
-             
-             // Option A: เรียก Backend Function (แนะนำวิธีนี้ถ้ามี)
              try {
-                 await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(editingStockItem.originalId, finalId));
+                  await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(editingStockItem.originalId, finalId));
              } catch (e) {
                  console.log("Backend updateLogItemId not found, skipping backend log update.");
              }
 
-             // 6.3 ⭐ อัปเดต State Logs หน้าบ้านทันที (เพื่อให้ค้นหาเจอโดยไม่ต้อง Refresh)
              setInvLogs(prevLogs => prevLogs.map(log => {
-                 // ถ้า Log เป็นของรายการเก่า (เช็คจาก assetId หรือ item name+project)
                  if (log.assetId === editingStockItem.originalId) {
-                     return { ...log, assetId: finalId }; // เปลี่ยนเป็น ID ใหม่
+                     return { ...log, assetId: finalId }; 
                  }
                  return log;
              }));
         }
 
-        // 7. Update Inventory State
+        // 8. Update Inventory State
         setInventory(prev => {
             const filtered = prev.filter(i => i.id !== editingStockItem.originalId);
             return [...filtered, updatedItem];
         });
 
-        // 8. Save Inventory
+        // 9. Save Inventory
         const { images, newImages, originalId, originalName, originalProject, ...itemForServer } = updatedItem;
         await saveInventoryToSheet(itemForServer);
 
-        // 9. Add Log (Change History)
+        // 10. Add Log (Change History)
         const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-        const changeNote = editingStockItem.originalId !== finalId 
-            ? `เปลี่ยนรหัส: ${getDisplayId(editingStockItem.originalId)} -> ${getDisplayId(finalId)}` 
-            : `แก้ไขข้อมูล`;
-            
-        addInvLog('Update Stock', updatedItem.name, 'Edit', `โครงการ: ${updatedItem.project} | ${changeNote}`, logAttachments, null, finalId);
+        
+        // ใช้ \n เพื่อขึ้นบรรทัดใหม่ในช่อง Note
+        addInvLog('Update Stock', updatedItem.name, 'Edit', `แก้ไขข้อมูล:\n- ${changeLog}`, logAttachments, null, finalId);
         
         setIsLoading(false);
         setShowEditInvModal(false);
@@ -2088,6 +2175,8 @@ const handleUpdateInventory = async () => {
         showToast("Error: " + error.message, 'error');
     }
 };
+
+
       // 3. จัดการ Checkbox
       const toggleSelectAsset = (id) => {
           setSelectedAssets(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -3160,110 +3249,96 @@ const confirmImportAssets = async () => {
 
 
 const filteredLogs = useMemo(() => {
-    let data = invLogs;
+        let data = invLogs;
 
-    // 0. ถ้าเป็นการดูประวัติรวม (ไม่ได้เจาะจง Item) ให้ตัดเรื่อง User/Permission ออก
-    if (!viewingItem) {
-        const excludeActions = ['Edit Permissions', 'Edit Profile', 'Edit User Status', 'Register', 'Change Password'];
-        data = data.filter(l => !excludeActions.includes(l.action));
-    }
+        // 0. ถ้าเป็นการดูประวัติรวม (ไม่ได้เจาะจง Item) ให้ตัดเรื่อง User/Permission ออก
+        if (!viewingItem) {
+            const excludeActions = ['Edit Permissions', 'Edit Profile', 'Edit User Status', 'Register', 'Change Password'];
+            data = data.filter(l => !excludeActions.includes(l.action));
+        }
 
-   if (globalProjectFilter !== 'All') { // ⭐ ตัด !viewingItem ออก เพื่อให้กรองตามโครงการเสมอ
-        data = data.filter(l => 
-            (l.note && l.note.includes(globalProjectFilter)) || 
-            (l.project && l.project === globalProjectFilter)
+       if (globalProjectFilter !== 'All') { 
+            data = data.filter(l => 
+                (l.note && l.note.includes(globalProjectFilter)) || 
+                (l.project && l.project === globalProjectFilter)
+            );
+        }
+
+        // 2. กรองตาม Item (Viewing Detail)
+        if (viewingItem) {
+             if (viewingItem.isSummary) {
+                 data = data.filter(l => {
+                     const nameMatch = l.item === viewingItem.name;
+                     const idMatch = viewingItem.combinedIds && viewingItem.combinedIds.includes(l.assetId);
+                     const summaryIdMatch = l.assetId === viewingItem.id;
+                     return nameMatch || idMatch || summaryIdMatch;
+                 });
+             } else {
+                 const isAssetView = viewingItem.serial !== undefined;
+                 data = data.filter(l => {
+                     if (l.assetId === viewingItem.id) return true;
+                     if (!l.assetId && l.item === viewingItem.name) {
+                         if (viewingItem.project) {
+                             const logProj = l.project;
+                             const logNote = l.note || '';
+                             const isProjectMatch = (logProj && logProj === viewingItem.project) || 
+                                                    (!logProj && logNote.includes(viewingItem.project));
+                             if (!isProjectMatch) return false;
+                         }
+                         const assetOnlyActions = ['Import Assets', 'Add Asset', 'Register Asset', 'Return Asset', 'Restore Asset', 'Delete Asset', 'Snooze Alert', 'Disable Alert', 'Enable Alert', 'Update Image', 'Edit Asset'];
+                         const isLogForAsset = assetOnlyActions.includes(l.action) || (l.action === 'Borrow' && isAssetView) || (l.action === 'Return' && isAssetView);
+                         return isAssetView ? isLogForAsset : !isLogForAsset;
+                     }
+                     return false;
+                 });
+             }
+        }
+
+       // ⭐ จุดที่มักเกิด Error: แก้ไขให้ parameter ชื่อ 'log' ตรงกับการใช้งานข้างใน
+       if (historySearch) {
+        const lower = historySearch.toLowerCase();
+        data = data.filter(log => 
+            (log.action && log.action.toLowerCase().includes(lower)) ||
+            (log.item && log.item.toLowerCase().includes(lower)) ||
+            (log.by && log.by.toLowerCase().includes(lower)) ||
+            (log.note && log.note.toLowerCase().includes(lower)) ||
+            (log.relatedRequestId && log.relatedRequestId.toLowerCase().includes(lower))
         );
     }
 
-    // 2. กรองตาม Item (Viewing Detail)
-    if (viewingItem) {
-         if (viewingItem.isSummary) {
-             // ... (Logic สำหรับ Summary ใช้ของเดิมที่คุณแก้ไปแล้ว) ...
-             data = data.filter(l => {
-                 const nameMatch = l.item === viewingItem.name;
-                 const idMatch = viewingItem.combinedIds && viewingItem.combinedIds.includes(l.assetId);
-                 const summaryIdMatch = l.assetId === viewingItem.id;
-                 return nameMatch || idMatch || summaryIdMatch;
-             });
-         } else {
-             // ⭐ [แก้ไข] Logic สำหรับ Item รายตัว (System/NonSystem/Asset)
-             const isAssetView = viewingItem.serial !== undefined;
-             data = data.filter(l => {
-                 // 1. ถ้ามี ID ใน Log ตรงกัน -> ถือว่าใช่แน่นอน (Priority สูงสุด)
-                 if (l.assetId === viewingItem.id) return true;
-
-                 // 2. ถ้าไม่มี ID ใน Log -> เช็คจากชื่อ และ ต้องเช็ค Project ด้วย!
-                 if (!l.assetId && l.item === viewingItem.name) {
-                     
-                     // ⭐ แก้ไข: ลบ !isAssetView ออก เพื่อให้ Asset ก็ต้องเช็ค Project ด้วย
-                     // จากเดิม: if (!isAssetView && viewingItem.project) {
-                     // เปลี่ยนเป็น:
-                     if (viewingItem.project) {
-                         const logProj = l.project;
-                         const logNote = l.note || '';
-                         
-                         // ต้องตรงกับ Project ใน Log หรือมีชื่อ Project ปรากฏใน Note
-                         const isProjectMatch = (logProj && logProj === viewingItem.project) || 
-                                                (!logProj && logNote.includes(viewingItem.project));
-                         
-                         // ถ้าชื่อตรง แต่คนละ Project -> ไม่เอา
-                         if (!isProjectMatch) return false;
-                     }
-
-                     const assetOnlyActions = ['Import Assets', 'Add Asset', 'Register Asset', 'Return Asset', 'Restore Asset', 'Delete Asset', 'Snooze Alert', 'Disable Alert', 'Enable Alert', 'Update Image'];
-                     const isLogForAsset = assetOnlyActions.includes(l.action) || (l.action === 'Borrow' && isAssetView) || (l.action === 'Return' && isAssetView);
-                     return isAssetView ? isLogForAsset : !isLogForAsset;
-                 }
-                 return false;
-             });
-         }
-    }
-
-   if (historySearch) {
-    const lower = historySearch.toLowerCase();
-    // เปลี่ยน l เป็น log ตรงนี้ 👇
-    data = data.filter(log => 
-        log.action.toLowerCase().includes(lower) ||
-        log.item.toLowerCase().includes(lower) ||
-        log.by.toLowerCase().includes(lower) ||
-        log.note.toLowerCase().includes(lower) ||
-        (log.relatedRequestId && log.relatedRequestId.toLowerCase().includes(lower))
-    );
-}
-
-    // 4. Filter Action
-    if (historyActionFilter !== 'All') {
-        data = data.filter(l => l.action === historyActionFilter);
-    }
-    
-    // 5. Sort Logic
-    const parseLogDate = (dStr) => {
-        if (!dStr) return 0;
-        try {
-            const [datePart, timePart] = dStr.split(' ');
-            if (!datePart) return 0;
-            const [day, month, year] = datePart.split('/').map(Number);
-            const [hour, min, sec] = timePart ? timePart.split(':').map(Number) : [0, 0, 0];
-            const adYear = year > 2400 ? year - 543 : year;
-            return new Date(adYear, month - 1, day, hour, min, sec).getTime();
-        } catch (e) { return 0; }
-    };
-
-    return [...data].sort((a, b) => {
-        if (historySort.key === 'date') {
-            const timeA = parseLogDate(a.date);
-            const timeB = parseLogDate(b.date);
-            return historySort.direction === 'asc' ? timeA - timeB : timeB - timeA;
-        } else {
-            const valA = (a[historySort.key] || '').toString().toLowerCase();
-            const valB = (b[historySort.key] || '').toString().toLowerCase();
-            if (valA < valB) return historySort.direction === 'asc' ? -1 : 1;
-            if (valA > valB) return historySort.direction === 'asc' ? 1 : -1;
-            return 0;
+        // 4. Filter Action
+        if (historyActionFilter !== 'All') {
+            data = data.filter(l => l.action === historyActionFilter);
         }
-    });
+        
+        // 5. Sort Logic
+        const parseLogDate = (dStr) => {
+            if (!dStr) return 0;
+            try {
+                const [datePart, timePart] = dStr.split(' ');
+                if (!datePart) return 0;
+                const [day, month, year] = datePart.split('/').map(Number);
+                const [hour, min, sec] = timePart ? timePart.split(':').map(Number) : [0, 0, 0];
+                const adYear = year > 2400 ? year - 543 : year;
+                return new Date(adYear, month - 1, day, hour, min, sec).getTime();
+            } catch (e) { return 0; }
+        };
 
-}, [invLogs, viewingItem, historySearch, historyActionFilter, historySort, globalProjectFilter]);
+        return [...data].sort((a, b) => {
+            if (historySort.key === 'date') {
+                const timeA = parseLogDate(a.date);
+                const timeB = parseLogDate(b.date);
+                return historySort.direction === 'asc' ? timeA - timeB : timeB - timeA;
+            } else {
+                const valA = (a[historySort.key] || '').toString().toLowerCase();
+                const valB = (b[historySort.key] || '').toString().toLowerCase();
+                if (valA < valB) return historySort.direction === 'asc' ? -1 : 1;
+                if (valA > valB) return historySort.direction === 'asc' ? 1 : -1;
+                return 0;
+            }
+        });
+
+    }, [invLogs, viewingItem, historySearch, historyActionFilter, historySort, globalProjectFilter]);
 
 
       // --- Helper Validation Logic ---
@@ -4436,7 +4511,7 @@ const confirmReturnAsset = async () => {
     }
 };
 
-// --- LOGIC: UPDATE ASSET (UPDATED: Change ID & Update Logs) ---
+// --- LOGIC: UPDATE ASSET (UPDATED: Full History Log) ---
 const handleUpdateAsset = async (e) => {
     e.preventDefault();
     
@@ -4459,6 +4534,7 @@ const handleUpdateAsset = async (e) => {
 
     try {
         const date = new Date().toLocaleString('th-TH');
+        // ดึงข้อมูลเก่ามาเปรียบเทียบ
         const originalAsset = assets.find(a => a.id === editingAssetItem.originalId);
 
         // 2. Upload New Images
@@ -4490,30 +4566,54 @@ const handleUpdateAsset = async (e) => {
             newImages: [] 
         };
         
-        // 4. Compare Changes & Handle ID Change
+        // 4. ⭐ Compare Changes (บันทึกประวัติการเปลี่ยนแปลงทั้งหมด) ⭐
         let changes = [];
         if (originalAsset) {
-            if (originalAsset.id !== updatedAsset.id) changes.push(`ID: ${originalAsset.id} -> ${updatedAsset.id}`);
-            if (originalAsset.name !== updatedAsset.name) changes.push(`Name: ${originalAsset.name} -> ${updatedAsset.name}`);
-            if (originalAsset.status !== updatedAsset.status) changes.push(`Status: ${originalAsset.status} -> ${updatedAsset.status}`);
-            if (originalAsset.note !== updatedAsset.note) changes.push(`Note Updated`);
-            if (newUploadedFiles.length > 0) changes.push(`Added ${newUploadedFiles.length} photos`);
-        }
-        const changeLog = changes.length > 0 ? changes.join(', ') : 'Update Info';
+            // เช็ค ID
+            if (originalAsset.id !== updatedAsset.id) changes.push(`รหัส: ${originalAsset.id} -> ${updatedAsset.id}`);
+            
+            // เช็คชื่อ/Serial
+            if (originalAsset.name !== updatedAsset.name) changes.push(`ชื่อ: ${originalAsset.name} -> ${updatedAsset.name}`);
+            if (originalAsset.serial !== updatedAsset.serial) changes.push(`Serial: ${originalAsset.serial || '-'} -> ${updatedAsset.serial || '-'}`);
+            
+            // เช็คประเภท (Owner Type)
+            if (originalAsset.ownerType !== updatedAsset.ownerType) changes.push(`ประเภท: ${originalAsset.ownerType === 'Company' ? 'ซื้อขาด' : 'เช่า'} -> ${updatedAsset.ownerType === 'Company' ? 'ซื้อขาด' : 'เช่า'}`);
 
-        // ⭐ ตรวจสอบการเปลี่ยน ID (หัวใจสำคัญ)
+            // เช็คราคา/หน่วย (ตามประเภท)
+            if (updatedAsset.ownerType === 'Rent') {
+                if (originalAsset.rentalPrice !== updatedAsset.rentalPrice) changes.push(`ค่าเช่า: ${originalAsset.rentalPrice} -> ${updatedAsset.rentalPrice}`);
+                if (originalAsset.rentalUnit !== updatedAsset.rentalUnit) changes.push(`หน่วยเช่า: ${originalAsset.rentalUnit} -> ${updatedAsset.rentalUnit}`);
+                if (originalAsset.rentalStart !== updatedAsset.rentalStart) changes.push(`เริ่มสัญญา: ${originalAsset.rentalStart||'-'} -> ${updatedAsset.rentalStart||'-'}`);
+                if (originalAsset.rentalEnd !== updatedAsset.rentalEnd) changes.push(`สิ้นสุดสัญญา: ${originalAsset.rentalEnd||'-'} -> ${updatedAsset.rentalEnd||'-'}`);
+            } else {
+                if (originalAsset.price !== updatedAsset.price) changes.push(`ราคาซื้อ: ${originalAsset.price} -> ${updatedAsset.price}`);
+            }
+
+            // เช็คสถานะ/ผู้ถือ/หมายเหตุ
+            if (originalAsset.status !== updatedAsset.status) changes.push(`สถานะ: ${originalAsset.status} -> ${updatedAsset.status}`);
+            if (originalAsset.holder !== updatedAsset.holder) changes.push(`ผู้ถือ: ${originalAsset.holder||'-'} -> ${updatedAsset.holder||'-'}`);
+            if (originalAsset.note !== updatedAsset.note) changes.push(`หมายเหตุ: ${originalAsset.note||'-'} -> ${updatedAsset.note||'-'}`);
+            
+            // เช็ครูปภาพ
+            if (newUploadedFiles.length > 0) changes.push(`เปลี่ยนรูปใหม่ (แทนที่รูปเดิม)`);
+        }
+        
+        // ถ้าไม่มีการแก้ไขเลย ให้ใส่ Default
+        const changeLog = changes.length > 0 ? changes.join('\n- ') : 'แก้ไขข้อมูล (ไม่มีการเปลี่ยนแปลงค่า)';
+
+        // ⭐ จัดการกรณีเปลี่ยน ID (Change ID Logic)
         if (originalAsset && originalAsset.id !== updatedAsset.id) {
              // 4.1 ลบตัวเก่าออกจาก Sheet
              await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Assets', originalAsset.id)); 
              
-             // 4.2 ⭐ สั่ง Backend อัปเดต ID ใน Logs (เรียกฟังก์ชันใหม่ที่เพิ่งเพิ่มไปใน code.gs)
+             // 4.2 สั่ง Backend อัปเดต ID ใน Logs
              try {
-                 await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(originalAsset.id, updatedAsset.id));
+                  await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(originalAsset.id, updatedAsset.id));
              } catch (e) {
                  console.log("Backend updateLogItemId error:", e);
              }
 
-             // 4.3 ⭐ อัปเดต State Logs หน้าบ้านทันที (เพื่อให้เห็นผลทันทีโดยไม่ต้องรีเฟรช)
+             // 4.3 อัปเดต State Logs หน้าบ้านทันที
              setInvLogs(prevLogs => prevLogs.map(log => {
                  if (log.assetId === originalAsset.id) {
                      return { ...log, assetId: updatedAsset.id };
@@ -4524,7 +4624,6 @@ const handleUpdateAsset = async (e) => {
 
         // 5. Update Asset State & Save
         setAssets(prev => {
-            // กรองตัวเก่าออก (กรณีเปลี่ยน ID) หรือแทนที่ตัวเดิม
             const filtered = prev.filter(a => a.id !== editingAssetItem.originalId);
             return [...filtered, updatedAsset];
         });
@@ -4532,13 +4631,15 @@ const handleUpdateAsset = async (e) => {
         const { images, newImages, originalId, ...assetForServer } = updatedAsset;
         saveAssetToSheet(assetForServer); // บันทึกตัวใหม่
 
-        // 6. Log Action
+        // 6. Log Action (บันทึกข้อความ ChangeLog ลงไป)
         const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-        addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
+        
+        // ใช้ \n เพื่อขึ้นบรรทัดใหม่ในช่อง Note
+        addInvLog('Edit Asset', updatedAsset.name, 'Edit', `แก้ไขข้อมูล:\n- ${changeLog}`, logAttachments, null, updatedAsset.id);
         
         setIsLoading(false);
         setShowEditAssetModal(false);
-        setEditingAssetItem(null); // เคลียร์ค่า
+        setEditingAssetItem(null); 
         showToast('แก้ไขข้อมูลและอัปเดตประวัติเรียบร้อย');
 
     } catch (error) {
@@ -4895,64 +4996,57 @@ const handleConfirmVerification = () => {
       const handleApprovalUpdate = (id, newStatus) => { handleUpdateStatus(id, newStatus); };
 
 
-// --- LOGIC: RECEIVE GOODS (PARTIAL & ASSET) ---
+// --- 1. แก้ไขการเตรียมข้อมูล (Initialize Data) ---
+const openReceiveModal = (req) => {
+    const defaultTarget = req.type === 'HO' ? 'Asset' : 'Inventory';
+    
+    const items = req.items.map(item => {
+        const receivedSoFar = item.receivedTotal || 0;
+        const remaining = Math.max(0, item.qty - receivedSoFar);
+        
+        // เตรียม Array รายการย่อย (Assets)
+        const assetsReg = Array.from({ length: remaining }, (_, i) => ({ 
+            id: '', 
+            isAutoId: false, 
+            serial: '', 
+            name: item.name, 
+            note: '', 
+            images: [],
+            price: item.unitPrice, 
+            unit: item.unit || 'ชิ้น', // ⭐ เพิ่ม: กำหนดหน่วยนับเริ่มต้นให้แต่ละชิ้น
+            rentalStart: '', 
+            rentalEnd: '', 
+            rentalPrice: req.purchaseType === 'Rent' ? item.unitPrice : 0, 
+            rentalUnit: 'Month' 
+        }));
 
-  // 1. ฟังก์ชันเปิด Modal และเตรียมข้อมูล (Calculate Remaining)
-// --- LOGIC: RECEIVE GOODS (UPDATED MULTI-IMAGE) ---
-  const openReceiveModal = (req) => {
-      const defaultTarget = req.type === 'HO' ? 'Asset' : 'Inventory';
-      
-      const items = req.items.map(item => {
-          const receivedSoFar = item.receivedTotal || 0;
-          const remaining = Math.max(0, item.qty - receivedSoFar);
-          
-          // เตรียม Array รายการย่อย
-          const assetsReg = Array.from({ length: remaining }, (_, i) => ({ 
-              id: '', 
-              isAutoId: false, 
-              serial: '', 
-              name: item.name, 
-              note: '', 
-              images: [], // ⭐ เปลี่ยนจาก image: null เป็น images: [] (Array)
-              price: item.unitPrice, 
-              rentalStart: '', 
-              rentalEnd: '', 
-              rentalPrice: req.purchaseType === 'Rent' ? item.unitPrice : 0, 
-              rentalUnit: 'Month' 
-          }));
+        const existingInv = inventory.find(inv => inv.name === item.name && inv.project === req.job);
+        const defaultInvId = existingInv ? existingInv.id : '';
+        const defaultAuto = !existingInv;
 
-const existingInv = inventory.find(inv => inv.name === item.name && inv.project === req.job);
-          
-          // 2. ถ้ามี: ดึงรหัสเดิมมา, ไม่ติ๊ก Auto
-          // 3. ถ้าไม่มี: รหัสว่าง, ติ๊ก Auto ไว้ก่อน
-          const defaultInvId = existingInv ? existingInv.id : '';
-          const defaultAuto = !existingInv;
+        return { 
+            ...item,
+            originalName: item.name, 
+            targetType: defaultTarget, 
+            receiveImages: [], 
+            assetsToRegister: assetsReg, 
+            isRent: req.purchaseType === 'Rent', 
+            receivedQty: remaining, 
+            actualPrice: item.unitPrice,
+            // ⭐ ใช้ unit จาก item เป็นค่าเริ่มต้นสำหรับ Inventory
+            unit: item.unit || 'ชิ้น', 
+            orderedQty: item.qty,
+            receivedSoFar: receivedSoFar,
+            inventoryId: defaultInvId,
+            isInvAutoId: defaultAuto
+        };
+    });
 
-
-          return { 
-              ...item,
-              originalName: item.name, 
-              targetType: defaultTarget, 
-              receiveImages: [], 
-              assetsToRegister: assetsReg, 
-              isRent: req.purchaseType === 'Rent', 
-              receivedQty: remaining, 
-              actualPrice: item.unitPrice, 
-              orderedQty: item.qty,
-              receivedSoFar: receivedSoFar,
-              
-              // ⭐ state ใหม่สำหรับหน้าจอรับของ
-              inventoryId: defaultInvId,
-              isInvAutoId: defaultAuto
-          };
-      });
-
-      setReceiveItems(items);
-      setIsForceClose(false);
-      setSelectedRequest(req);
-      setShowReceiveGoodsModal(true);
-  };
-
+    setReceiveItems(items);
+    setIsForceClose(false);
+    setSelectedRequest(req);
+    setShowReceiveGoodsModal(true);
+};
 // --- LOGIC: CONFIRM RECEIVE (Auto Gen Support) ---
 const handleConfirmReceive = async () => {
     if (!selectedRequest) return;
@@ -5067,25 +5161,27 @@ const handleConfirmReceive = async () => {
                     const mainImageName = assetLogImages.length > 0 ? assetLogImages[0].name : null;
                     
                     const newAsset = { 
-                        id: assetId,
-                        name: assetReg.name,
-                        serial: assetReg.serial,
-                        status: 'Available',
-                        condition: 'Good',
-                        holder: '-',
-                        currentRequestId: selectedRequest.id,
-                        price: item.isRent ? 0 : assetReg.price,
-                        image: mainImageName,
-                        lastUpdated: date,
-                        ownerType: item.isRent ? 'Rent' : 'Company',
-                        rentalStart: assetReg.rentalStart || null,
-                        rentalEnd: assetReg.rentalEnd || null,
-                        rentalPrice: assetReg.rentalPrice || 0,
-                        rentalUnit: assetReg.rentalUnit || 'Month',
-                        duration: item.isRent ? (assetReg.duration || 1) : 1,
-                        note: assetReg.note,
-                        project: project // ⭐ ระบุโครงการ
-                    };
+    id: assetId,
+    name: assetReg.name,
+    serial: assetReg.serial,
+    status: 'Available',
+    condition: 'Good',
+    holder: '-',
+    currentRequestId: selectedRequest.id,
+    price: item.isRent ? 0 : assetReg.price,
+    // ⭐ บันทึกหน่วยนับที่แก้ไขแล้ว (ถ้าไม่มีให้ใช้ unit ของ assetReg หรือ default)
+    unit: assetReg.unit || 'ชิ้น', 
+    image: mainImageName,
+    lastUpdated: date,
+    ownerType: item.isRent ? 'Rent' : 'Company',
+    rentalStart: assetReg.rentalStart || null,
+    rentalEnd: assetReg.rentalEnd || null,
+    rentalPrice: assetReg.rentalPrice || 0,
+    rentalUnit: assetReg.rentalUnit || 'Month',
+    duration: item.isRent ? (assetReg.duration || 1) : 1,
+    note: assetReg.note,
+    project: project
+};
                     setAssets(prev => [...prev, newAsset]);
                     saveAssetToSheet(newAsset);
                     addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียนเข้าโครงการ ${project}`, assetLogImages, selectedRequest.id, assetId);
@@ -9285,14 +9381,14 @@ const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostR
                         <React.Fragment key={idx}>
                         <tr className={isExpanded ? "bg-blue-50/30 transition-colors" : "transition-colors hover:bg-slate-50"}>
                             
-                            {/* 1. Column รายการ */}
+                           {/* 1. Column รายการ */}
                             <td className="p-3 align-top">
                                 <div className="flex items-start gap-2">
-                                    {hasDetails && (
+                                   {hasDetails && (
                                        <button 
                                             onClick={() => toggleExpandItem(idx)}
                                             className={`mt-0.5 p-0.5 rounded border transition-all ${isExpanded ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-gray-400 border-gray-200 hover:text-blue-600 hover:border-blue-300'}`}
-                                        >
+                                       >
                                             {isExpanded ? 
                                               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg> 
                                               : <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -9301,9 +9397,25 @@ const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostR
                                     )}
                                     
                                     <div className="flex-1">
+                                        {/* แสดงรหัสสินค้า (Code Lookup) */}
+                                        {(() => {
+                                            const stockItem = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
+                                            const assetItem = !stockItem ? assets.find(a => a.name === item.name && a.project === selectedRequest.job) : null;
+                                            const codeToShow = stockItem ? getDisplayId(stockItem.id) : (assetItem ? assetItem.id : null);
+
+                                            if (codeToShow) {
+                                                return (
+                                                    <div className="text-[10px] font-mono font-bold text-slate-500 bg-slate-100 px-1.5 rounded border border-slate-200 w-fit mb-1">
+                                                        {codeToShow}
+                                                    </div>
+                                                );
+                                            }
+                                            return null;
+                                        })()}
+
                                         <div className="font-bold text-gray-900">{item.name}</div>
                                         
-                                        {/* กรณี Borrow */}
+                                        {/* กรณี Borrow: แสดง Serial / Asset ID */}
                                         {isBorrow && (item.assetId || item.serial) && (
                                             <div className="text-xs font-mono text-indigo-600 mt-1 flex flex-wrap gap-2">
                                                 {item.assetId && <span className="bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">ID: {item.assetId}</span>}
@@ -9311,61 +9423,41 @@ const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostR
                                             </div>
                                         )}
 
-                                        {/* ⭐ กรณี Buy: ส่วนแก้ไข SubJob / Mat. Code */}
+                                        {/* กรณี Buy: แสดง SubJob / MatCode (รองรับโหมดแก้ไข) */}
                                         {isBuy && (
                                             <div className="text-xs text-gray-500 mt-1">
                                                 <div className="flex flex-col gap-2">
-                                                    
-                                                    {/* --- SUBJOB EDITOR --- */}
                                                     {isCostEditMode ? (
-                                                        <div className="flex items-center gap-1">
-                                                            <span className="font-bold w-8 text-gray-400">Sub:</span>
-                                                            <select 
-                                                                className="border border-indigo-300 rounded px-1 py-1 text-xs bg-indigo-50 text-indigo-700 w-full max-w-[250px] outline-none focus:ring-1 focus:ring-indigo-500"
-                                                                value={item.subJob}
-                                                                onChange={(e) => {
-                                                                    const newData = {...tempCostRequest};
-                                                                    newData.items[idx].subJob = e.target.value;
-                                                                    setTempCostRequest(newData);
-                                                                }}
-                                                            >
-                                                                <option value="">-- ไม่ระบุ --</option>
-                                                                {projectData?.subJobs?.map(s => <option key={s.code} value={s.code}>{s.code}: {s.description}</option>)}
-                                                            </select>
+                                                        <div className="flex flex-col gap-1">
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="font-bold w-8 text-gray-400">Sub:</span>
+                                                                <select 
+                                                                    className="border border-indigo-300 rounded px-1 py-1 text-xs bg-indigo-50 text-indigo-700 w-full max-w-[250px] outline-none" 
+                                                                    value={item.subJob || ''} 
+                                                                    onChange={(e) => { const newData = {...tempCostRequest}; newData.items[idx].subJob = e.target.value; setTempCostRequest(newData); }}
+                                                                >
+                                                                    <option value="">-- ไม่ระบุ --</option>
+                                                                    {projectData?.subJobs?.map(s => <option key={s.code} value={s.code}>{s.code}: {s.description}</option>)}
+                                                                </select>
+                                                            </div>
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="font-bold w-8 text-gray-400">Mat.:</span>
+                                                                <select 
+                                                                    className="border border-purple-300 rounded px-1 py-1 text-xs bg-purple-50 text-purple-700 w-full max-w-[250px] outline-none" 
+                                                                    value={item.matCode || ''} 
+                                                                    onChange={(e) => { const newData = {...tempCostRequest}; newData.items[idx].matCode = e.target.value; setTempCostRequest(newData); }}
+                                                                >
+                                                                    <option value="">-- ไม่ระบุ --</option>
+                                                                    {projectData?.matCodes?.map(m => <option key={m.code} value={m.code}>{m.code}: {m.description}</option>)}
+                                                                </select>
+                                                            </div>
                                                         </div>
                                                     ) : (
-                                                        (item.subJob || item.matCode) && (
-                                                            <div className="flex gap-2">
-                                                                {item.subJob && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span>}
-                                                            </div>
-                                                        )
+                                                        <>
+                                                            {item.subJob && <div className="flex gap-2"><span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100">Sub: {item.subJob}</span></div>}
+                                                            {item.matCode && <div className="flex gap-2"><span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">Mat.: {item.matCode}</span></div>}
+                                                        </>
                                                     )}
-
-                                                    {/* --- MAT. CODE EDITOR --- */}
-                                                    {isCostEditMode ? (
-                                                        <div className="flex items-center gap-1">
-                                                            <span className="font-bold w-8 text-gray-400">Mat.:</span>
-                                                            <select 
-                                                                className="border border-purple-300 rounded px-1 py-1 text-xs bg-purple-50 text-purple-700 w-full max-w-[250px] outline-none focus:ring-1 focus:ring-purple-500"
-                                                                value={item.matCode}
-                                                                onChange={(e) => {
-                                                                    const newData = {...tempCostRequest};
-                                                                    newData.items[idx].matCode = e.target.value;
-                                                                    setTempCostRequest(newData);
-                                                                }}
-                                                            >
-                                                                <option value="">-- ไม่ระบุ --</option>
-                                                                {projectData?.matCodes?.map(m => <option key={m.code} value={m.code}>{m.code}: {m.description}</option>)}
-                                                            </select>
-                                                        </div>
-                                                    ) : (
-                                                        (item.matCode) && (
-                                                            <div className="flex gap-2">
-                                                                <span className="bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-100">Mat.: {item.matCode}</span>
-                                                            </div>
-                                                        )
-                                                    )}
-
                                                 </div>
                                             </div>
                                         )}
@@ -10107,66 +10199,85 @@ const relatedAssets = sourceAssets.filter(a =>
                       </div>
                   </div>
 
-                  <div className="flex flex-col md:flex-row gap-4 mb-4 items-end">
-                      
-                      {/* ⭐⭐ [เพิ่มใหม่] ส่วนกรอกรหัสวัสดุ (Inventory ID) ⭐⭐ */}
-                      {item.targetType === 'Inventory' && (
-                          <div className="w-full md:w-1/3">
-                              <div className="flex justify-between items-center mb-1">
-                                  <label className="text-xs text-gray-500 font-bold">รหัสวัสดุ (Material Code)</label>
-                                  <label className="flex items-center gap-1 cursor-pointer">
-                                      <input 
-                                          type="checkbox" 
-                                          className="w-3 h-3 accent-teal-600"
-                                          checked={item.isInvAutoId}
-                                          onChange={(e) => {
-                                              const n = [...receiveItems];
-                                              n[idx].isInvAutoId = e.target.checked;
-                                              // ถ้าติ๊ก Auto ให้เคลียร์ค่าที่กรอก (หรือจะเก็บไว้ก็ได้แล้วแต่ design)
-                                              if(e.target.checked) n[idx].inventoryId = '';
-                                              setReceiveItems(n);
-                                          }}
-                                      />
-                                      <span className="text-[10px] text-teal-600 font-bold">Auto Gen No.</span>
-                                  </label>
-                              </div>
-                              <input 
-                                  type="text" 
-                                  className={`w-full p-2 border border-gray-300 rounded-lg text-sm font-mono ${item.isInvAutoId ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-800 focus:ring-2 focus:ring-teal-500'}`}
-                                  placeholder={item.isInvAutoId ? "ระบบสร้างอัตโนมัติ (INV-xxx)" : "ระบุรหัสวัสดุ..."}
-                                  value={item.inventoryId}
-                                  disabled={item.isInvAutoId}
-                                  onChange={(e) => {
-                                      const n = [...receiveItems];
-                                      n[idx].inventoryId = e.target.value;
-                                      setReceiveItems(n);
-                                  }}
-                              />
-                          </div>
-                      )}
+         {/* --- Row 2: Inventory Details (Code / Price / Unit) --- */}
+<div className="flex flex-col md:flex-row gap-4 mb-4 items-end">
+    
+    {/* 1. รหัสวัสดุ */}
+    {item.targetType === 'Inventory' && (
+        <div className="w-full md:w-1/3">
+            <div className="flex justify-between items-center mb-1">
+                <label className="text-xs text-gray-500 font-bold">รหัสวัสดุ (Material Code)</label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                    <input 
+                        type="checkbox" 
+                        className="w-3 h-3 accent-teal-600"
+                        checked={item.isInvAutoId}
+                        onChange={(e) => {
+                            const n = [...receiveItems];
+                            n[idx].isInvAutoId = e.target.checked;
+                            if(e.target.checked) n[idx].inventoryId = '';
+                            setReceiveItems(n);
+                        }}
+                    />
+                    <span className="text-[10px] text-teal-600 font-bold">Auto Gen No.</span>
+                </label>
+            </div>
+            <input 
+                type="text" 
+                className={`w-full p-2 border border-gray-300 rounded-lg text-sm font-mono ${item.isInvAutoId ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-800 focus:ring-2 focus:ring-teal-500'}`}
+                placeholder={item.isInvAutoId ? "ระบบสร้างอัตโนมัติ (INV-xxx)" : "ระบุรหัสวัสดุ..."}
+                value={item.inventoryId}
+                disabled={item.isInvAutoId}
+                onChange={(e) => {
+                    const n = [...receiveItems];
+                    n[idx].inventoryId = e.target.value;
+                    setReceiveItems(n);
+                }}
+            />
+        </div>
+    )}
 
-                      {/* (ส่วนแสดงราคาเดิม - ปรับ layout นิดหน่อยถ้าจำเป็น) */}
-                      {item.targetType === 'Inventory' ? (
-                          <div className="w-full md:w-1/3">
-                              <label className="text-xs text-gray-500 font-bold mb-1 block">ราคาจริงต่อหน่วย (Actual Price)</label>
-                              <input type="number" className="w-full p-2 border border-gray-300 rounded-lg text-sm" value={item.actualPrice} onChange={(e) => { const n = [...receiveItems]; n[idx].actualPrice = parseFloat(e.target.value) || 0; setReceiveItems(n); }} />
-                          </div>
-                      ) : (
-                          <div className="w-full md:w-1/3"></div>
-                      )}
-                      
-                      <div className="w-full md:w-2/3">
-                          <label className="text-xs text-gray-500 font-bold mb-1 block">จัดเก็บเข้า (Target Storage)</label>
-                          <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
-                              <button onClick={() => { const n = [...receiveItems]; n[idx].targetType = 'Inventory'; setReceiveItems(n); }} className={`flex-1 py-2 text-sm rounded-md transition-all flex items-center justify-center gap-2 ${item.targetType === 'Inventory' ? 'bg-white shadow-sm text-blue-700 font-bold' : 'text-gray-500 hover:text-gray-700'}`}>
-                                  <Box className="w-4 h-4"/> เข้าคลังสินค้า
-                              </button>
-                              <button onClick={() => { const n = [...receiveItems]; n[idx].targetType = 'Asset'; setReceiveItems(n); }} className={`flex-1 py-2 text-sm rounded-md transition-all flex items-center justify-center gap-2 ${item.targetType === 'Asset' ? 'bg-white shadow-sm text-indigo-700 font-bold' : 'text-gray-500 hover:text-gray-700'}`}>
-                                  <Monitor className="w-4 h-4"/> ลงทะเบียนทรัพย์สิน
-                              </button>
-                          </div>
-                      </div>
-                  </div>
+    {/* 2. ราคาจริง (Actual Price) */}
+    {item.targetType === 'Inventory' ? (
+        <div className="w-full md:w-1/4">
+            <label className="text-xs text-gray-500 font-bold mb-1 block">ราคาจริงต่อหน่วย</label>
+            <input type="number" className="w-full p-2 border border-gray-300 rounded-lg text-sm" value={item.actualPrice} onChange={(e) => { const n = [...receiveItems]; n[idx].actualPrice = parseFloat(e.target.value) || 0; setReceiveItems(n); }} />
+        </div>
+    ) : null}
+
+  {/* 3. หน่วยนับ (Unit) - เปลี่ยนเป็น Dropdown สำหรับ Inventory */}
+    {item.targetType === 'Inventory' ? (
+        <div className="w-full md:w-1/4">
+            <label className="text-xs text-gray-500 font-bold mb-1 block">หน่วยนับ</label>
+            <select 
+                className="w-full p-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-teal-500" 
+                value={item.unit} 
+                onChange={(e) => { 
+                    const n = [...receiveItems]; 
+                    n[idx].unit = e.target.value; 
+                    setReceiveItems(n); 
+                }} 
+            >
+                {ITEM_UNITS.map(u => (
+                    <option key={u} value={u}>{u}</option>
+                ))}
+            </select>
+        </div>
+    ) : null}
+    
+    {/* 4. ปุ่มเลือก Target Type */}
+    <div className="w-full md:w-1/3">
+        <label className="text-xs text-gray-500 font-bold mb-1 block">จัดเก็บเข้า (Target Storage)</label>
+        <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+            <button onClick={() => { const n = [...receiveItems]; n[idx].targetType = 'Inventory'; setReceiveItems(n); }} className={`flex-1 py-2 text-sm rounded-md transition-all flex items-center justify-center gap-2 ${item.targetType === 'Inventory' ? 'bg-white shadow-sm text-blue-700 font-bold' : 'text-gray-500 hover:text-gray-700'}`}>
+                <Box className="w-4 h-4"/> เข้าคลังสินค้า
+            </button>
+            <button onClick={() => { const n = [...receiveItems]; n[idx].targetType = 'Asset'; setReceiveItems(n); }} className={`flex-1 py-2 text-sm rounded-md transition-all flex items-center justify-center gap-2 ${item.targetType === 'Asset' ? 'bg-white shadow-sm text-indigo-700 font-bold' : 'text-gray-500 hover:text-gray-700'}`}>
+                <Monitor className="w-4 h-4"/> ลงทะเบียนทรัพย์สิน
+            </button>
+        </div>
+    </div>
+</div>
 
                   
                   {/* Row 3: Image (For Inventory) - ⭐ Updated Grid Preview */}
@@ -10298,11 +10409,42 @@ const relatedAssets = sourceAssets.filter(a =>
                                                       </div>
                                                   </div>
                                               </div>
-                                          ) : (
-                                              /* For Buy: Show Price Field Here */
-                                              <div className="md:col-span-4">
-                                                  <label className="text-[10px] font-bold text-gray-400 block mb-1">ราคา (Price)</label>
-                                                  <input type="number" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500" value={assetReg.price} onChange={(e) => { const n = [...receiveItems]; n[idx].assetsToRegister[assetIdx].price = parseFloat(e.target.value); setReceiveItems(n); }} />
+                                         ) : (
+                                              /* For Buy: Show Price & Unit Fields */
+                                              <div className="md:col-span-4 grid grid-cols-2 gap-2">
+                                                  {/* 1. ช่องราคา (Price) */}
+                                                  <div>
+                                                      <label className="text-[10px] font-bold text-gray-400 block mb-1">ราคา (Price)</label>
+                                                      <input 
+                                                          type="number" 
+                                                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500" 
+                                                          value={assetReg.price} 
+                                                          onChange={(e) => { 
+                                                              const n = [...receiveItems]; 
+                                                              n[idx].assetsToRegister[assetIdx].price = parseFloat(e.target.value); 
+                                                              setReceiveItems(n); 
+                                                          }} 
+                                                      />
+                                                  </div>
+
+                                                  {/* 2. ⭐ ช่องหน่วยนับ (Unit) - เปลี่ยนเป็น Dropdown (Select) ⭐ */}
+                                                  <div>
+                                                      <label className="text-[10px] font-bold text-gray-400 block mb-1">หน่วย (Unit)</label>
+                                                      <select 
+                                                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500 bg-white" 
+                                                          value={assetReg.unit} 
+                                                          onChange={(e) => { 
+                                                              const n = [...receiveItems]; 
+                                                              n[idx].assetsToRegister[assetIdx].unit = e.target.value; 
+                                                              setReceiveItems(n); 
+                                                          }} 
+                                                      >
+                                                          {/* วนลูปสร้างตัวเลือกจาก ITEM_UNITS */}
+                                                          {ITEM_UNITS.map(u => (
+                                                              <option key={u} value={u}>{u}</option>
+                                                          ))}
+                                                      </select>
+                                                  </div>
                                               </div>
                                           )}
 
@@ -11082,12 +11224,27 @@ setShowEditInvModal(true);
         </th>
         
         {/* Item Info (เฉพาะหน้า All Logs) */}
-        {!viewingItem && (
-            <th className="px-6 py-3 cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('item')}>
-                Item Info <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
-            </th>
-        )}
-
+                                       
+                                       {/* Item Info (เฉพาะหน้า All Logs) */}
+                                        {!viewingItem && (
+                                            <td className="px-6 py-3">
+                                                <div className="font-medium text-gray-900">{log.item}</div>
+                                                {(() => {
+                                                    // พยายามหา ID จาก Asset ปัจจุบัน หรือจาก Log (กรณีลบไปแล้ว)
+                                                    let displayId = log.assetId;
+                                                    if (!displayId) {
+                                                        const matchedAsset = assets.find(a => a.name === log.item);
+                                                        if (matchedAsset) displayId = matchedAsset.id;
+                                                    }
+                                                    
+                                                    if (displayId) {
+                                                        // ⭐ เรียกใช้ getDisplayId เพื่อตัดส่วนเกินออก
+                                                        return <div className="text-xs text-gray-500 mt-0.5 font-mono">ID: {getDisplayId(displayId)}</div>;
+                                                    }
+                                                    return null;
+                                                })()}
+                                            </td>
+                                        )}
         {/* Change */}
         <th className="px-4 py-3 text-center cursor-pointer hover:bg-gray-200" onClick={() => handleHistorySort('change')}>
             Change <ArrowUpDown className="w-3 h-3 inline opacity-50"/>
@@ -11627,23 +11784,26 @@ setShowEditInvModal(true);
         {/* ⭐ เพิ่มส่วนแก้ไขวันที่ (Start/End Date) */}
         <div className="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-dashed border-gray-200">
             <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">วันเริ่มสัญญา</label>
-                <input 
-                    type="date" 
-                    className="w-full p-2 border rounded-lg text-sm" 
-                    value={editingAssetItem.rentalStart || ''} 
-                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalStart: e.target.value})}
-                />
-            </div>
-            <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">วันสิ้นสุด</label>
-                <input 
-                    type="date" 
-                    className="w-full p-2 border rounded-lg text-sm" 
-                    value={editingAssetItem.rentalEnd || ''} 
-                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalEnd: e.target.value})}
-                />
-            </div>
+            <label className="text-xs font-bold text-blue-700 mb-1 block">วันเริ่มสัญญา</label>
+            <input 
+                type="date" 
+                // ดึงค่าเก่ามาโชว์ (ถ้ามี)
+                value={editingAssetItem.rentalStart || ''} 
+                onChange={(e) => setEditingAssetItem({...editingAssetItem, rentalStart: e.target.value})}
+                className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+        </div>
+
+        <div>
+            <label className="text-xs font-bold text-blue-700 mb-1 block">วันสิ้นสุด</label>
+            <input 
+                type="date" 
+                // ดึงค่าเก่ามาโชว์ (ถ้ามี)
+                value={editingAssetItem.rentalEnd || ''} 
+                onChange={(e) => setEditingAssetItem({...editingAssetItem, rentalEnd: e.target.value})}
+                className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+        </div>
         </div>
     </>
 ) : (
