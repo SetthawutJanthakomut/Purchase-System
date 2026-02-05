@@ -2134,255 +2134,243 @@ const saveLogToSheet = (log) => {
 };
 
 const handleCreateOrder = async (e, isDraft = false) => {
-        e.preventDefault();
-        
-        // Validation พื้นฐาน (ส่วนหัว)
-        if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
-            showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
-            return;
-        }
-        if (orderItems.length === 0) { 
-            showToast("กรุณาเพิ่มรายการ", 'error');
-            return; 
-        }
-        
+    e.preventDefault();
 
-        // ⭐ เริ่มการตรวจสอบ Validation รายละเอียด (ทำงานเฉพาะเมื่อกด "ส่งคำขอ" ไม่ใช่ "บันทึกร่าง")
-        if (!isDraft) { 
-            const targetProject = newOrderMeta.job;
-            
-            for (const item of orderItems) {
-                
-                // ------------------------------------------------------------------
-// ✅ 1. ตรวจสอบ SubJob และ Mat. Code (แยกตามประเภท)
-// ------------------------------------------------------------------
-
-// กรณี 1: สั่งซื้อ (Local, HO) -> ต้องเลือกทั้ง 2 อย่าง
-if (['Local', 'HO'].includes(newOrderMeta.type)) {
-    if (!item.subJob || !item.matCode) { // ใช้ || (หรือ) คือขาดอย่างใดอย่างหนึ่งไม่ได้
-        showToast(`รายการ "${item.name}" ต้องระบุทั้ง SubJob และ Mat. Code`, 'error');
+    // =================================================================
+    // 1. Validation Logic (ตรวจสอบความถูกต้อง - เหมือนเดิมทุกประการ)
+    // =================================================================
+    
+    // ตรวจสอบข้อมูลส่วนหัว (Header)
+    if (!newOrderMeta.job || !newOrderMeta.dateRequired) {
+        showToast("กรุณากรอกชื่อโครงการและวันที่ต้องการ", 'error');
+        return;
+    }
+    if (orderItems.length === 0) { 
+        showToast("กรุณาเพิ่มรายการ", 'error');
         return; 
     }
-}
-// กรณี 2: เบิก (Withdraw) -> ต้องเลือกอย่างใดอย่างหนึ่ง (เหมือนเดิม)
-else if (newOrderMeta.type === 'Withdraw') {
-    if (!item.subJob && !item.matCode) { // ใช้ && (และ) คือว่างทั้งคู่ไม่ได้
-        showToast(`รายการ "${item.name}" ต้องระบุ SubJob หรือ Mat. Code อย่างใดอย่างหนึ่ง`, 'error');
-        return; 
-    }
-}
 
-                // ------------------------------------------------------------------
-                // ✅ 2. ตรวจสอบราคาต่อหน่วย (สำหรับ Local, HO) ต้องไม่เท่ากับ 0
-                // ------------------------------------------------------------------
-                if (['Local', 'HO'].includes(newOrderMeta.type)) {
-                    // แปลงเป็นตัวเลขก่อนเช็ค เพื่อความชัวร์
-                    const price = parseFloat(item.unitPrice);
-                    if (!price || price <= 0) {
-                        showToast(`รายการ "${item.name}" ต้องระบุราคาต่อหน่วย (ต้องมากกว่า 0)`, 'error');
-                        return; // หยุดการทำงานทันที
-                    }
+    // ตรวจสอบรายละเอียดสินค้า (เฉพาะตอนกด "ส่งคำขอ" ไม่ใช่ "บันทึกร่าง")
+    if (!isDraft) { 
+        const targetProject = newOrderMeta.job;
+        
+        for (const item of orderItems) {
+            
+            // --- Check 1: SubJob และ Mat. Code ---
+            // กรณีซื้อ (Local, HO) -> ต้องระบุทั้งคู่
+            if (['Local', 'HO'].includes(newOrderMeta.type)) {
+                if (!item.subJob || !item.matCode) { 
+                    showToast(`รายการ "${item.name}" ต้องระบุทั้ง SubJob และ Mat. Code`, 'error');
+                    return; 
                 }
+            }
+            // กรณีเบิก (Withdraw) -> ต้องระบุอย่างใดอย่างหนึ่ง
+            else if (newOrderMeta.type === 'Withdraw') {
+                if (!item.subJob && !item.matCode) { 
+                    showToast(`รายการ "${item.name}" ต้องระบุ SubJob หรือ Mat. Code อย่างใดอย่างหนึ่ง`, 'error');
+                    return; 
+                }
+            }
 
-                // ------------------------------------------------------------------
-                // (Logic เดิม) เช็คสต็อกสำหรับเบิก/ยืม
-                // ------------------------------------------------------------------
-                // 1. กรณีเบิก (Withdraw): เช็คของในคลังโครงการนั้น
-                if (newOrderMeta.type === 'Withdraw') {
-                    const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
-                    if (!stockItem) {
-                        showToast(`ผิดพลาด: สินค้า "${item.name}" ไม่มีในโครงการ ${targetProject}`, 'error');
-                        return; 
+            // --- Check 2: ราคาต่อหน่วย (Local, HO) ---
+            if (['Local', 'HO'].includes(newOrderMeta.type)) {
+                const price = parseFloat(item.unitPrice);
+                if (!price || price <= 0) {
+                    showToast(`รายการ "${item.name}" ต้องระบุราคาต่อหน่วย (ต้องมากกว่า 0)`, 'error');
+                    return; 
+                }
+            }
+
+            // --- Check 3: เช็คสต็อกสำหรับเบิก (Withdraw) ---
+            if (newOrderMeta.type === 'Withdraw') {
+                const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
+                if (!stockItem) {
+                    showToast(`ผิดพลาด: สินค้า "${item.name}" ไม่มีในโครงการ ${targetProject}`, 'error');
+                    return; 
+                }
+                if (item.qty > stockItem.qty) {
+                    showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
+                    return; 
+                }
+            } 
+            // --- Check 4: เช็คสถานะสำหรับยืม (Borrow) ---
+            else if (newOrderMeta.type === 'Borrow') {
+                if (item.assetId) {
+                    const assetItem = assets.find(a => a.id === item.assetId);
+                    if (!assetItem) {
+                        showToast(`ผิดพลาด: ไม่พบทรัพย์สินรหัส ${item.assetId}`, 'error');
+                        return;
                     }
-                    if (item.qty > stockItem.qty) {
-                        showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
-                        return; 
-                    }
-                } 
-                // 2. กรณียืม (Borrow): เช็คสถานะ Asset ID
-                else if (newOrderMeta.type === 'Borrow') {
-                    if (item.assetId) {
-                        const assetItem = assets.find(a => a.id === item.assetId);
-                        if (!assetItem) {
-                            showToast(`ผิดพลาด: ไม่พบทรัพย์สินรหัส ${item.assetId}`, 'error');
-                            return;
-                        }
-                        // เช็คว่าอยู่โครงการที่เลือกไหม (ถ้าต้องการบังคับข้ามโครงการต้องแก้ตรงนี้)
-                        // ...
-                        if (assetItem.status !== 'Available') {
-                            showToast(`ผิดพลาด: ทรัพย์สิน "${item.name}" ไม่ว่าง (สถานะ: ${assetItem.status})`, 'error');
-                            return;
-                        }
+                    if (assetItem.status !== 'Available') {
+                        showToast(`ผิดพลาด: ทรัพย์สิน "${item.name}" ไม่ว่าง (สถานะ: ${assetItem.status})`, 'error');
+                        return;
                     }
                 }
             }
         }
+    }
 
-        setIsLoading(true);
+    // =================================================================
+    // 2. Prepare Data & Upload Files (เตรียมข้อมูลและอัปโหลดไฟล์)
+    // =================================================================
+    setIsLoading(true);
+    
+    let attachmentData = newOrderMeta.attachment;
+    let quotationData = newOrderMeta.quotation;
+    
+    try {
+        // 2.1 อัปโหลดไฟล์แนบหลัก (Email / Quotation)
+        if (uploadFiles.email) {
+            const base64 = await fileToBase64(uploadFiles.email);
+            const result = await new Promise((resolve, reject) => {
+                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.email.name);
+            });
+            if (result.error) throw new Error(result.error);
+            attachmentData = result;
+        }
         
-        let attachmentData = newOrderMeta.attachment;
-        let quotationData = newOrderMeta.quotation;
+        if (uploadFiles.quotation) {
+            const base64 = await fileToBase64(uploadFiles.quotation);
+            const result = await new Promise((resolve, reject) => {
+                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.quotation.name);
+            });
+            if (result.error) throw new Error(result.error);
+            quotationData = result;
+        }
+
+        // 2.2 อัปโหลดรูปภาพรายสินค้า (Item Images)
+        const processedItems = await Promise.all(orderItems.map(async (item) => {
+            let processedImages = [];
+            if (item.images && item.images.length > 0) {
+                const itemImagePromises = item.images.map(imgObj => {
+                    // ถ้าเป็นรูปใหม่ (มี Base64) ให้อัปโหลด
+                    if (imgObj.base64) {
+                            return new Promise((resolve, reject) => {
+                            google.script.run
+                                .withSuccessHandler(resolve)
+                                .withFailureHandler(reject)
+                                .uploadAssetImage(imgObj.base64, imgObj.name); 
+                        });
+                    }
+                    return Promise.resolve(imgObj); // รูปเก่าคืนค่าเดิม
+                });
+
+                const uploadedResults = await Promise.all(itemImagePromises);
+                processedImages = uploadedResults.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+            }
+            return { ...item, images: processedImages };
+        }));
+
+        // =================================================================
+        // 3. Construct Payload & Save (สร้างข้อมูลและบันทึก)
+        // =================================================================
         
-        try {
-            // 1. อัปโหลดไฟล์แนบหลัก (Email / Quotation)
-            if (uploadFiles.email) {
-                const base64 = await fileToBase64(uploadFiles.email);
-                const result = await new Promise((resolve, reject) => {
-                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.email.name);
-                });
-                if (result.error) throw new Error(result.error);
-                attachmentData = result;
+        // กำหนดสถานะ (Next Status)
+        let nextStatus = 'Draft';
+        let isFullFlow = false;
+        const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
+        if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
+        
+        if (!isDraft) {
+            if (newOrderMeta.type === 'HO' && existingReq?.isPreviouslyApproved) {
+                nextStatus = 'Pending Check'; 
+            } else if (newOrderMeta.type === 'HO') {
+                nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
+            } else {
+                nextStatus = 'Pending Head';
             }
-            
-            if (uploadFiles.quotation) {
-                const base64 = await fileToBase64(uploadFiles.quotation);
-                const result = await new Promise((resolve, reject) => {
-                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.quotation.name);
-                });
-                if (result.error) throw new Error(result.error);
-                quotationData = result;
-            }
+        }
 
-            // 2. ⭐ อัปโหลดรูปภาพของสินค้าแต่ละรายการ (Item Images)
-            const processedItems = await Promise.all(orderItems.map(async (item) => {
-                let processedImages = [];
-                
-                // ถ้ามีรูปภาพในรายการนี้
-                if (item.images && item.images.length > 0) {
-                    // วนลูปอัปโหลดทีละรูป (หรือใช้ Promise.all ซ้อนก็ได้)
-                    const itemImagePromises = item.images.map(imgObj => {
-                        // ถ้าเป็นรูปที่เพิ่งเพิ่ม (มี file object หรือ base64) ให้เช็คและอัปโหลด
-                        // (ใน Create Mode มักจะเป็นรูปใหม่ทั้งหมด)
-                        if (imgObj.base64) {
-                             return new Promise((resolve, reject) => {
-                                google.script.run
-                                    .withSuccessHandler(resolve)
-                                    .withFailureHandler(reject)
-                                    .uploadAssetImage(imgObj.base64, imgObj.name); // ใช้ Function เดียวกับ Asset ได้เลย
-                            });
-                        }
-                        return Promise.resolve(imgObj); // กรณีเป็นรูปเก่า (ถ้ามี logic แก้ไข)
-                    });
-
-                    const uploadedResults = await Promise.all(itemImagePromises);
-                    // แปลงผลลัพธ์ให้เหลือแค่ { name, url, type }
-                    processedImages = uploadedResults.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
-                }
-
-                // คืนค่า Item พร้อมรูปภาพที่อัปโหลดแล้ว (URL)
-                return { ...item, images: processedImages };
-            }));
-
-const generateNextReqId = () => {
-            // กรองเฉพาะ ID ที่ขึ้นต้นด้วย REQ-
-            const existingIds = requests
-                .map(r => r.id)
-                .filter(id => id && typeof id === 'string' && id.startsWith('REQ-'));
-
-            if (existingIds.length === 0) return 'REQ-001';
-
-            // หาเลขที่มากที่สุดในปัจจุบัน
-            const maxNum = existingIds.reduce((max, id) => {
-                // ลบคำว่า REQ- ออก แล้วแปลงเป็นตัวเลข
-                const numPart = parseInt(id.replace(/^REQ-/, ''), 10);
-                return !isNaN(numPart) && numPart > max ? numPart : max;
-            }, 0);
-
-            const nextNum = maxNum + 1;
-            
-            // ⭐ ใช้ padStart(3, '0') เพื่อให้ได้อย่างน้อย 3 หลัก (001, 010, 100)
-            // ถ้าเกิน 3 หลัก (เช่น 1000) มันจะแสดงครบทุกหลักตามปกติ (REQ-1000)
-            return `REQ-${String(nextNum).padStart(3, '0')}`;
+        // เตรียม Object ข้อมูล (ยังไม่ใส่ ID ถ้าเป็นรายการใหม่)
+        const orderPayload = {
+            // id: ... (จะใส่ด้านล่างตามเงื่อนไข)
+            requester: `${user.firstName} ${user.lastName}`,
+            status: nextStatus,
+            created: existingReq ? existingReq.created : new Date().toISOString().split('T')[0],
+            items: processedItems, 
+            ...newOrderMeta,
+            attachment: attachmentData,
+            quotation: quotationData,
+            docNumber: existingReq?.docNumber || null,
+            isFullApprovalFlow: isFullFlow,
+            isPreviouslyApproved: existingReq?.isPreviouslyApproved || false,
+            history: [
+                ...(existingReq?.history || []),
+                createLog(
+                    isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'แก้ไขข้อมูล (Edit Data)' : 'สร้างคำขอ'),
+                    `${user.empId} ${user.firstName} ${user.lastName}`,
+                    isFullFlow ? 'Submit (Full Flow)' : 'Submit'
+                )
+            ],
+            comments: existingReq?.comments || []
         };
-            // 3. สร้าง Order Object
-            let nextStatus = 'Draft';
-            let isFullFlow = false;
-            const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
-            if (existingReq) isFullFlow = existingReq.isFullApprovalFlow || false;
-            
-            if (!isDraft) {
-    // กรณี 1: เป็น HO และ "เคยผ่านการอนุมัติมาแล้ว" (คือเคส Local -> HO ที่ถูกส่งคืนแก้ไข)
-    if (newOrderMeta.type === 'HO' && existingReq?.isPreviouslyApproved) {
-        nextStatus = 'Pending Check'; // ✅ ส่งกลับไปให้ฝ่ายจัดซื้อตรวจสอบไฟล์ (ข้าม L1/L2)
-    } 
-    // กรณี 2: HO ปกติ (สร้างใหม่ หรือ Full Flow ปกติ)
-    else if (newOrderMeta.type === 'HO') {
-        nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
-    } 
-    // กรณี 3: Local หรืออื่นๆ
-    else {
-        nextStatus = 'Pending Head';
-    }
-}
-            
-           // ... (ส่วนบนของฟังก์ชันเหมือนเดิม)
 
-          const order = {
-                id: editingId || generateNextReqId(),
-                requester: `${user.firstName} ${user.lastName}`,
-                status: nextStatus, // สถานะจะถูกคำนวณใหม่
-                created: new Date().toISOString().split('T')[0],
-                items: processedItems, 
-                ...newOrderMeta,
-                attachment: attachmentData,
-                quotation: quotationData,
-                docNumber: existingReq?.docNumber || null,
-                isFullApprovalFlow: isFullFlow,
-                isPreviouslyApproved: existingReq?.isPreviouslyApproved || false,
-                history: [
-                    ...(existingReq?.history || []),
-                    createLog(
-                        isDraft ? 'บันทึกแบบร่าง' : (editingId ? 'แก้ไขข้อมูล (Edit Data)' : 'สร้างคำขอ'),
-                        `${user.empId} ${user.firstName} ${user.lastName}`,
-                        isFullFlow ? 'Submit (Full Flow)' : 'Submit'
-                    )
-                ],
-                comments: existingReq?.comments || []
-            };
+        // --- ⭐ ส่วนสำคัญ: แยกกรณี แก้ไข (Edit) vs สร้างใหม่ (New) ---
 
-            // 1. อัปเดตรายการใน State หลัก (Requests)
-            setRequests(prev => editingId ? prev.map(r => r.id === editingId ? order : r) : [order, ...prev]);
+        if (editingId) {
+            // ✅ กรณีแก้ไข (Edit): ใช้ ID เดิมและบันทึกแบบปกติ
+            orderPayload.id = editingId;
             
-            // 2. อัปเดตหน้าต่างรายละเอียด/ประวัติ (Detail Modal) ถ้าเปิดอยู่
-            if (selectedRequest && selectedRequest.id === order.id) {
-                setSelectedRequest(order);
+            await saveRequestToSheet(orderPayload);
+            
+            // อัปเดต State หน้าจอ
+            setRequests(prev => prev.map(r => r.id === editingId ? orderPayload : r));
+            if (selectedRequest && selectedRequest.id === orderPayload.id) {
+                setSelectedRequest(orderPayload);
             }
 
-            // ⭐ 3. [เพิ่มใหม่] อัปเดตหน้าตรวจสอบเอกสาร (Verification Modal) ถ้าเปิดอยู่
-            if (showVerificationModal && verificationData.requestId === order.id) {
-                const hasQuotation = !!order.quotation; // เช็คว่ามีไฟล์ใบเสนอราคาไหม
-                const hasEmail = !!order.attachment;    // เช็คว่ามีไฟล์เมลอนุมัติไหม
+        } else {
+            // ✅ กรณีสร้างใหม่ (New): เรียก Backend ให้รันเลขและบันทึก
+            // (ใช้ createRequestSecurely ที่เพิ่มใน Code.gs)
+            const result = await new Promise((resolve, reject) => {
+                google.script.run
+                    .withSuccessHandler(resolve)
+                    .withFailureHandler(reject)
+                    .createRequestSecurely(orderPayload); // 👈 เรียกฟังก์ชันใหม่ที่ Backend
+            });
 
-                setVerificationData(prev => ({
-                    ...prev,
-                    // อัปเดตสถานะไฟล์ในหน้าตรวจสอบทันที
-                    filesExist: {
-                        quotation: hasQuotation,
-                        email: hasEmail
-                    },
-                    // (Optional) สั่งให้ติ๊กถูกอัตโนมัติถ้าไฟล์มาแล้ว
-                    checks: {
-                        ...prev.checks,
-                        quotation: hasQuotation ? true : prev.checks.quotation,
-                        email: hasEmail ? true : prev.checks.email
-                    }
-                }));
+            if (result.success) {
+                const newRequest = result.request; // ได้ข้อมูลพร้อม ID (REQ-xxx) ที่ถูกต้อง
+                
+                // อัปเดต State หน้าจอ (แทรกรายการใหม่ไว้บนสุด)
+                setRequests(prev => [newRequest, ...prev]);
+                
+                // ถ้าเปิดหน้า Detail ค้างไว้ให้แสดงรายการใหม่เลย
+                if (selectedRequest) setSelectedRequest(newRequest);
+            } else {
+                throw new Error(result.message);
             }
-
-            saveRequestToSheet(order);
-            setIsLoading(false);
-            showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : (editingId ? 'บันทึกการแก้ไขเรียบร้อย' : 'ส่งคำขอเรียบร้อย'));
-            setUploadFiles({ email: null, quotation: null });
-            
-            // ปิดเฉพาะหน้าต่าง Create/Edit (หน้า Verification จะยังเปิดอยู่และข้อมูลอัปเดตแล้ว)
-            handleCloseCreateModal();
-
-        } catch (err) {
-            console.error("Create Order Error:", err);
-            showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
-            setIsLoading(false);
         }
-      };
+
+        // =================================================================
+        // 4. Finalize (อัปเดตหน้าจอหลังบันทึกสำเร็จ)
+        // =================================================================
+
+        // อัปเดตหน้าตรวจสอบเอกสาร (Verification Modal) ถ้าเปิดอยู่
+        const targetId = editingId || (requests[0] ? requests[0].id : null); // หรือใช้ result ID
+        if (showVerificationModal && verificationData.requestId === targetId) {
+             const hasQuotation = !!orderPayload.quotation; 
+             const hasEmail = !!orderPayload.attachment;    
+             setVerificationData(prev => ({
+                 ...prev,
+                 filesExist: { quotation: hasQuotation, email: hasEmail },
+                 checks: { ...prev.checks, quotation: hasQuotation ? true : prev.checks.quotation, email: hasEmail ? true : prev.checks.email }
+             }));
+        }
+
+        setIsLoading(false);
+        showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : (editingId ? 'บันทึกการแก้ไขเรียบร้อย' : 'ส่งคำขอเรียบร้อย'));
+        
+        // เคลียร์ค่าและปิดหน้าต่าง
+        setUploadFiles({ email: null, quotation: null });
+        handleCloseCreateModal();
+
+    } catch (err) {
+        console.error("Create Order Error:", err);
+        showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
+        setIsLoading(false);
+    }
+};
 
 const handleRefresh = () => {
     setIsLoading(true);
@@ -2528,7 +2516,7 @@ useEffect(() => {
 
       // State from original file
       const [assetTabMode, setAssetTabMode] = useState('Company');
-      const [dashboardView, setDashboardView] = useState('Purchase');
+      
       const [dashboardSearch, setDashboardSearch] = useState('');
       const [dashboardStatusFilter, setDashboardStatusFilter] = useState('All');
       const [searchQuery, setSearchQuery] = useState('');
@@ -2589,14 +2577,20 @@ const handleShowActors = (req) => {
             return;
     }
 
-    // กรองรายชื่อ User ที่มีสิทธิ์นี้ในโครงการนี้
-    const validUsers = allUsers.filter(u => {
+const validUsers = allUsers.filter(u => {
         if (u.status !== 'Activated') return false;
-        if (u.isSuperAdmin) return true;
         
+        // if (u.isSuperAdmin) return true; // ตัดออกถ้าไม่ต้องการโชว์
+
         const perms = u.permissions?.[req.job] || [];
-        return perms.includes(2) || perms.includes(permId); // Admin(2) หรือมีสิทธิ์เฉพาะ
+        
+        // ⭐ แก้ไข: ตัด conditions ที่เช็ค Admin (2) ออก
+        // เดิม: return perms.includes(2) || perms.includes(permId);
+        
+        // ใหม่: เช็คแค่สิทธิ์เฉพาะทางเท่านั้น
+        return perms.includes(permId); 
     });
+
 
     setActorList({
         title: title,
@@ -2644,22 +2638,25 @@ const handleShowActors = (req) => {
             default: return null;
         }
 
-        // กรอง User ทั้งหมดที่มีสิทธิ์
-        const validUsers = allUsers.filter(u => {
-            if (u.status !== 'Activated') return false;
-            if (u.isSuperAdmin) return true; // ⭐ Super Admin เห็นเสมอ
+const validUsers = allUsers.filter(u => {
+        if (u.status !== 'Activated') return false;
+        
+        // ❌ ตัด Super Admin ออกด้วย (ถ้าต้องการให้เห็นเฉพาะผู้ปฏิบัติงานจริง)
+        // if (u.isSuperAdmin) return true; 
 
-            const perms = u.permissions?.[req.job] || [];
-            
-            // ⭐ ตรวจสอบ: เป็น Admin ของโปรเจกต์ (2) หรือ มีสิทธิ์ใดสิทธิ์หนึ่งใน permIds
-            const isProjectAdmin = perms.includes(2);
-            const hasSpecificRight = permIds.some(id => perms.includes(id));
+        const perms = u.permissions?.[req.job] || [];
+        
+        // ⭐ จุดที่แก้ไข: ตัดการเช็คสิทธิ์ Admin (2) ออกไปเลย
+        // const isProjectAdmin = perms.includes(2); <--- ตัดบรรทัดนี้ทิ้ง
+        
+        // เช็คเฉพาะว่ามีสิทธิ์ตรงกับขั้นตอนนั้นหรือไม่
+        const hasSpecificRight = permIds.some(id => perms.includes(id));
 
-            return isProjectAdmin || hasSpecificRight;
-        });
+        return hasSpecificRight; 
+    });
 
-        return { title, users: validUsers };
-    };
+    return { title, users: validUsers };
+};
 
     // --- Component: Tooltip แสดงผู้มีสิทธิ์ ---
     const StatusWithTooltip = ({ request, allUsers, children }) => {
@@ -2768,6 +2765,89 @@ const [verificationData, setVerificationData] = useState({
       
       // Form Data
       const [selectedRequest, setSelectedRequest] = useState(null);
+      // --- STATE: Bulk Selection ---
+const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+
+// Helper: ตรวจสอบว่า User ปัจจุบันมีสิทธิ์อนุมัติรายการนี้หรือไม่
+const canUserManageRequest = (req) => {
+    // 1. Level 1 (Head)
+    if (req.status === 'Pending Head') {
+        // งานซื้อ: ต้องมีสิทธิ์ L1(8)
+        if (['Local', 'HO'].includes(req.type) && hasPermission(8)) return true;
+        // งานเบิก/ยืม: มีสิทธิ์ L1(8) หรือ L2(9) ก็ได้
+        if (['Withdraw', 'Borrow'].includes(req.type) && (hasPermission(8) || hasPermission(9))) return true;
+    }
+    // 2. Level 2 (PM)
+    if (req.status === 'Pending PM' && hasPermission(9)) return true;
+    
+    return false;
+};
+
+// Helper: Toggle Selection
+const toggleSelectOrder = (id) => {
+    setSelectedOrderIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+};
+
+// Function: อนุมัติ/ไม่อนุมัติ แบบกลุ่ม
+const handleBulkAction = async (actionType) => {
+    if (selectedOrderIds.length === 0) return;
+    
+    // หาข้อมูล Request ที่เลือกมาทั้งหมด
+    const targets = requests.filter(r => selectedOrderIds.includes(r.id));
+    
+    if (actionType === 'Reject') {
+        // กรณีไม่อนุมัติ: ถามเหตุผลครั้งเดียว
+        const reason = prompt(`ระบุเหตุผลการไม่อนุมัติ ${targets.length} รายการ:`, "");
+        if (reason === null) return; // กด Cancel
+        if (!reason) { showToast("กรุณาระบุเหตุผล", "error"); return; }
+
+        setIsLoading(true);
+        try {
+            for (const req of targets) {
+                // เรียกใช้ฟังก์ชันเดิมที่มีอยู่แล้ว
+                await handleUpdateStatus(req.id, 'Rejected', `[Bulk Reject] ไม่อนุมัติ: ${reason}`);
+            }
+            setSelectedOrderIds([]); // เคลียร์การเลือก
+            showToast(`ไม่อนุมัติ ${targets.length} รายการ เรียบร้อย`);
+        } catch (err) {
+            console.error(err);
+            showToast("เกิดข้อผิดพลาดบางรายการ", "error");
+        } finally {
+            setIsLoading(false);
+        }
+    } 
+    else if (actionType === 'Approve') {
+        // กรณีอนุมัติ: ต้องคำนวณสถานะถัดไปของแต่ละใบเอง
+        if (!confirm(`ยืนยันการอนุมัติ ${targets.length} รายการ?`)) return;
+
+        setIsLoading(true);
+        try {
+            for (const req of targets) {
+                let nextStatus = '';
+                
+                // Logic คำนวณสถานะถัดไป (เหมือนปุ่มเดี่ยว)
+                if (req.status === 'Pending Head') {
+                    if (req.type === 'Withdraw' || req.type === 'Borrow') nextStatus = 'Ready to Disburse';
+                    else nextStatus = 'Pending PM';
+                } 
+                else if (req.status === 'Pending PM') {
+                    nextStatus = 'Approved';
+                }
+
+                if (nextStatus) {
+                    await handleUpdateStatus(req.id, nextStatus, `[Bulk Approve] อนุมัติโดย ${user.firstName}`);
+                }
+            }
+            setSelectedOrderIds([]); // เคลียร์การเลือก
+            showToast(`อนุมัติ ${targets.length} รายการ เรียบร้อย`);
+        } catch (err) {
+            console.error(err);
+            showToast("เกิดข้อผิดพลาดบางรายการ", "error");
+        } finally {
+            setIsLoading(false);
+        }
+    }
+};
       const [receiveItems, setReceiveItems] = useState([]);
       const [editingId, setEditingId] = useState(null);
       const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
@@ -5673,55 +5753,57 @@ const handleSubmitContract = async () => {
       const handlePrint = () => { window.print(); };
       const openPOPreview = (req) => { setSelectedRequest(req); setShowPOPreviewModal(true); };
 
-      const dashboardStats = useMemo(() => {
-        let activeRequests = requests.filter(r => r.status !== 'Draft');
-        
-        if (globalProjectFilter !== 'All') {
-            activeRequests = activeRequests.filter(r => r.job === globalProjectFilter);
-        }
+   // --- LOGIC: Dashboard Stats (รวมทุกประเภท) ---
+const dashboardStats = useMemo(() => {
+    let activeRequests = requests.filter(r => r.status !== 'Draft');
+    
+    // กรองตาม Project ที่เลือก
+    if (globalProjectFilter !== 'All') {
+        activeRequests = activeRequests.filter(r => r.job === globalProjectFilter);
+    }
 
-        const calcStats = (typeFilterFn) => {
-            const reqs = activeRequests.filter(typeFilterFn);
-            return {
-                total: reqs.length,
-                pending: reqs.filter(r => r.status.includes('Pending') || r.status === 'PR Issued' || r.status === 'Approved' || r.status === 'Revise Needed' || r.status === 'Contract Pending').length,
-                processing: reqs.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Ready to Disburse', 'Contract Signed', 'Partially Received'].includes(r.status)).length,
-                ready: reqs.filter(r => r.status === 'Ready to Disburse').length,
-                completed: reqs.filter(r => r.status === 'Completed' || r.status === 'Returned').length
-            };
-        };
-        return { purchase: calcStats(r => r.type === 'Local' || r.type === 'HO'), withdraw: calcStats(r => r.type === 'Withdraw' || r.type === 'Borrow') };
-      }, [requests]);
+    // ฟังก์ชันนับจำนวน
+    return {
+        total: activeRequests.length,
+        pending: activeRequests.filter(r => r.status.includes('Pending') || r.status === 'PR Issued' || r.status === 'Approved' || r.status === 'Revise Needed' || r.status === 'Contract Pending').length,
+        processing: activeRequests.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Ready to Disburse', 'Contract Signed', 'Partially Received'].includes(r.status)).length,
+        ready: activeRequests.filter(r => r.status === 'Ready to Disburse').length,
+        completed: activeRequests.filter(r => r.status === 'Completed' || r.status === 'Returned').length
+    };
+}, [requests, globalProjectFilter]);
 
-    const dashboardRequests = useMemo(() => {
-        let data = requests.filter(r => r.status !== 'Draft');
+    // --- LOGIC: Dashboard Requests List (รวมทุกประเภท) ---
+const dashboardRequests = useMemo(() => {
+    let data = requests.filter(r => r.status !== 'Draft');
 
-        // ⭐ กรอง Project (Global)
-        if (globalProjectFilter !== 'All') {
-            data = data.filter(r => r.job === globalProjectFilter);
-        }
+    // 1. กรอง Project (Global)
+    if (globalProjectFilter !== 'All') {
+        data = data.filter(r => r.job === globalProjectFilter);
+    }
 
-        if (dashboardView === 'Purchase') data = data.filter(r => r.type === 'Local' || r.type === 'HO'); else data = data.filter(r => r.type === 'Withdraw' || r.type === 'Borrow');
-        
-        // ⭐⭐ จุดที่แก้ไข: เพิ่มเงื่อนไขค้นหา r.docNumber ⭐⭐
-      if (dashboardSearch) { 
-            const lowerQ = dashboardSearch.toLowerCase(); 
-            data = data.filter(r => 
-                r.id.toLowerCase().includes(lowerQ) || // ค้นหา ID (REQ-xxx)
-                r.items.some(i => i.name.toLowerCase().includes(lowerQ)) || // ค้นหาชื่อสินค้า
-                (r.docNumber && r.docNumber.toLowerCase().includes(lowerQ)) || // ค้นหาเลขที่เอกสาร (LPO/HPO)
-                r.requester.toLowerCase().includes(lowerQ) || // ค้นหาชื่อผู้ขอ
-                (STATUS_LABELS[r.status] || r.status).toLowerCase().includes(lowerQ) // ค้นหาชื่อสถานะ (เช่น 'รออนุมัติ')
-            ); 
-        }
-        if (dashboardStatusFilter !== 'All') {
-           if (dashboardStatusFilter === 'Pending') data = data.filter(r => r.status.includes('Pending') || r.status === 'PR Issued' || r.status === 'Approved' || r.status === 'Revise Needed' || r.status === 'Contract Pending');
-           else if (dashboardStatusFilter === 'Processing') data = data.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Ready to Disburse', 'Contract Signed', 'Partially Received'].includes(r.status));
-           else if (dashboardStatusFilter === 'Ready') data = data.filter(r => r.status === 'Ready to Disburse');
-           else if (dashboardStatusFilter === 'Completed') data = data.filter(r => r.status === 'Completed' || r.status === 'Returned');
-        }
-        return data;
-      }, [requests, dashboardView, dashboardSearch, dashboardStatusFilter]);
+    // ❌ ตัดส่วนที่แยกประเภท Purchase/Withdraw ออกแล้ว (รวมกันหมด)
+
+    // 2. ค้นหา
+    if (dashboardSearch) { 
+        const lowerQ = dashboardSearch.toLowerCase(); 
+        data = data.filter(r => 
+            r.id.toLowerCase().includes(lowerQ) || 
+            r.items.some(i => i.name.toLowerCase().includes(lowerQ)) || 
+            (r.docNumber && r.docNumber.toLowerCase().includes(lowerQ)) || 
+            r.requester.toLowerCase().includes(lowerQ) || 
+            (STATUS_LABELS[r.status] || r.status).toLowerCase().includes(lowerQ)
+        ); 
+    }
+
+    // 3. กรองสถานะ
+    if (dashboardStatusFilter !== 'All') {
+       if (dashboardStatusFilter === 'Pending') data = data.filter(r => r.status.includes('Pending') || r.status === 'PR Issued' || r.status === 'Approved' || r.status === 'Revise Needed' || r.status === 'Contract Pending');
+       else if (dashboardStatusFilter === 'Processing') data = data.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Ready to Disburse', 'Contract Signed', 'Partially Received'].includes(r.status));
+       else if (dashboardStatusFilter === 'Ready') data = data.filter(r => r.status === 'Ready to Disburse');
+       else if (dashboardStatusFilter === 'Completed') data = data.filter(r => r.status === 'Completed' || r.status === 'Returned');
+    }
+    return data;
+}, [requests, dashboardSearch, dashboardStatusFilter, globalProjectFilter]); // ลบ dashboardView ออกจาก dependency
 
 // --- LOGIC: BUDGET CHART DATA PREPARATION (FIXED: PROJECT SCOPE) ---
       const budgetChartData = useMemo(() => {
@@ -6195,6 +6277,7 @@ const PublicAnnouncementPopup = () => (
             
             
     {activeTab === 'dashboard' && (
+    <div key={globalProjectFilter} className="space-y-6 max-w-7xl mx-auto pb-20 animate-in fade-in">
                  <div className="space-y-6 max-w-7xl mx-auto pb-20">
                    
                    {/* Styles */}
@@ -6208,8 +6291,7 @@ const PublicAnnouncementPopup = () => (
 
                    {/* 1. ⭐ Budget Tracking Charts (ย้ายขึ้นมาเป็นอันดับ 1) */}
 {/* ⭐ เพิ่มเงื่อนไขเช็คสิทธิ์ (Admin(2), 8, 9, 26, 29) */}
-{dashboardView === 'Purchase' && 
- (hasPermission(2) || hasPermission(8) || hasPermission(9) || hasPermission(26) || hasPermission(29)) && 
+{(hasPermission(2) || hasPermission(8) || hasPermission(9) || hasPermission(26) || hasPermission(29)) && 
  (budgetChartData.subJobData.length > 0 || budgetChartData.matCodeData.length > 0) && (
    <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm animate-in fade-in">
                            
@@ -6501,48 +6583,71 @@ const PublicAnnouncementPopup = () => (
                        </div>
                    )}
 
-                   {/* 2. ⭐ Stats Cards (ย้ายมาเป็นอันดับ 2) */}
-                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                      <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Pending' ? 'ring-2 ring-amber-500 bg-amber-50' : ''}`} onClick={() => handleCardClick('Pending')}>
-                          <div className="flex justify-between items-start mb-2"><div className="p-2 bg-amber-100 rounded-lg"><Clock className="w-6 h-6 text-amber-600"/></div><span className="text-2xl font-bold text-gray-800">{dashboardView === 'Purchase' ? dashboardStats.purchase.pending : dashboardStats.withdraw.pending}</span></div>
-                          <p className="text-sm text-gray-500 font-medium">รออนุมัติ/ตรวจสอบ</p>
-                      </div>
-                      <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Processing' ? 'ring-2 ring-blue-500 bg-blue-50' : ''}`} onClick={() => handleCardClick('Processing')}>
-                          <div className="flex justify-between items-start mb-2"><div className="p-2 bg-blue-100 rounded-lg"><Truck className="w-6 h-6 text-blue-600"/></div><span className="text-2xl font-bold text-gray-800">{dashboardView === 'Purchase' ? dashboardStats.purchase.processing : dashboardStats.withdraw.processing}</span></div>
-                          <p className="text-sm text-gray-500 font-medium">กำลังดำเนินการ/สั่งซื้อ</p>
-                      </div>
-                      <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Ready' ? 'ring-2 ring-purple-500 bg-purple-50' : ''}`} onClick={() => handleCardClick('Ready')}>
-                          <div className="flex justify-between items-start mb-2"><div className="p-2 bg-purple-100 rounded-lg"><Package className="w-6 h-6 text-purple-600"/></div><span className="text-2xl font-bold text-gray-800">{dashboardView === 'Purchase' ? dashboardStats.purchase.ready : dashboardStats.withdraw.ready}</span></div>
-                          <p className="text-sm text-gray-500 font-medium">รอจ่ายของ/เบิก</p>
-                      </div>
-                      <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Completed' ? 'ring-2 ring-green-500 bg-green-50' : ''}`} onClick={() => handleCardClick('Completed')}>
-                          <div className="flex justify-between items-start mb-2"><div className="p-2 bg-green-100 rounded-lg"><CheckCircle className="w-6 h-6 text-green-600"/></div><span className="text-2xl font-bold text-gray-800">{dashboardView === 'Purchase' ? dashboardStats.purchase.completed : dashboardStats.withdraw.completed}</span></div>
-                          <p className="text-sm text-gray-500 font-medium">เสร็จสิ้น/รับของแล้ว</p>
-                      </div>
-                   </div>
+    {/* 2. ⭐ Stats Cards (Updated: รวมยอด) */}
+<div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Pending' ? 'ring-2 ring-amber-500 bg-amber-50' : ''}`} onClick={() => handleCardClick('Pending')}>
+        <div className="flex justify-between items-start mb-2">
+            <div className="p-2 bg-amber-100 rounded-lg"><Clock className="w-6 h-6 text-amber-600"/></div>
+            {/* ⭐ แก้ไข: ใช้ dashboardStats.pending โดยตรง (ไม่ต้องเช็ค dashboardView) */}
+            <span className="text-2xl font-bold text-gray-800">{dashboardStats.pending}</span>
+        </div>
+        <p className="text-sm text-gray-500 font-medium">รออนุมัติ/ตรวจสอบ</p>
+    </div>
 
-                   {/* 3. ⭐ Filter Toolbar & Table (อันดับ 3) */}
-                   <div className="flex flex-col md:flex-row justify-between items-center gap-4 mt-8">
+    <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Processing' ? 'ring-2 ring-blue-500 bg-blue-50' : ''}`} onClick={() => handleCardClick('Processing')}>
+        <div className="flex justify-between items-start mb-2">
+            <div className="p-2 bg-blue-100 rounded-lg"><Truck className="w-6 h-6 text-blue-600"/></div>
+            {/* ⭐ แก้ไขตรงนี้ */}
+            <span className="text-2xl font-bold text-gray-800">{dashboardStats.processing}</span>
+        </div>
+        <p className="text-sm text-gray-500 font-medium">กำลังดำเนินการ/สั่งซื้อ</p>
+    </div>
 
-                      <div className="flex bg-gray-200 p-1 rounded-lg">
-                        <button onClick={() => setDashboardView('Purchase')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${dashboardView === 'Purchase' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><ShoppingCart className="w-4 h-4"/> งานสั่งซื้อ</button>
-                        <button onClick={() => setDashboardView('Withdraw')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all flex items-center gap-2 ${dashboardView === 'Withdraw' ? 'bg-white text-pink-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><ArrowLeftRight className="w-4 h-4"/> งานเบิก/ยืม</button>
-                     </div>
+    <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Ready' ? 'ring-2 ring-purple-500 bg-purple-50' : ''}`} onClick={() => handleCardClick('Ready')}>
+        <div className="flex justify-between items-start mb-2">
+            <div className="p-2 bg-purple-100 rounded-lg"><Package className="w-6 h-6 text-purple-600"/></div>
+            {/* ⭐ แก้ไขตรงนี้ */}
+            <span className="text-2xl font-bold text-gray-800">{dashboardStats.ready}</span>
+        </div>
+        <p className="text-sm text-gray-500 font-medium">รอจ่ายของ/เบิก</p>
+    </div>
 
-                     <div className="flex gap-2 w-full md:w-auto items-center">
-        
-        {/* ช่องค้นหาเดิม (ปรับ class นิดหน่อย) */}
+    <div className={`p-5 rounded-2xl border bg-white shadow-sm cursor-pointer transition-all hover:shadow-md ${dashboardStatusFilter === 'Completed' ? 'ring-2 ring-green-500 bg-green-50' : ''}`} onClick={() => handleCardClick('Completed')}>
+        <div className="flex justify-between items-start mb-2">
+            <div className="p-2 bg-green-100 rounded-lg"><CheckCircle className="w-6 h-6 text-green-600"/></div>
+            {/* ⭐ แก้ไขตรงนี้ */}
+            <span className="text-2xl font-bold text-gray-800">{dashboardStats.completed}</span>
+        </div>
+        <p className="text-sm text-gray-500 font-medium">เสร็จสิ้น/รับของแล้ว</p>
+    </div>
+</div>
+
+   {/* 3. ⭐ Filter Toolbar & Table */}
+<div className="flex flex-col md:flex-row justify-between items-center gap-4 mt-8">
+    
+   <h3 className="font-bold text-gray-700 text-lg flex items-center gap-2">
+        <List className="w-5 h-5 text-blue-600"/> 
+        {dashboardStatusFilter === 'Pending' ? 'รายการรออนุมัติ/ตรวจสอบ' :
+         dashboardStatusFilter === 'Processing' ? 'รายการกำลังดำเนินการ' :
+         dashboardStatusFilter === 'Ready' ? 'รายการรอจ่ายของ/เบิก' :
+         dashboardStatusFilter === 'Completed' ? 'รายการเสร็จสิ้น/รับของแล้ว' :
+         'รายการทั้งหมด (All Requests)'}
+         
+         <span className="text-sm bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-bold border border-gray-200 ml-1">
+             {dashboardRequests.length}
+         </span>
+    </h3>
+
+    <div className="flex gap-2 w-full md:w-auto items-center">
+        {/* ช่องค้นหา */}
         <div className="relative flex-1 md:w-80"> 
             <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
             <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="ค้นหารายการ..." value={dashboardSearch} onChange={e => setDashboardSearch(e.target.value)}/>
         </div>
 
-        {/* ⭐ A. ปุ่ม Export CSV (วางตรงนี้) */}
+        {/* ปุ่ม Export */}
         {(user.isSuperAdmin || hasPermission(2) || hasPermission(29)) && (
-            <button 
-                onClick={() => setShowExportModal(true)}
-                className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm transition-colors whitespace-nowrap"
-            >
+            <button onClick={() => setShowExportModal(true)} className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm transition-colors whitespace-nowrap">
                 <Download className="w-4 h-4"/> Export
             </button>
         )}
@@ -6635,7 +6740,12 @@ const PublicAnnouncementPopup = () => (
                                                           <div className="text-[10px] text-gray-400">{req._displayTime.split(' ')[1]}</div>
                                                           {req.dateRequired && <div className="text-[10px] text-orange-400 mt-1">Due: {req.dateRequired}</div>}
                                                       </td>
-                                                      <td className="px-6 py-4 text-center"><StatusBadge status={req.status} type={req.type} /></td>
+                                                      <td className="px-6 py-4 text-center">
+    {/* ⭐ เอา StatusWithTooltip มาครอบ เพื่อให้ชี้แล้วแสดงชื่อคนอนุมัติ */}
+    <StatusWithTooltip request={req} allUsers={allUsers}>
+        <StatusBadge status={req.status} type={req.type} />
+    </StatusWithTooltip>
+</td>
                                                   </tr>
                                               );
                                           })}
@@ -6649,6 +6759,8 @@ const PublicAnnouncementPopup = () => (
                           <p>ไม่พบรายการที่ค้นหา</p>
                       </div>
                   )}
+                 </div>
+
                  </div>
               )}
 
@@ -6808,161 +6920,29 @@ const PublicAnnouncementPopup = () => (
                   );
               })()}
 
-   {/* --- ANNOUNCEMENT MANAGEMENT TAB (UPDATED: MULTI-TOPIC) --- */}
-{activeTab === 'announcement' && hasPermission(28) && (
-    <div className="space-y-6 max-w-5xl mx-auto">
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[85vh]">
-            <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
-                <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
-                   <Megaphone className="w-5 h-5 text-indigo-600"/> จัดการประกาศข่าวสาร (System Announcement)
-                </h3>
-                <button 
-                    onClick={() => setAnnounceForm({ id: '', title: '', detail: '', active: true })}
-                    className="bg-indigo-600 text-white text-sm font-bold px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center gap-2"
-                >
-                    <Plus className="w-4 h-4"/> สร้างประกาศใหม่
-                </button>
-            </div>
-            
-            <div className="flex flex-1 overflow-hidden">
-                {/* Left: List of Announcements */}
-                <div className="w-1/3 border-r border-gray-200 overflow-y-auto bg-gray-50">
-                    {announcements.length === 0 && <div className="p-8 text-center text-gray-400 text-sm">ยังไม่มีประกาศ</div>}
-                    {announcements.map((item) => (
-                        <div 
-                            key={item.id}
-                            onClick={() => setAnnounceForm(item)}
-                            className={`p-4 border-b cursor-pointer transition-colors hover:bg-white ${announceForm.id === item.id ? 'bg-white border-l-4 border-l-indigo-600 shadow-sm' : ''}`}
-                        >
-                            <div className="flex justify-between items-start mb-1">
-                                <h4 className={`font-bold text-sm ${announceForm.id === item.id ? 'text-indigo-700' : 'text-gray-700'}`}>{item.title}</h4>
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${item.active ? 'bg-green-50 text-green-600 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
-                                    {item.active ? 'Active' : 'Inactive'}
-                                </span>
-                            </div>
-                            <p className="text-xs text-gray-500 line-clamp-2">{item.detail}</p>
-                            <div className="mt-2 text-[10px] text-gray-400 flex justify-between">
-    <span>{item.timestamp}</span>
-</div>
-                        </div>
-                    ))}
-                </div>
-
-                {/* Right: Edit Form */}
-                <div className="w-2/3 p-6 overflow-y-auto bg-white">
-                    <div className="max-w-xl mx-auto space-y-4">
-                        <div className="flex justify-between items-center mb-4">
-                            <h4 className="font-bold text-gray-800 text-lg">
-                                {announceForm.id ? 'แก้ไขประกาศ' : 'สร้างประกาศใหม่'}
-                            </h4>
-                            {announceForm.id && (
-                                <span className="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">{announceForm.id}</span>
-                            )}
-                        </div>
-
-                        <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1.5">หัวข้อ (Title)</label>
-                            <input 
-                                type="text" 
-                                className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                                placeholder="ระบุหัวข้อเรื่อง..."
-                                value={announceForm.title}
-                                onChange={e => setAnnounceForm({...announceForm, title: e.target.value})}
-                            />
-                        </div>
-                        <div>
-                             <label className="block text-sm font-bold text-gray-700 mb-1.5">รายละเอียด (Details)</label>
-                            <textarea 
-                                rows="8"
-                                className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                                placeholder="ระบุรายละเอียดข้อความ..."
-                                value={announceForm.detail}
-                                onChange={e => setAnnounceForm({...announceForm, detail: e.target.value})}
-                             ></textarea>
-                        </div>
-
-                        <div className="flex gap-3 pt-4 border-t border-gray-100 mt-6">
-                            {announceForm.id && (
-                                <>
-                                    <button 
-                                        onClick={() => {
-                                            if(!confirm('ยืนยันลบประกาศนี้?')) return;
-                                            setIsAnnounceLoading(true);
-                                            google.script.run.withSuccessHandler(() => {
-                                                setAnnouncements(prev => prev.filter(a => a.id !== announceForm.id));
-                                                setAnnounceForm({ id: '', title: '', detail: '', active: true });
-                                                setIsAnnounceLoading(false);
-                                                showToast('ลบประกาศเรียบร้อย');
-                                            }).deleteAnnouncementItem(announceForm.id);
-                                        }}
-                                        className="bg-white border border-red-200 text-red-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50"
-                                        disabled={isAnnounceLoading}
-                                    >
-                                        ลบ
-                                    </button>
-
-                                    <button 
-                                        onClick={() => {
-                                            const newStatus = !announceForm.active;
-                                            setIsAnnounceLoading(true);
-                                            google.script.run.withSuccessHandler((res) => {
-                                                setAnnouncements(prev => prev.map(a => a.id === announceForm.id ? {...a, active: newStatus} : a));
-                                                setAnnounceForm({...announceForm, active: newStatus});
-                                                setIsAnnounceLoading(false);
-                                                showToast(res.message);
-                                            }).toggleAnnouncementStatus(announceForm.id, newStatus);
-                                        }}
-                                        className={`px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${announceForm.active ? 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100' : 'bg-green-50 text-green-600 border-green-200 hover:bg-green-100'}`}
-                                        disabled={isAnnounceLoading}
-                                    >
-                                        {announceForm.active ? 'หยุดประกาศ (Unpublish)' : 'เริ่มประกาศ (Publish)'}
-                                    </button>
-                                </>
-                            )}
-                            
-                            <div className="flex-1"></div>
-
-                            <button 
-                                onClick={() => {
-                                    if(!announceForm.title || !announceForm.detail) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
-                                    setIsAnnounceLoading(true);
-                                    const payload = { ...announceForm, updatedBy: `${user.firstName} ${user.lastName}` };
-                                    google.script.run.withSuccessHandler((res) => {
-                                        if (announceForm.id) {
-                                            setAnnouncements(prev => prev.map(a => a.id === res.data.id ? res.data : a));
-                                        } else {
-                                            setAnnouncements(prev => [res.data, ...prev]);
-                                            setAnnounceForm(res.data); // Set current to saved one
-                                        }
-                                        setIsAnnounceLoading(false);
-                                        showToast(res.message);
-                                    }).saveAnnouncementItem(payload);
-                                }}
-                                className="bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 shadow-md flex items-center gap-2"
-                                disabled={isAnnounceLoading}
-                            >
-                                <Save className="w-4 h-4"/> บันทึกข้อมูล
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-)}
-              {activeTab === 'orders' && (
-  <div className="space-y-6 max-w-7xl mx-auto">
+{activeTab === 'orders' && (
+  <div className="space-y-6 max-w-7xl mx-auto pb-24 relative">
+    
+    {/* --- 1. SEARCH & FILTER BAR --- */}
     <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
       <div className="flex items-center gap-4 flex-1 min-w-[200px]">
+        {/* ช่องค้นหา */}
         <div className="relative flex-1">
           <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
-          <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none" placeholder="ค้นหา..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
+          <input 
+            type="text" 
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" 
+            placeholder="ค้นหา (ID, ชื่อสินค้า, เลขที่เอกสาร)..." 
+            value={searchQuery} 
+            onChange={e => setSearchQuery(e.target.value)}
+          />
         </div>
-        {/* ⭐ เพิ่มตัวกรองสถานะ */}
+        
+        {/* Dropdown กรองสถานะ */}
         <select 
           value={statusFilter} 
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="p-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
+          className="p-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer min-w-[150px]"
         >
           <option value="All">ทุกสถานะ</option>
           {Object.keys(STATUS_LABELS).map(key => <option key={key} value={key}>{STATUS_LABELS[key]}</option>)}
@@ -6970,92 +6950,120 @@ const PublicAnnouncementPopup = () => (
       </div>
     </div>
     
+    {/* --- 2. ORDERS LIST --- */}
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <div className="divide-y divide-gray-100">
+        
+        {/* กรณีไม่มีข้อมูล */}
         {filteredRequests.length === 0 ? (
           <div className="p-12 text-center text-gray-400 bg-white border-t border-gray-100">
             <div className="bg-gray-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3">
               <FileText className="w-8 h-8 text-gray-300"/>
             </div>
             <p className="text-lg font-bold text-gray-500">ไม่มีรายการ</p>
-            <p className="text-sm">คุณไม่มีรายการที่ต้องดำเนินการในขณะนี้</p>
+            <p className="text-sm">คุณไม่มีรายการที่ต้องดำเนินการในขณะนี้ หรือไม่ตรงกับเงื่อนไขการค้นหา</p>
           </div>
         ) : (
-         
-         
-filteredRequests.map(req => {
-  // --- คำนวณวันคงเหลือ ---
-  const getDaysDiff = (d) => {
-    if(!d) return 999;
-    const diff = new Date(d) - new Date();
-    return Math.ceil(diff / (1000 * 60 * 60 * 24));
-  };
-  const daysLeft = getDaysDiff(req.dateRequired);
-  let alertBadge = null;
-
-  // เงื่อนไขแจ้งเตือน (เพิ่ม: เลยกำหนด)
-  if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
-    if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse border-red-700' };
-    else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
-    else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
-    else if (daysLeft <= 7) alertBadge = { text: 'อีก 1 สัปดาห์', color: 'bg-orange-100 text-orange-700' };
-    else if (daysLeft <= 14) alertBadge = { text: 'อีก 2 สัปดาห์', color: 'bg-yellow-100 text-yellow-800' };
-    else if (daysLeft <= 30) alertBadge = { text: 'อีก 1 เดือน', color: 'bg-blue-50 text-blue-600' };
-  }
-  
-  return (
-    <div key={req.id} className="p-5 hover:bg-slate-50 transition-colors group">
-      <div className="flex justify-between mb-2">
-        <div className="flex items-center gap-3 flex-wrap">
           
-          {/* 1. Badge ประเภทคำขอ (แก้ไข: แสดง HO Rent/Buy) */}
-          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>
-              {req.type === 'HO' ? `HO (${req.purchaseType || 'Buy'})` : req.type}
-          </span>
-          
-          {/* 2. Alert Badge (รวมถึงเลยกำหนด) */}
-          {alertBadge && (
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${alertBadge.color}`}>
-              <Clock className="w-3 h-3"/> {alertBadge.text}
-            </span>
-          )}
+          /* Loop แสดงรายการ */
+          filteredRequests.map(req => {
+            
+            // --- Logic 1: คำนวณวันคงเหลือ (Badge Alerts) ---
+            const getDaysDiff = (d) => {
+              if(!d) return 999;
+              const diff = new Date(d) - new Date();
+              return Math.ceil(diff / (1000 * 60 * 60 * 24));
+            };
+            const daysLeft = getDaysDiff(req.dateRequired);
+            
+            let alertBadge = null;
+            if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
+              if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse border-red-700' };
+              else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
+              else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
+              else if (daysLeft <= 7) alertBadge = { text: 'อีก 1 สัปดาห์', color: 'bg-orange-100 text-orange-700' };
+              else if (daysLeft <= 14) alertBadge = { text: 'อีก 2 สัปดาห์', color: 'bg-yellow-100 text-yellow-800' };
+              else if (daysLeft <= 30) alertBadge = { text: 'อีก 1 เดือน', color: 'bg-blue-50 text-blue-600' };
+            }
+            
+            // --- Logic 2: ตรวจสอบสิทธิ์สำหรับ Checkbox ---
+            const canSelect = canUserManageRequest(req);
 
-          <span className="text-xs text-gray-400">{req.id}</span>
-          <DocIdBadge type={req.type} id={req.docNumber} />
+            return (
+              <div key={req.id} className={`p-5 hover:bg-slate-50 transition-colors group ${selectedOrderIds.includes(req.id) ? 'bg-blue-50/50' : ''}`}>
+                
+                <div className="flex gap-4">
+                    
+                    {/* ✅ ส่วนที่ 1: Checkbox (ซ้ายสุด) - แสดงเฉพาะคนที่มีสิทธิ์อนุมัติ */}
+                    {canSelect && (
+                        <div className="pt-1">
+                            <input 
+                                type="checkbox" 
+                                className="w-5 h-5 accent-blue-600 cursor-pointer rounded border-gray-300"
+                                checked={selectedOrderIds.includes(req.id)}
+                                onChange={() => toggleSelectOrder(req.id)}
+                                onClick={(e) => e.stopPropagation()} // ป้องกันคลิกแล้วเปิดหน้ารายละเอียด
+                            />
+                        </div>
+                    )}
 
-          {/* 3. เพิ่ม: แสดงวันที่ต้องการ (Date Required) */}
-          {req.dateRequired && (
-             <span className="text-[10px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded border flex items-center gap-1" title="วันที่ต้องการใช้ของ">
-                 <Calendar className="w-3 h-3"/> {req.dateRequired}
-             </span>
-          )}
+                    {/* ✅ ส่วนที่ 2: เนื้อหาการ์ด (ขวา) */}
+                    <div className="flex-1 min-w-0">
+                        
+                        {/* Header Line: Tags & ID */}
+                        <div className="flex justify-between mb-2">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            
+                            {/* Type Badge */}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>
+                                {req.type === 'HO' ? `HO (${req.purchaseType || 'Buy'})` : req.type}
+                            </span>
+                            
+                            {/* Alert Badge */}
+                            {alertBadge && (
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${alertBadge.color}`}>
+                                <Clock className="w-3 h-3"/> {alertBadge.text}
+                              </span>
+                            )}
 
-          {/* 4. ชื่อสินค้า + จำนวนที่เหลือ */}
-          <h4 className="font-bold text-gray-900 text-sm flex items-center">
-              {req.items[0]?.name}
-              {req.items.length > 1 && (
-                  <span className="text-gray-500 font-normal text-xs ml-1 bg-gray-200 px-1.5 rounded-full">
-                      +{req.items.length - 1}
-                  </span>
-              )}
-          </h4>
-        </div>
-       {/* ใช้ Component ใหม่ครอบ StatusBadge */}
-<StatusWithTooltip request={req} allUsers={allUsers}>
-    <StatusBadge 
-        status={req.status} 
-        type={req.type} 
-        // ไม่ต้องส่ง onClick ไปที่นี่แล้ว เพราะจัดการที่ Wrapper
-    />
-</StatusWithTooltip>
-      </div>
-      
-      <ProgressBar request={req} />
-      
-      {/* ส่วนปุ่ม Action คงเดิม */}
-      <div className="flex justify-end gap-2 mt-2">
+                            {/* Request ID */}
+                            <span className="text-xs text-gray-400 font-mono">{req.id}</span>
+                            
+                            {/* Doc Number Badge */}
+                            <DocIdBadge type={req.type} id={req.docNumber} />
 
-      {(() => {
+                            {/* Date Required */}
+                            {req.dateRequired && (
+                               <span className="text-[10px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded border flex items-center gap-1" title="วันที่ต้องการใช้ของ">
+                                   <Calendar className="w-3 h-3"/> {req.dateRequired}
+                               </span>
+                            )}
+
+                            {/* Item Name & Count */}
+                            <h4 className="font-bold text-gray-900 text-sm flex items-center truncate">
+                                {req.items[0]?.name}
+                                {req.items.length > 1 && (
+                                     <span className="text-gray-500 font-normal text-xs ml-1 bg-gray-200 px-1.5 rounded-full">
+                                        +{req.items.length - 1}
+                                    </span>
+                                )}
+                            </h4>
+                          </div>
+                          
+                          {/* Status Badge with Tooltip */}
+                          <StatusWithTooltip request={req} allUsers={allUsers}>
+                              <StatusBadge status={req.status} type={req.type} />
+                          </StatusWithTooltip>
+                        </div>
+                        
+                        {/* Progress Bar */}
+                        <ProgressBar request={req} />
+                        
+                        {/* --- ACTION BUTTONS (Logic เดิมครบถ้วน) --- */}
+                        <div className="flex justify-end gap-2 mt-2 flex-wrap">
+                            
+                            {/* 1. ปุ่มย้อนกลับสถานะ (Rollback) */}
+                            {(() => {
             // 1. ฟังก์ชันหาสถานะก่อนหน้า
             const getPrevStatus = (r) => {
                 // ⭐ เพิ่มเงื่อนไขนี้: ถ้าสถานะเป็น "Ordered" ให้ย้อนกลับไป "Approved"
@@ -7231,18 +7239,49 @@ filteredRequests.map(req => {
               req.needContract !== false 
               ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ (หลังอนุมัติ)</button>)
               : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ (หลังอนุมัติ)</button>)
-            )}
-          </>
+                                )}
+                              </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
     </div>
-  );
-})
-        )}
-      </div>
-    </div>
+
+    {/* --- 3. FLOATING ACTION BAR (BULK ACTION) --- */}
+    {selectedOrderIds.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 z-[60] animate-in slide-in-from-bottom-4 border border-gray-700">
+            <div className="flex items-center gap-3 border-r border-gray-600 pr-6">
+                <span className="bg-blue-600 text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm">
+                    {selectedOrderIds.length}
+                </span>
+                <span className="font-bold text-sm">รายการที่เลือก</span>
+                <button onClick={() => setSelectedOrderIds([])} className="text-xs text-gray-400 hover:text-white underline ml-2">ยกเลิก</button>
+            </div>
+            
+            <div className="flex gap-3">
+                <button 
+                    onClick={() => handleBulkAction('Reject')}
+                    className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md transition-colors flex items-center gap-2"
+                >
+                    <XCircle className="w-4 h-4"/> ไม่อนุมัติทั้งหมด
+                </button>
+                <button 
+                    onClick={() => handleBulkAction('Approve')}
+                    className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md transition-colors flex items-center gap-2"
+                >
+                    <CheckCircle className="w-4 h-4"/> อนุมัติทั้งหมด
+                </button>
+            </div>
+        </div>
+    )}
+
   </div>
-)} 
+)}
     
 {/* INVENTORY TAB (UPDATED WITH MULTI-DELETE) */}
               {activeTab === 'inventory' && (
@@ -9302,6 +9341,24 @@ const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostR
                                     
                                     <div className="flex-1">
                                         <div className="font-bold text-gray-900">{item.name}</div>
+
+                                        {selectedRequest.type === 'Withdraw' && (() => {
+        // 1. ลองหารหัสจากคลังสินค้า (Inventory ID)
+        const stockItem = inventory.find(i => i.name === item.name && i.project === selectedRequest.job);
+        const invId = stockItem ? getDisplayId(stockItem.id) : null;
+        
+        // 2. หรือถ้ามี Mat. Code ที่ระบุมาตอนเบิก
+        const displayCode = invId || item.matCode;
+
+        if (displayCode) {
+            return (
+                <div className="text-[10px] font-mono font-bold text-slate-600 mt-1 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-300 w-fit flex items-center gap-1">
+                    <span className="opacity-70">รหัส:</span> {displayCode}
+                </div>
+            );
+        }
+        return null;
+    })()}
                                         
                                         {/* กรณี Borrow */}
                                         {isBorrow && (item.assetId || item.serial) && (
@@ -10777,160 +10834,199 @@ const relatedAssets = sourceAssets.filter(a =>
                 
                 <div id="history-modal-scroll" className="flex-1 overflow-y-auto bg-slate-50 scroll-smooth">
                     
-{/* --- 1. ITEM DETAILS SECTION --- */}
-                    {viewingItem && (
-                        <div className="p-6 pb-0">
-                            <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm relative">
-                                
-                                {/* Action Buttons */}
- {/* Action Buttons (Updated Permissions) */}
-<div className="absolute top-6 right-6 flex gap-2">
-    
-    {/* ⭐ เช็คสถานะการเลื่อน (Snoozed Check) */}
-    {(() => {
-        const isSnoozed = viewingItem.snoozeUntil && new Date(viewingItem.snoozeUntil) > new Date();
-        
-        return (
-            <>
-                {/* 1. กรณีมีการแจ้งเตือน (Overdue) -> แสดงปุ่ม เลื่อน (Snooze) และ ปิดถาวร (Disable) */}
-                {viewingItem.isOverdue && viewingItem.alertType !== 'expired' && hasPermission(17) && (
-                    <>
-                        {/* ปุ่มเลื่อน 7 วัน */}
-                        <button 
-                            onClick={async () => {
-                                setIsLoading(true);
-                                try {
-                                    const nextWeek = new Date();
-                                    nextWeek.setDate(nextWeek.getDate() + 7);
-                                    const snoozeDateStr = nextWeek.toISOString().split('T')[0];
-
-                                    const updatedAsset = { ...viewingItem, snoozeUntil: snoozeDateStr };
-                                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
-                                    await addInvLog('Snooze Alert', updatedAsset.name, 'Update', `เลื่อนแจ้งเตือนถึง ${snoozeDateStr}`, [], null, updatedAsset.id);
-
-                                    setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, alertType: null, isOverdue: false } : a));
-                                    setViewingItem({ ...updatedAsset, alertType: null, isOverdue: false });
-                                    showToast(`เลื่อนการแจ้งเตือน 7 วันเรียบร้อย`);
-                                } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
-                            }}
-                            className="bg-orange-50 text-orange-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-orange-100 border border-orange-200 flex items-center gap-1 shadow-sm"
-                            title="เลื่อนไปอีก 7 วัน"
-                        >
-                            <Clock className="w-3 h-3"/> เลื่อน 7 วัน
-                        </button>
-
-                        {/* ⭐ ปุ่มปิดแจ้งเตือน (ไม่ต้องแจ้งเตือน) */}
-                        <button 
-                            onClick={async () => {
-                                if(!confirm('ยืนยัน "ปิดการแจ้งเตือน" สำหรับรายการนี้? \n(รายการจะไม่แสดงสถานะเตือนอีก จนกว่าจะมากดเปิดใหม่)')) return;
-                                setIsLoading(true);
-                                try {
-                                    // ตั้งเวลาไปไกลมากๆ (ปี 9999) เท่ากับปิดถาวร
-                                    const foreverDateStr = '9999-12-31';
-                                    const updatedAsset = { ...viewingItem, snoozeUntil: foreverDateStr };
-                                    
-                                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
-                                    await addInvLog('Disable Alert', updatedAsset.name, 'Update', `ปิดการแจ้งเตือนถาวร`, [], null, updatedAsset.id);
-
-                                    setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, alertType: null, isOverdue: false } : a));
-                                    setViewingItem({ ...updatedAsset, alertType: null, isOverdue: false });
-                                    showToast(`ปิดการแจ้งเตือนเรียบร้อย`);
-                                } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
-                            }}
-                            className="bg-gray-100 text-gray-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-gray-200 border border-gray-300 flex items-center gap-1 shadow-sm"
-                            title="ไม่ต้องแจ้งเตือนอีก"
-                        >
-                            <BellOff className="w-3 h-3"/> ปิดแจ้งเตือน
-                        </button>
-                    </>
-                )}
-
-
-                {/* 2. ⭐ กรณีถูกเลื่อน/ปิดอยู่ (Snoozed) -> แสดงปุ่ม กลับมาแจ้งเตือน (Enable) */}
-                {isSnoozed && hasPermission(17) && (
-                    <button 
-                        onClick={async () => {
-                            if(!confirm('ต้องการ "เปิดการแจ้งเตือน" อีกครั้ง?')) return;
-                            setIsLoading(true);
-                            try {
-                                // ลบค่า snoozeUntil ออก
-                                const updatedAsset = { ...viewingItem, snoozeUntil: '' }; // ส่งค่าว่างไปลบ
-                                
-                                await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
-                                await addInvLog('Enable Alert', updatedAsset.name, 'Update', `เปิดการแจ้งเตือนอีกครั้ง`, [], null, updatedAsset.id);
-
-                                // คำนวณสถานะใหม่หน้าบ้านทันที (เพื่อให้ Alert เด้งขึ้นมาเลยถ้ามัน Overdue อยู่)
-                                const today = new Date(); today.setHours(0,0,0,0);
-                                let isNowOverdue = false;
-                                if (updatedAsset.status === 'Borrowed' && updatedAsset.lastUpdated) {
-                                    // Logic คำนวณวันเหมือนใน filteredAssets (Copy มาเพื่อให้แสดงผลทันที)
-                                    // หมายเหตุ: ฟังก์ชัน parseThaiDate ต้องมีอยู่แล้วใน scope
-                                    // ถ้าไม่มี ให้ใช้วิธีรีเฟรชหน้า handleRefresh() แทนได้
-                                    const borrowDate = parseThaiDate(updatedAsset.lastUpdated);
-                                    if (borrowDate) {
-                                        const diff = Math.ceil(Math.abs(today - borrowDate) / (86400000));
-                                        if (diff > 7) isNowOverdue = true;
-                                    }
-                                }
-
-                                setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, snoozeUntil: '', isOverdue: isNowOverdue } : a));
-                                setViewingItem({ ...updatedAsset, snoozeUntil: '', isOverdue: isNowOverdue });
-                                
-                                showToast(`เปิดการแจ้งเตือนเรียบร้อย`);
-                            } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
-                        }}
-                        className="bg-purple-50 text-purple-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-purple-100 border border-purple-200 flex items-center gap-1 shadow-sm"
-                    >
-                        <Bell className="w-3 h-3"/> เปิดแจ้งเตือน
-                    </button>
-                )}
-            </>
-        );
-    })()}
-                                    
-                                    {/* ปุ่มลบ: เช็คประเภทว่าเป็น Asset(21) หรือ Inventory(18) */}
-                                    {((viewingItem.serial !== undefined && hasPermission(21)) || 
-                                      (viewingItem.serial === undefined && hasPermission(18))) && (
+{viewingItem && (
+    <div className="p-6 pb-0">
+        <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm relative">
+            
+            {/* ⭐⭐⭐ [แก้ไข] Action Buttons: ซ่อนทั้งหมดถ้าเป็นรายการจากแถบ Summary (isSummary = true) ⭐⭐⭐ */}
+            {!viewingItem.isSummary && (
+                <div className="absolute top-6 right-6 flex gap-2">
+                    
+                    {/* (Code ปุ่ม Snooze / Disable Alert / Enable Alert / ลบ / รับคืน / แก้ไข ของเดิมทั้งหมด อยู่ในนี้) */}
+                    
+                    {/* ... (Start: Copy ไส้ในเดิมมาใส่ หรือใช้ของเดิมที่ครอบด้วย div นี้) ... */}
+                    {(() => {
+                        const isSnoozed = viewingItem.snoozeUntil && new Date(viewingItem.snoozeUntil) > new Date();
+                        return (
+                            <>
+                                {/* 1. ปุ่มจัดการ Alert */}
+                                {viewingItem.isOverdue && viewingItem.alertType !== 'expired' && hasPermission(17) && (
+                                    <>
                                         <button 
-                                          onClick={() => {
-                                            if (viewingItem.serial !== undefined) handleDeleteAssets([viewingItem.id]);
-                                            else handleDeleteInventory([viewingItem.id]);
-                                          }}
-                                          className="bg-white text-red-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-50 border border-red-200 flex items-center gap-1"
+                                            onClick={async () => {
+                                                setIsLoading(true);
+                                                try {
+                                                    const nextWeek = new Date();
+                                                    nextWeek.setDate(nextWeek.getDate() + 7);
+                                                    const snoozeDateStr = nextWeek.toISOString().split('T')[0];
+                                                    const updatedAsset = { ...viewingItem, snoozeUntil: snoozeDateStr };
+                                                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
+                                                    await addInvLog('Snooze Alert', updatedAsset.name, 'Update', `เลื่อนแจ้งเตือนถึง ${snoozeDateStr}`, [], null, updatedAsset.id);
+                                                    setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, alertType: null, isOverdue: false } : a));
+                                                    setViewingItem({ ...updatedAsset, alertType: null, isOverdue: false });
+                                                    showToast(`เลื่อนการแจ้งเตือน 7 วันเรียบร้อย`);
+                                                } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
+                                            }}
+                                            className="bg-orange-50 text-orange-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-orange-100 border border-orange-200 flex items-center gap-1 shadow-sm"
+                                            title="เลื่อนไปอีก 7 วัน"
                                         >
-                                          <Trash2 className="w-3 h-3"/> ลบ (Delete)
+                                            <Clock className="w-3 h-3"/> เลื่อน 7 วัน
                                         </button>
-                                    )}
+                                        <button 
+                                            onClick={async () => {
+                                                if(!confirm('ยืนยัน "ปิดการแจ้งเตือน" สำหรับรายการนี้? \n(รายการจะไม่แสดงสถานะเตือนอีก จนกว่าจะมากดเปิดใหม่)')) return;
+                                                setIsLoading(true);
+                                                try {
+                                                    const foreverDateStr = '9999-12-31';
+                                                    const updatedAsset = { ...viewingItem, snoozeUntil: foreverDateStr };
+                                                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
+                                                    await addInvLog('Disable Alert', updatedAsset.name, 'Update', `ปิดการแจ้งเตือนถาวร`, [], null, updatedAsset.id);
+                                                    setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, alertType: null, isOverdue: false } : a));
+                                                    setViewingItem({ ...updatedAsset, alertType: null, isOverdue: false });
+                                                    showToast(`ปิดการแจ้งเตือนเรียบร้อย`);
+                                                } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
+                                            }}
+                                            className="bg-gray-100 text-gray-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-gray-200 border border-gray-300 flex items-center gap-1 shadow-sm"
+                                            title="ไม่ต้องแจ้งเตือนอีก"
+                                        >
+                                            <BellOff className="w-3 h-3"/> ปิดแจ้งเตือน
+                                        </button>
+                                    </>
+                                )}
 
-                                    {/* ปุ่มรับคืน: สิทธิ์ 25 */}
-                                    {hasPermission(25) && viewingItem.status === 'Borrowed' && (
-                                        <button onClick={() => { setShowItemDetailModal(false); initiateReturnAsset(viewingItem); }} className="bg-teal-50 text-teal-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-teal-100 border border-teal-200">รับคืน</button>
-                                    )}
-                                    
-                                     {/* ปุ่มแก้ไข: เช็คประเภทว่าเป็น Asset(20) หรือ Inventory(17) */}
-                                    {((viewingItem.serial !== undefined && hasPermission(20)) || 
-                                      (viewingItem.serial === undefined && hasPermission(17))) && (
-                                        <button onClick={() => { 
-                                            setShowItemDetailModal(false);
-                                            if (viewingItem.serial !== undefined) {
-                                                setEditingAssetItem({...viewingItem, originalId: viewingItem.id, newImages: []});
-                                                setShowEditAssetModal(true); 
-                                            } else {
-    setEditingStockItem({
-    ...viewingItem, 
-    originalId: viewingItem.id, 
-    originalName: viewingItem.name,       // ⭐ เก็บชื่อเดิม
-    originalProject: viewingItem.project, // ⭐ เก็บโครงการเดิม
-    newImages: []
-});
-setShowEditInvModal(true);
-}
-                                        }} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200">แก้ไข</button>
-                                    )}
+                                {/* 2. ปุ่มเปิด Alert กลับมา */}
+                                {isSnoozed && hasPermission(17) && (
+                                    <button 
+                                        onClick={async () => {
+                                            if(!confirm('ต้องการ "เปิดการแจ้งเตือน" อีกครั้ง?')) return;
+                                            setIsLoading(true);
+                                            try {
+                                                const updatedAsset = { ...viewingItem, snoozeUntil: '' };
+                                                await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(updatedAsset));
+                                                await addInvLog('Enable Alert', updatedAsset.name, 'Update', `เปิดการแจ้งเตือนอีกครั้ง`, [], null, updatedAsset.id);
+                                                const today = new Date(); today.setHours(0,0,0,0);
+                                                let isNowOverdue = false;
+                                                if (updatedAsset.status === 'Borrowed' && updatedAsset.lastUpdated) {
+                                                    const borrowDate = parseThaiDate(updatedAsset.lastUpdated);
+                                                    if (borrowDate) {
+                                                        const diff = Math.ceil(Math.abs(today - borrowDate) / (86400000));
+                                                        if (diff > 7) isNowOverdue = true;
+                                                    }
+                                                }
+                                                setAssets(prev => prev.map(a => a.id === updatedAsset.id ? { ...updatedAsset, snoozeUntil: '', isOverdue: isNowOverdue } : a));
+                                                setViewingItem({ ...updatedAsset, snoozeUntil: '', isOverdue: isNowOverdue });
+                                                showToast(`เปิดการแจ้งเตือนเรียบร้อย`);
+                                            } catch (err) { console.error(err); showToast('Error: ' + err.message, 'error'); } finally { setIsLoading(false); }
+                                        }}
+                                        className="bg-purple-50 text-purple-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-purple-100 border border-purple-200 flex items-center gap-1 shadow-sm"
+                                    >
+                                        <Bell className="w-3 h-3"/> เปิดแจ้งเตือน
+                                    </button>
+                                )}
+                            </>
+                        );
+                    })()}
+                    
+                    {/* ปุ่มลบ */}
+                    {((viewingItem.serial !== undefined && hasPermission(21)) || 
+                      (viewingItem.serial === undefined && hasPermission(18))) && (
+                        <button 
+                          onClick={() => {
+                            if (viewingItem.serial !== undefined) handleDeleteAssets([viewingItem.id]);
+                            else handleDeleteInventory([viewingItem.id]);
+                          }}
+                          className="bg-white text-red-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-50 border border-red-200 flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3"/> ลบ (Delete)
+                        </button>
+                    )}
+
+                    {/* ปุ่มรับคืน */}
+                    {hasPermission(25) && viewingItem.status === 'Borrowed' && (
+                        <button onClick={() => { setShowItemDetailModal(false); initiateReturnAsset(viewingItem); }} className="bg-teal-50 text-teal-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-teal-100 border border-teal-200">รับคืน</button>
+                    )}
+                    
+                    {/* ปุ่มแก้ไข */}
+                    {((viewingItem.serial !== undefined && hasPermission(20)) || 
+                      (viewingItem.serial === undefined && hasPermission(17))) && (
+                        <button onClick={() => { 
+                            setShowItemDetailModal(false);
+                            if (viewingItem.serial !== undefined) {
+                                setEditingAssetItem({...viewingItem, originalId: viewingItem.id, newImages: []});
+                                setShowEditAssetModal(true); 
+                            } else {
+                                setEditingStockItem({
+                                    ...viewingItem, 
+                                    originalId: viewingItem.id, 
+                                    originalName: viewingItem.name,
+                                    originalProject: viewingItem.project,
+                                    newImages: []
+                                });
+                                setShowEditInvModal(true);
+                            }
+                        }} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200">แก้ไข</button>
+                    )}
                                 </div>
-                                
+                                )}
 
                                 <h4 className="font-bold text-gray-800 border-b pb-2 mb-4 flex items-center gap-2"><Info className="w-4 h-4 text-blue-600"/> ข้อมูลสินค้า / ทรัพย์สิน</h4>
+
+<div className="mb-6 flex justify-center">
+    <div 
+        className="w-full max-w-sm h-64 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-blue-400 hover:shadow-lg transition-all group"
+        onClick={(e) => {
+            const images = getItemLatestImages(viewingItem);
+            if (images.length > 0) {
+                e.stopPropagation();
+                setViewingAttachments({ attachments: images });
+            }
+        }}
+        title="คลิกเพื่อดูรูปภาพขยายทั้งหมด"
+    >
+        {(() => {
+            const img = getItemLatestImage(viewingItem);
+            const allImages = getItemLatestImages(viewingItem);
+
+            if (img) {
+                return (
+                    <>
+                        {/* รูปภาพหลัก */}
+                        <img 
+                            src={getDriveImageUrl(img.url || img.base64)} 
+                            alt="preview" 
+                            className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" 
+                            onError={(e) => e.target.style.display = 'none'}
+                        />
+                        
+                        {/* Overlay เมื่อเอาเมาส์ชี้ */}
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                             <div className="bg-white/90 backdrop-blur text-gray-800 px-4 py-2 rounded-full font-bold text-sm shadow-xl opacity-0 group-hover:opacity-100 transform translate-y-4 group-hover:translate-y-0 transition-all flex items-center gap-2">
+                                <Eye size={16} className="text-blue-600"/> ดูรูปภาพขยาย
+                             </div>
+                        </div>
+
+                        {/* Badge แสดงจำนวนรูป (ถ้ามีมากกว่า 1) */}
+                        {allImages.length > 1 && (
+                            <div className="absolute bottom-3 right-3 bg-black/70 text-white px-3 py-1.5 text-xs rounded-lg font-bold flex items-center gap-1.5 backdrop-blur-sm shadow-sm">
+                                <ImageIcon size={14}/> +{allImages.length - 1} รูป
+                            </div>
+                        )}
+                    </>
+                );
+            } else {
+                return (
+                    <div className="text-gray-400 flex flex-col items-center gap-2 opacity-50">
+                        <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
+                            <ImageIcon size={32}/>
+                        </div>
+                        <span className="text-sm font-bold">ไม่มีรูปภาพ</span>
+                    </div>
+                );
+            }
+        })()}
+    </div>
+</div>
+
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-y-6 gap-x-8 text-sm">
                                     <div>
     <span className="text-gray-500 block text-xs mb-1">รหัส (ID)</span>
