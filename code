@@ -2291,3 +2291,63 @@ function checkMailQuota() {
   var remaining = MailApp.getRemainingDailyQuota();
   Logger.log("คุณสามารถส่งเมลได้อีก: " + remaining + " ฉบับในวันนี้");
 }
+
+
+function createRequestSecurely(reqData) {
+  var lock = LockService.getScriptLock();
+  try {
+    // 1. เริ่มล็อกระบบ (รอคิวได้นานสุด 30 วินาที)
+    lock.waitLock(30000); 
+    
+    // 2. ดึงข้อมูล Requests ล่าสุดจาก Database (Refresh ข้อมูลจริง)
+    var allRequests = getSheetData('Requests');
+    
+    // 3. คำนวณหา ID ถัดไป (REQ-xxx) จากข้อมูลล่าสุด
+    var existingIds = allRequests
+        .map(function(r) { return r.id; })
+        .filter(function(id) { return id && typeof id === 'string' && id.startsWith('REQ-'); });
+
+    var maxNum = 0;
+    if (existingIds.length > 0) {
+        maxNum = existingIds.reduce(function(max, id) {
+            var numPart = parseInt(id.replace(/^REQ-/, ''), 10);
+            return !isNaN(numPart) && numPart > max ? numPart : max;
+        }, 0);
+    }
+    
+    var nextId = 'REQ-' + String(maxNum + 1).padStart(3, '0');
+    
+    // 4. กำหนด ID ใหม่ให้กับข้อมูล
+    reqData.id = nextId;
+    
+    // 5. บันทึกลง Database
+    saveDataToSheet('Requests', nextId, reqData);
+    
+    // 6. ส่งอีเมลแจ้งเตือน (ถ้าสถานะไม่ใช่ Draft)
+    // (ใช้ try-catch เพื่อไม่ให้ Error เรื่องเมลทำให้การบันทึกล้มเหลว)
+    if (reqData.status !== 'Draft') {
+        try {
+            triggerEmails(reqData);        // ส่งปุ่มอนุมัติ
+            handleStatusNotification(reqData); // ส่งแจ้งเตือนผู้ขอ
+        } catch (emailErr) {
+            console.error("Email Error: " + emailErr);
+        }
+    }
+    
+    // ส่งข้อมูลที่บันทึกสำเร็จ (พร้อม ID ใหม่) กลับไปให้ Frontend
+    return { success: true, request: reqData };
+    
+  } catch (e) {
+    return { success: false, message: 'Create Request Error: ' + e.toString() };
+  } finally {
+    // 7. ปลดล็อกเสมอ
+    lock.releaseLock();
+  }
+}
+
+function forceAuth() {
+  // เรียกใช้คำสั่งเพื่อให้ระบบตรวจสอบสิทธิ์ (ไม่ต้องทำอะไรจริง)
+  DriveApp.getRootFolder(); 
+  MailApp.getRemainingDailyQuota();
+  console.log("Authorization Complete!");
+}
