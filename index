@@ -230,7 +230,7 @@ const STATUS_LABELS = {
       'Rejected': 'ไม่อนุมัติ (Rejected)'
     };
 
-    const STATUS_STEPS_LOCAL = ['Pending Head', 'Pending PM', 'Approved', 'Ordered', 'Completed'];
+    const STATUS_STEPS_LOCAL = ['Pending Head', 'Pending PM', 'Pending Check', 'Approved', 'Ordered', 'Completed'];
     const STATUS_STEPS_HO_SHORT = ['Pending Check', 'Approved', 'PR Issued', 'PO Issued', 'Shipping', 'Completed'];
     const STATUS_STEPS_HO_FULL = ['Pending Check', 'Pending Head', 'Pending PM', 'Approved', 'PR Issued', 'PO Issued', 'Shipping', 'Completed'];
     const STATUS_STEPS_HO_RENT_SHORT = ['Pending Check', 'Approved', 'Contract Pending', 'Contract Signed', 'Shipping', 'Completed'];
@@ -1314,10 +1314,8 @@ const handleRegisterRequestOTP = () => {
             </div>
         );
     };
-
-    // --- Helper: Print Check Logic ---
+// --- Helper: Print Check Logic (UPDATED HO Flow) ---
       const handleOpenPrintPreview = (req) => {
-          // 1. จำลอง Logic การหา User เหมือนในหน้า Preview
           const historyDesc = [...(req.history || [])].reverse();
           const isActionMatch = (logAction, statusKey) => {
               if (!logAction) return false;
@@ -1325,31 +1323,61 @@ const handleRegisterRequestOTP = () => {
               return logAction === statusKey || logAction === label || logAction.includes(label);
           };
 
-          // หา Log ของแต่ละระดับ
+          // 1. Requester
           const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
           
+          // 2. Level 1 (คนที่ส่งไป Pending PM หรือ Ready to Disburse)
           let l1Log = historyDesc.find(h => 
               isActionMatch(h.action, 'Pending PM') || 
               ((req.type === 'Withdraw' || req.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
           );
 
-// ⭐ เพิ่มเงื่อนไขกรอง Log ของฝ่ายจัดซื้อออก (ทั้งเปลี่ยนเป็น HO และตรวจสอบผ่าน)
-const l2Log = historyDesc.find(h => 
-    isActionMatch(h.action, 'Approved') && 
-    h !== l1Log &&
-    (!h.note || !h.note.includes('เปลี่ยนเป็น HO')) && // กรอง Log ตอนเปลี่ยนเป็น HO
-    (!h.note || !h.note.includes('ตรวจสอบผ่าน'))      // ⭐ กรอง Log ตอนตรวจสอบผ่าน (Verification Pass)
-);
+          // 3. Level 2 (L2)
+          let l2Log = null;
+          if (req.type === 'Local') {
+              // Local Flow ใหม่: L2 คือคนส่งไป Pending Check
+              l2Log = historyDesc.find(h => isActionMatch(h.action, 'Pending Check')); 
+              if (!l2Log) l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log); 
+          } else {
+              // HO Flow: L2 คือคนกด Approved
+              l2Log = historyDesc.find(h => 
+                  isActionMatch(h.action, 'Approved') && 
+                  h !== l1Log &&
+                  (!h.note || !h.note.includes('เปลี่ยนเป็น HO'))
+              );
+          }
 
-          // ฟังก์ชันดึง User Object
+          // 4. ⭐ [แก้ไข HO] ฝ่ายจัดซื้อ (Purchasing)
+          let purchasingLog = null;
+          if (['Local', 'HO'].includes(req.type)) {
+              if (req.type === 'Local') {
+                  // Local: คนกด Ordered หรือ Approved
+                  purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Ordered')); 
+                  if (!purchasingLog) {
+                      purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l2Log && h !== l1Log);
+                  }
+              } else {
+                  // ⭐ HO: ดึงคนที่กดส่งไป "Pending Head" (เพราะตรวจสอบเป็นขั้นตอนแรก)
+                  purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Head'));
+                  
+                  // Fallback: หาจาก Note เผื่อเป็น Flow เก่า
+                  if (!purchasingLog) {
+                       purchasingLog = historyDesc.find(h => 
+                          h.note && (h.note.includes('ตรวจสอบผ่าน') || h.note.includes('Verify') || h.note.includes('เปลี่ยนเป็น HO'))
+                       );
+                  }
+              }
+          }
+
+          // ตรวจสอบ User และ Signature
           const getUser = (log) => {
               if(!log || !log.user) return null;
               let txt = log.user.replace(' (Email)', '').trim();
               const firstPart = txt.split(' ')[0];
               return allUsers.find(u => 
                   (u.empId && u.empId === firstPart) || 
-                  (u.username === txt) ||
-                  (u.email && txt.includes(u.email)) ||
+                  (u.username === txt) || 
+                  (u.email && txt.includes(u.email)) || 
                   (`${u.firstName} ${u.lastName}` === txt)
               );
           };
@@ -1357,29 +1385,29 @@ const l2Log = historyDesc.find(h =>
           const userReq = getUser(reqLog);
           const userL1 = getUser(l1Log);
           const userL2 = getUser(l2Log);
+          const userPurchasing = getUser(purchasingLog);
 
-          // 2. ตรวจสอบว่าใครขาดลายเซ็น
           const missingSigs = [];
-
-          // ผู้ขอ (จำเป็นเสมอ)
           if (!userReq || !userReq.signature) missingSigs.push("ผู้ขอ (Requester)");
-
-          // Level 1 (จำเป็นสำหรับสถานะที่อนุมัติแล้ว)
           if (!userL1 || !userL1.signature) missingSigs.push("ผู้อนุมัติ Level 1");
-
-          // Level 2 (จำเป็นเฉพาะงานซื้อ Local หรือ HO Full Flow)
+          
           const needsL2 = (req.type === 'Local' || (req.type === 'HO' && req.isFullApprovalFlow));
           if (needsL2 && req.type !== 'Withdraw' && req.type !== 'Borrow') {
                if (!userL2 || !userL2.signature) missingSigs.push("ผู้อนุมัติ Level 2");
           }
 
-          // 3. แจ้งเตือนหรือเปิดหน้าพิมพ์
+          const needsPurchasing = ['Local', 'HO'].includes(req.type);
+          if (needsPurchasing) {
+              if (!userPurchasing || !userPurchasing.signature) missingSigs.push("ฝ่ายจัดซื้อ (Purchasing)");
+          }
+
           if (missingSigs.length > 0) {
               showToast(`ไม่สามารถพิมพ์ได้: ขาดลายเซ็นของ ${missingSigs.join(', ')}`, 'error');
           } else {
               openPOPreview(req);
           }
       };
+
 
 
 const handleSaveProject = async () => {
@@ -2276,7 +2304,12 @@ const handleCreateOrder = async (e, isDraft = false) => {
                 nextStatus = 'Pending Check'; 
             } else if (newOrderMeta.type === 'HO') {
                 nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
-            } else {
+            } 
+            // ⭐ [แก้ไข] สำหรับ Local: ถ้าเป็นการส่งงานแก้ไข (Revise) ให้ข้ามไป Pending Check เลย
+            else if (newOrderMeta.type === 'Local' && existingReq?.status === 'Revise Needed') {
+                nextStatus = 'Pending Check';
+            }
+            else {
                 nextStatus = 'Pending Head';
             }
         }
@@ -7048,7 +7081,7 @@ const PublicAnnouncementPopup = () => (
                 
                 <div className="flex gap-4">
                     
-                    {/* ✅ ส่วนที่ 1: Checkbox (ซ้ายสุด) - แสดงเฉพาะคนที่มีสิทธิ์อนุมัติ */}
+                    {/* ✅ ส่วนที่ 1: Checkbox */}
                     {canSelect && (
                         <div className="pt-1">
                             <input 
@@ -7056,246 +7089,197 @@ const PublicAnnouncementPopup = () => (
                                 className="w-5 h-5 accent-blue-600 cursor-pointer rounded border-gray-300"
                                 checked={selectedOrderIds.includes(req.id)}
                                 onChange={() => toggleSelectOrder(req.id)}
-                                onClick={(e) => e.stopPropagation()} // ป้องกันคลิกแล้วเปิดหน้ารายละเอียด
+                                onClick={(e) => e.stopPropagation()} 
                             />
                         </div>
                     )}
 
-                    {/* ✅ ส่วนที่ 2: เนื้อหาการ์ด (ขวา) */}
+                    {/* ✅ ส่วนที่ 2: เนื้อหาการ์ด */}
                     <div className="flex-1 min-w-0">
                         
-                        {/* Header Line: Tags & ID */}
+                        {/* Header Line */}
                         <div className="flex justify-between mb-2">
-                          <div className="flex items-center gap-3 flex-wrap">
-                            
-                            {/* Type Badge */}
+                           <div className="flex items-center gap-3 flex-wrap">
                             <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${req.type === 'Local' ? 'bg-orange-50 text-orange-700' : req.type === 'Withdraw' ? 'bg-pink-50 text-pink-700' : req.type === 'Borrow' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>
                                 {req.type === 'HO' ? `HO (${req.purchaseType || 'Buy'})` : req.type}
                             </span>
                             
-                            {/* Alert Badge */}
                             {alertBadge && (
                               <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${alertBadge.color}`}>
-                                <Clock className="w-3 h-3"/> {alertBadge.text}
+                                 <Clock className="w-3 h-3"/> {alertBadge.text}
                               </span>
                             )}
 
-                            {/* Request ID */}
                             <span className="text-xs text-gray-400 font-mono">{req.id}</span>
-                            
-                            {/* Doc Number Badge */}
                             <DocIdBadge type={req.type} id={req.docNumber} />
 
-                            {/* Date Required */}
                             {req.dateRequired && (
                                <span className="text-[10px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded border flex items-center gap-1" title="วันที่ต้องการใช้ของ">
                                    <Calendar className="w-3 h-3"/> {req.dateRequired}
                                </span>
                             )}
 
-                            {/* Item Name & Count */}
                             <h4 className="font-bold text-gray-900 text-sm flex items-center truncate">
                                 {req.items[0]?.name}
                                 {req.items.length > 1 && (
-                                     <span className="text-gray-500 font-normal text-xs ml-1 bg-gray-200 px-1.5 rounded-full">
-                                        +{req.items.length - 1}
-                                    </span>
+                                     <span className="text-gray-500 font-normal text-xs ml-1 bg-gray-200 px-1.5 rounded-full">+{req.items.length - 1}</span>
                                 )}
                             </h4>
                           </div>
                           
-                          {/* Status Badge with Tooltip */}
                           <StatusWithTooltip request={req} allUsers={allUsers}>
                               <StatusBadge status={req.status} type={req.type} />
                           </StatusWithTooltip>
                         </div>
                         
-                        {/* Progress Bar */}
                         <ProgressBar request={req} />
-                        
-                        {/* --- ACTION BUTTONS (Logic เดิมครบถ้วน) --- */}
-                        <div className="flex justify-end gap-2 mt-2 flex-wrap">
-                            
-                            {/* 1. ปุ่มย้อนกลับสถานะ (Rollback) */}
-                            {(() => {
-            // 1. ฟังก์ชันหาสถานะก่อนหน้า
-            const getPrevStatus = (r) => {
-                // ⭐ เพิ่มเงื่อนไขนี้: ถ้าสถานะเป็น "Ordered" ให้ย้อนกลับไป "Approved"
-                if (r.status === 'Ordered') return 'Approved';
 
-                if (r.status === 'PR Issued') return 'Approved';
-                if (r.status === 'PO Issued') return 'PR Issued';
-                if (r.status === 'Contract Pending') return 'Approved';
-                if (r.status === 'Contract Signed') return 'Contract Pending';
-                if (r.status === 'Shipping') return r.purchaseType === 'Rent' ? 'Contract Signed' : 'PO Issued';
-                return null;
-            };
-            const prevStatus = getPrevStatus(req);
-            
-            // 2. ถ้ามีสถานะย้อนกลับได้ ให้เช็คสิทธิ์
-            if (prevStatus) {
-                // หา Log ล่าสุดที่เป็นสถานะปัจจุบัน เพื่อดูว่าใครเป็นคนกด
-                const lastLog = [...req.history].reverse().find(h => 
-                    h.action === req.status || h.action === STATUS_LABELS[req.status]
-                );
-                
-                // ตรวจสอบว่าเป็น User ปัจจุบันหรือไม่ (เช็คจาก EmpID หรือ ชื่อ)
-                const isActor = lastLog && user && (
-                    lastLog.user.includes(user.empId) || 
-                    lastLog.user.includes(user.firstName)
-                );
+                        {/* User & Actions */}
+                        <div className="flex flex-col md:flex-row justify-between items-end mt-3 gap-3">
+                            <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100 w-full md:w-auto">
+                                <div className="bg-white p-1 rounded-full border border-slate-200 shadow-sm">
+                                    <User size={12} className="text-blue-500"/>
+                                </div>
+                                <span>ผู้ขอ: <span className="font-bold text-slate-700">{req.requester}</span></span>
+                            </div>
 
-                if (isActor) {
-                    return (
-                        <button 
-                            type="button" 
-                            onClick={() => {
-                                if(confirm(`ยืนยันการย้อนสถานะกลับไปเป็น "${STATUS_LABELS[prevStatus] || prevStatus}"?`)) {
-                                    handleUpdateStatus(req.id, prevStatus, `ย้อนกลับสถานะ (Rollback) จาก ${req.status}`);
-                                }
-                            }}
-                            className="flex items-center gap-2 px-4 py-2 bg-orange-50 border border-orange-200 text-orange-700 text-sm font-medium rounded-lg hover:bg-orange-100 shadow-sm transition-colors animate-in fade-in"
-                        >
-                            <RotateCcw className="w-4 h-4"/> ย้อนกลับ ({prevStatus.split(' ')[0]})
-                        </button>
-                    );
-                }
-            }
-            return null;
-        })()}
-        
-       {((req.requester === `${user.firstName} ${user.lastName}`) || user.isSuperAdmin || hasPermission(2, req.job)) && req.status === 'Draft' && (
-            <button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">
-                <Edit className="w-4 h-4"/> แก้ไขแบบร่าง
-            </button>
-        )}
+                            <div className="flex justify-end gap-2 flex-wrap flex-1">
+                                
+                                {/* Rollback */}
+                                {(() => {
+                                    const getPrevStatus = (r) => {
+                                        if (r.status === 'Ordered') return 'Approved';
+                                        if (r.status === 'PR Issued') return 'Approved';
+                                        if (r.status === 'PO Issued') return 'PR Issued';
+                                        if (r.status === 'Contract Pending') return 'Approved';
+                                        if (r.status === 'Contract Signed') return 'Contract Pending';
+                                        if (r.status === 'Shipping') return r.purchaseType === 'Rent' ? 'Contract Signed' : 'PO Issued';
+                                        // ⭐ เพิ่ม Rollback สำหรับ Local: Check -> PM
+                                        if (r.status === 'Pending Check' && r.type === 'Local') return 'Pending PM';
+                                        return null;
+                                    };
+                                    const prevStatus = getPrevStatus(req);
+                                    
+                                    if (prevStatus) {
+                                        const lastLog = [...req.history].reverse().find(h => h.action === req.status || h.action === STATUS_LABELS[req.status]);
+                                        const isActor = lastLog && user && (lastLog.user.includes(user.empId) || lastLog.user.includes(user.firstName));
 
-        {((req.requester === `${user.firstName} ${user.lastName}`) || user.isSuperAdmin || hasPermission(2, req.job)) && req.status === 'Revise Needed' && (
-            <button type="button" onClick={() => handleRevise(req)} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm animate-pulse">
-                <Edit className="w-4 h-4"/> แก้ไขข้อมูล/ส่งใหม่
-            </button>
-        )}
+                                        if (isActor) {
+                                            return (
+                                                <button type="button" onClick={() => { if(confirm(`ยืนยันการย้อนสถานะ?`)) handleUpdateStatus(req.id, prevStatus, `ย้อนกลับสถานะจาก ${req.status}`); }} className="flex items-center gap-2 px-3 py-1.5 bg-orange-50 border border-orange-200 text-orange-700 text-xs font-bold rounded-lg hover:bg-orange-100 shadow-sm transition-colors">
+                                                    <RotateCcw className="w-3 h-3"/> Rollback
+                                                </button>
+                                            );
+                                        }
+                                    }
+                                    return null;
+                                })()}
 
-
-        {(() => {
-            // 1. เช็คสิทธิ์: ต้องเป็นเจ้าของรายการเท่านั้น
-            const isOwner = req.requester === `${user.firstName} ${user.lastName}`;
-            
-            // 2. เช็คสถานะตามประเภท:
-            // - การสั่งซื้อ (Local/HO): ดึงได้จนถึง Pending PM (Level 2) รวมถึง Pending Check/Head ด้วย
-            const canRecallBuy = ['Local', 'HO'].includes(req.type) && ['Pending Check', 'Pending Head', 'Pending PM'].includes(req.status);
-            
-            // - การเบิก/ยืม (Withdraw/Borrow): ดึงได้เฉพาะ Pending Head (Level 1/2)
-            const canRecallUse = ['Withdraw', 'Borrow'].includes(req.type) && ['Pending Head'].includes(req.status);
-
-            if (isOwner && (canRecallBuy || canRecallUse)) {
-                return (
-                    <button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 shadow-sm transition-colors">
-                        <RotateCcw className="w-4 h-4"/> เรียกคืน
-                    </button>
-                );
-            }
-            return null;
-        })()}
-
-
-
-{['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && 
- (req.type === 'Local' || 
-  req.type === 'Withdraw' || 
-  req.type === 'Borrow' || 
-  // ⭐ แก้ไขเงื่อนไข HO: ยอมรับทั้ง Full Flow หรือรายการที่เคยอนุมัติแล้ว (เคสเปลี่ยนจาก Local)
-  (req.type === 'HO' && (req.isFullApprovalFlow || req.isPreviouslyApproved))
- ) && (
-  <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 text-sm font-medium rounded-lg hover:bg-blue-100 shadow-sm">
-      <Printer className="w-4 h-4"/> พิมพ์
-  </button>
-)}
-        
-        <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-4 h-4"/> ประวัติ/รายละเอียด</button>
-        
-{req.status !== 'Draft' && (
-          <>
-            {/* ⭐ [แก้ไข] เงื่อนไขการแสดงปุ่มสำหรับ Pending Head */}
-            {req.status === 'Pending Head' && (
-              // แสดงเมื่อ: (เป็นงานซื้อและมีสิทธิ์ L1) หรือ (เป็นงานเบิกยืมและมีสิทธิ์ L1 หรือ L2)
-              ( (['Local', 'HO'].includes(req.type) && hasPermission(8)) || 
-                (['Withdraw', 'Borrow'].includes(req.type) && (hasPermission(8) || hasPermission(9))) )
-            ) && (
-              <>
-                <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 shadow-sm">
-                    {/* เปลี่ยนข้อความปุ่มให้ชัดเจน */}
-                    {(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติเบิก/ยืม (Approve)' : 'ส่งต่อ Level 2'}
-                </button>
-              </>
-            )}
-            
-            {hasPermission(9) && req.status === 'Pending PM' && (
-              <>
-                <button type="button" onClick={() => openRejectModal(req.id)} className="px-4 py-2 border border-red-300 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
-                <button type="button" onClick={() => handleApprovalUpdate(req.id, 'Approved')} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">อนุมัติการสั่งซื้อ</button>
-              </>
-            )}
-
-            {hasPermission(10) && req.type === 'Local' && req.status === 'Approved' && (
-    <button 
-        type="button" 
-        onClick={() => openVerificationModal(req.id, true)} // ส่ง true = Change Mode
-        className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1"
-    >
-        <RefreshCw className="w-4 h-4"/> เปลี่ยนเป็น HO
-    </button>
-)}
-
-            {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
-              <button type="button" onClick={() => openDisburseModal(req.id)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก/ยืม</button>
-            )}
-            {hasPermission(12) && req.type === 'Local' && req.status === 'Approved' && (
-              <button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>
-            )}
-            {hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (
-              <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>
-            )}
-          
-            {hasPermission(10) && req.status === 'Pending Check' && (
-              <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-4 h-4"/> ตรวจสอบเอกสาร (Verify)</button>
-            )}
-            
-            {/* --- HO Buy Flow --- */}
-            {hasPermission(11) && req.type === 'HO' && req.status === 'Approved' && req.purchaseType === 'Buy' && (
-              <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
-            )}
-
-            {hasPermission(12) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (
-              <button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>
-            )}
-
-            {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PO Issued' && (
-              <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">อัปเดตส่งของ</button>
-            )}
-            
-            {/* --- HO Rent Flow --- */}
-            {hasPermission(14) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Pending' && (
-              <button type="button" onClick={() => openContractModal(req.id)} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">
-    <FileSignature className="w-4 h-4"/> บันทึกทำสัญญาแล้ว
-</button>
-            )}
-            {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Signed' && (
-              <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm"><Truck className="w-4 h-4"/> เริ่มจัดส่ง/ส่งมอบ</button>
-            )}
-
-            {hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received') && (
-              <button type="button" onClick={() => openReceiveModal(req)} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm">ยืนยันได้รับของ</button>
-            )}
-            
-            {(hasPermission(14) || hasPermission(13)) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Approved' && (
-              req.needContract !== false 
-              ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ (หลังอนุมัติ)</button>)
-              : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ (หลังอนุมัติ)</button>)
+                                {/* Standard Edit/Print/Detail Buttons */}
+                                {((req.requester === `${user.firstName} ${user.lastName}`) || user.isSuperAdmin || hasPermission(2, req.job)) && req.status === 'Draft' && (
+                                    <button type="button" onClick={() => handleEditDraft(req)} className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 shadow-sm"><Edit className="w-3 h-3"/> แก้ไข</button>
                                 )}
-                              </>
-                            )}
+                                {((req.requester === `${user.firstName} ${user.lastName}`) || user.isSuperAdmin || hasPermission(2, req.job)) && req.status === 'Revise Needed' && (
+                                    <button type="button" onClick={() => handleRevise(req)} className="flex items-center gap-2 px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 shadow-sm animate-pulse"><Edit className="w-3 h-3"/> แก้ไข/ส่งใหม่</button>
+                                )}
+                                {(() => {
+                                    const isOwner = req.requester === `${user.firstName} ${user.lastName}`;
+                                    const canRecallBuy = ['Local', 'HO'].includes(req.type) && ['Pending Check', 'Pending Head', 'Pending PM'].includes(req.status);
+                                    if (isOwner && canRecallBuy) return (<button type="button" onClick={() => initiateRecall(req.id)} className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-50 shadow-sm"><RotateCcw className="w-3 h-3"/> เรียกคืน</button>);
+                                })()}
+                                {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && (
+                                  <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-3 h-3"/> พิมพ์</button>
+                                )}
+                                <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-3 h-3"/> รายละเอียด</button>
+                                
+                                {/* ⭐⭐ [Action Buttons Logic] ⭐⭐ */}
+                                {req.status !== 'Draft' && (
+                                  <>
+                                    {/* 1. Pending Head */}
+                                    {req.status === 'Pending Head' && ((['Local', 'HO'].includes(req.type) && hasPermission(8)) || (['Withdraw', 'Borrow'].includes(req.type) && (hasPermission(8) || hasPermission(9)))) && (
+                                      <>
+                                        <button type="button" onClick={() => openRejectModal(req.id)} className="px-3 py-1.5 border border-red-300 text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
+                                        <button type="button" onClick={() => handleUpdateStatus(req.id, (req.type === 'Withdraw' || req.type === 'Borrow') ? 'Ready to Disburse' : 'Pending PM')} className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded-lg hover:bg-orange-700 shadow-sm">{(req.type === 'Withdraw' || req.type === 'Borrow') ? 'อนุมัติ (Approve)' : 'ส่งต่อ L2'}</button>
+                                      </>
+                                    )}
+                                    
+                                    {/* 2. Pending PM */}
+                                    {hasPermission(9) && req.status === 'Pending PM' && (
+                                      <>
+                                        <button type="button" onClick={() => openRejectModal(req.id)} className="px-3 py-1.5 border border-red-300 text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
+                                        {/* ⭐ แก้ไข: Local ส่งไป Check, HO ส่งไป Approved (เพราะ HO ตรวจมาแล้ว) */}
+                                        <button type="button" onClick={() => handleApprovalUpdate(req.id, req.type === 'Local' ? 'Pending Check' : 'Approved')} className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 shadow-sm">
+                                            {req.type === 'Local' ? 'ส่งตรวจสอบ (Check)' : 'อนุมัติ (Approve)'}
+                                        </button>
+                                      </>
+                                    )}
+
+                                    {/* 3. Pending Check (HO) - ใช้ Logic เดิม */}
+                                    {hasPermission(10) && req.status === 'Pending Check' && req.type === 'HO' && (
+                                      <button type="button" onClick={() => openVerificationModal(req.id)} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 shadow-sm"><CheckSquare className="w-3 h-3"/> ตรวจสอบ (Verify)</button>
+                                    )}
+
+                                    {/* ⭐ 4. Pending Check (Local) - เพิ่มใหม่ตามที่ขอ */}
+                                    {hasPermission(10) && req.status === 'Pending Check' && req.type === 'Local' && (
+                                      <>
+                                        {/* ปุ่มไม่ผ่าน -> ย้อนกลับแก้ไข */}
+                                        <button type="button" onClick={() => {
+                                            const reason = prompt("ระบุเหตุผลการส่งคืนแก้ไข (Revise Reason):");
+                                            if (reason) handleUpdateStatus(req.id, 'Revise Needed', `ตรวจสอบไม่ผ่าน: ${reason}`);
+                                        }} className="px-3 py-1.5 border border-red-300 text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 shadow-sm">ไม่ผ่าน (แก้ไข)</button>
+                                        
+                                        {/* ปุ่มเปลี่ยนเป็น HO (ย้ายมาจาก Approved) */}
+                                        <button type="button" onClick={() => openVerificationModal(req.id, true)} className="px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1">
+                                            <RefreshCw className="w-3 h-3"/> เปลี่ยนเป็น HO
+                                        </button>
+
+                                        {/* ปุ่มผ่าน -> ไป Approved */}
+                                        <button 
+    type="button" 
+    onClick={() => handleUpdateStatus(req.id, 'Approved', 'ตรวจสอบผ่าน (Verified by Purchasing)')} 
+    className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 shadow-sm"
+>
+    ตรวจสอบผ่าน
+</button>
+                                      </>
+                                    )}
+
+                                    {/* 5. Process Buttons (Ordered, PR, PO...) */}
+                                    {hasPermission(24) && (req.type === 'Withdraw' || req.type === 'Borrow') && req.status === 'Ready to Disburse' && (
+                                      <button type="button" onClick={() => openDisburseModal(req.id)} className="px-3 py-1.5 bg-teal-600 text-white text-xs font-bold rounded-lg hover:bg-teal-700 shadow-sm">จ่ายของ & ตัดสต็อก</button>
+                                    )}
+                                    {hasPermission(12) && req.type === 'Local' && req.status === 'Approved' && (
+                                      <button type="button" onClick={() => handleUpdateStatus(req.id, 'Ordered')} className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 shadow-sm">สั่งซื้อ (Local)</button>
+                                    )}
+                                    {hasPermission(15) && req.type === 'Local' && (req.status === 'Ordered' || req.status === 'Partially Received') && (
+                                      <button type="button" onClick={() => openReceiveModal(req)} className="px-3 py-1.5 bg-teal-600 text-white text-xs font-bold rounded-lg hover:bg-teal-700 shadow-sm">รับของ/ปิดงาน</button>
+                                    )}
+                                    {hasPermission(11) && req.type === 'HO' && req.status === 'Approved' && req.purchaseType === 'Buy' && (
+                                      <button type="button" onClick={() => openPRModal(req.id)} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 shadow-sm">ออก PR</button>
+                                    )}
+                                    {hasPermission(12) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PR Issued' && (
+                                      <button type="button" onClick={() => openPOModal(req.id)} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 shadow-sm">ออก PO</button>
+                                    )}
+                                    {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Buy' && req.status === 'PO Issued' && (
+                                      <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 shadow-sm">อัปเดตส่งของ</button>
+                                    )}
+                                    {hasPermission(14) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Pending' && (
+                                      <button type="button" onClick={() => openContractModal(req.id)} className="flex items-center gap-1 px-3 py-1.5 bg-teal-600 text-white text-xs font-bold rounded-lg hover:bg-teal-700 shadow-sm"><FileSignature className="w-3 h-3"/> ทำสัญญาแล้ว</button>
+                                    )}
+                                    {hasPermission(13) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Contract Signed' && (
+                                      <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 shadow-sm"><Truck className="w-3 h-3"/> เริ่มจัดส่ง</button>
+                                    )}
+                                    {hasPermission(15) && req.type === 'HO' && (req.status === 'Shipping' || req.status === 'Partially Received') && (
+                                      <button type="button" onClick={() => openReceiveModal(req)} className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 shadow-sm">ยืนยันรับของ</button>
+                                    )}
+                                    {(hasPermission(14) || hasPermission(13)) && req.type === 'HO' && req.purchaseType === 'Rent' && req.status === 'Approved' && (
+                                      req.needContract !== false 
+                                      ? (hasPermission(14) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Contract Pending')} className="flex items-center gap-1 px-3 py-1.5 bg-teal-600 text-white text-xs font-bold rounded-lg hover:bg-teal-700 shadow-sm">ทำสัญญาต่อ</button>)
+                                      : (hasPermission(13) && <button type="button" onClick={() => handleUpdateStatus(req.id, 'Shipping')} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 shadow-sm">จัดส่งต่อ</button>)
+                                    )}
+                                  </>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -12155,7 +12139,7 @@ const relatedAssets = sourceAssets.filter(a =>
                       return `${day}/${month}/${year}`;
                   };
 
-                  // --- DATA PREPARATION ---
+                 // --- DATA PREPARATION ---
                   const historyDesc = [...(selectedRequest.history || [])].reverse();
                   const isActionMatch = (logAction, statusKey) => {
                       if (!logAction) return false;
@@ -12166,11 +12150,8 @@ const relatedAssets = sourceAssets.filter(a =>
                   // Helper: แยก EmpID/Name
                   const getUser = (log) => {
                       if(!log || !log.user) return null;
-                      // ลบคำว่า (Email) ถ้ามี
                       let txt = log.user.replace(' (Email)', '').trim();
-                      // แยกส่วนแรกเป็น ID (สมมติเก็บแบบ "ID Name")
                       const firstPart = txt.split(' ')[0];
-                      // ค้นหาใน allUsers
                       return allUsers.find(u => 
                           (u.empId && u.empId === firstPart) || 
                           (u.username === txt) ||
@@ -12180,17 +12161,50 @@ const relatedAssets = sourceAssets.filter(a =>
                   };
 
                   const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
-                  let l1Log = historyDesc.find(h => isActionMatch(h.action, 'Pending PM') || ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse')));
-const l2Log = historyDesc.find(h => 
-    isActionMatch(h.action, 'Approved') && 
-    h !== l1Log &&
-    (!h.note || !h.note.includes('เปลี่ยนเป็น HO')) && // กรอง Log ตอนเปลี่ยนเป็น HO
-    (!h.note || !h.note.includes('ตรวจสอบผ่าน'))      // ⭐ กรอง Log ตอนตรวจสอบผ่าน (Verification Pass)
-);
+                  
+                  let l1Log = historyDesc.find(h => 
+                      isActionMatch(h.action, 'Pending PM') || 
+                      ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
+                  );
+
+                  // Logic หา L2
+                  let l2Log = null;
+                  if (selectedRequest.type === 'Local') {
+                      l2Log = historyDesc.find(h => isActionMatch(h.action, 'Pending Check')); 
+                      if (!l2Log) l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log); 
+                  } else {
+                      l2Log = historyDesc.find(h => 
+                          isActionMatch(h.action, 'Approved') && 
+                          h !== l1Log &&
+                          (!h.note || !h.note.includes('เปลี่ยนเป็น HO'))
+                      );
+                  }
+
+                  // ⭐ [แก้ไข HO] Logic หาฝ่ายจัดซื้อ (Purchasing)
+                  let purchasingLog = null;
+                  if (['Local', 'HO'].includes(selectedRequest.type)) {
+                      if (selectedRequest.type === 'Local') {
+                          // Local: Ordered หรือ Approved
+                          purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Ordered'));
+                          if (!purchasingLog) {
+                              purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l2Log && h !== l1Log);
+                          }
+                      } else {
+                          // ⭐ HO: ดึงคนที่กดส่งไป "Pending Head" (คนที่เริ่ม Flow อนุมัติ)
+                          purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Head'));
+                          
+                          if (!purchasingLog) {
+                              purchasingLog = historyDesc.find(h => 
+                                  h.note && (h.note.includes('ตรวจสอบผ่าน') || h.note.includes('Verify') || h.note.includes('เปลี่ยนเป็น HO'))
+                              );
+                          }
+                      }
+                  }
                   
                   const userReq = getUser(reqLog);
                   const userL1 = getUser(l1Log);
                   const userL2 = getUser(l2Log);
+                  const userPurchasing = getUser(purchasingLog);
                   
                   // ชื่อและวันที่ (Request / L1 / L2)
                   const nameReq = userReq ? `${userReq.firstName} ${userReq.lastName}` : (reqLog ? reqLog.user.replace(' (Email)', '') : selectedRequest.requester);
@@ -12410,23 +12424,20 @@ const l2Log = historyDesc.find(h =>
 /* ================================================================================== */
 
 <> 
-    {/* 1. ส่วนเตรียมข้อมูล "สโตร์" (แยก จ่ายของ vs รับของ) */}
+    {/* 1. ส่วนเตรียมข้อมูล "สโตร์" และ "ฝ่ายจัดซื้อ" */}
     {(() => {
-        // --- ⭐ [แก้ไขใหม่] Logic หาคนเซ็นช่องสโตร์ ---
+        // --- A. Logic หาคนเซ็นช่องสโตร์ ---
         let storeLog = null;
         let storeLabel = "สโตร์ผู้รับของ"; // Default
 
-        // กรณี 1: เบิกวัสดุ (Withdraw) -> คนเซ็นคือคนที่กด "จ่ายของ" (Disburse -> Completed)
         if (selectedRequest.type === 'Withdraw') {
             storeLabel = "สโตร์ผู้จ่ายของ";
             storeLog = historyDesc.find(h => 
-                h.action === 'Completed' || // สถานะตอนกดจ่ายของจบงาน
-                h.action === 'Received' ||  // เผื่อเคสเก่า
+                h.action === 'Completed' || 
+                h.action === 'Received' ||  
                 (h.note && h.note.includes('จ่ายของ'))
             );
-        } 
-        // กรณี 2: สั่งซื้อ (Local/HO) -> คนเซ็นคือคนที่กด "รับของ" (Receive)
-        else {
+        } else {
             storeLog = historyDesc.find(h => 
                 h.action === 'Partially Received' || 
                 h.action === 'Completed' || 
@@ -12435,11 +12446,51 @@ const l2Log = historyDesc.find(h =>
             );
         }
         
-        // ดึงข้อมูล User สโตร์
         const userStore = getUser(storeLog);
         const nameStore = userStore ? `${userStore.firstName} ${userStore.lastName}` : (storeLog ? storeLog.user.replace(' (Email)', '') : '..........................');
         const sigStore = userStore?.signature ? getDriveImageUrl(userStore.signature) : null;
         const dateStore = storeLog ? formatDateTh(storeLog.date) : '....../....../......';
+
+        // --- B. ⭐ Logic หาคนเซ็นช่องฝ่ายจัดซื้อ (Purchasing) ---
+        let purchasingLog = null;
+        
+        if (selectedRequest.type === 'HO') {
+            // HO: หาคนที่ Verify หรือ เปลี่ยนเป็น HO
+            purchasingLog = historyDesc.find(h => 
+                h.note && (
+                    h.note.includes('ตรวจสอบผ่าน') || 
+                    h.note.includes('Verify') || 
+                    h.note.includes('ตรวจสอบเอกสาร') ||
+                    h.note.includes('เปลี่ยนเป็น HO')
+                )
+            );
+        } 
+        else if (selectedRequest.type === 'Local') {
+            // Local:
+            // 1. หาคนที่กด "สั่งซื้อ" (Ordered) -> ถือเป็นจัดซื้อแน่นอน
+            purchasingLog = historyDesc.find(h => h.action === 'Ordered');
+
+            // 2. ถ้ายังไม่มีสั่งซื้อ ให้หาคนที่กด "อนุมัติ" (Approved) 
+            // **เฉพาะ Flow ใหม่** (คือต้องมีสถานะ Pending Check เกิดขึ้นก่อนหน้านั้น)
+            if (!purchasingLog) {
+                const hasCheckStep = historyDesc.some(h => h.action === 'Pending Check');
+                if (hasCheckStep) {
+                    // หา Log Approved ล่าสุด (ซึ่งคือคนที่กดผ่านจากหน้า Check)
+                    purchasingLog = historyDesc.find(h => h.action === 'Approved');
+                }
+            }
+            
+            // 3. Fallback: หาจาก Note เผื่อกรณีอื่นๆ
+            if (!purchasingLog) {
+                 purchasingLog = historyDesc.find(h => 
+                    h.note && (h.note.includes('ตรวจสอบผ่าน') || h.note.includes('Verify'))
+                );
+            }
+        }
+        const userPurchasing = getUser(purchasingLog);
+        const namePurchasing = userPurchasing ? `${userPurchasing.firstName} ${userPurchasing.lastName}` : (purchasingLog ? purchasingLog.user.replace(' (Email)', '') : '..........................');
+        const sigPurchasing = userPurchasing?.signature ? getDriveImageUrl(userPurchasing.signature) : null;
+        const datePurchasing = purchasingLog ? formatDateTh(purchasingLog.date) : '....../....../......';
 
         // ตัวแปรเช็คสถานะงาน
         const isJobClosed = ['Completed', 'Returned', 'Rejected'].includes(selectedRequest.status);
@@ -12449,7 +12500,7 @@ const l2Log = historyDesc.find(h =>
         <>
             {/* --- Header --- */}
             <div className="w-full text-center mb-4">
-                <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
+                 <h1 className="text-2xl font-bold mb-2">ใบขอเบิก-สั่งซื้อวัสดุอุปกรณ์</h1>
             </div>
 
             <div className="w-full text-left font-normal mb-4">
@@ -12461,7 +12512,7 @@ const l2Log = historyDesc.find(h =>
 
             {/* กล่อง Checkbox (เลือกประเภท) */}
             <div className="header-box text-left font-normal">
-                <div className="grid grid-cols-3 gap-2 mb-3">
+                 <div className="grid grid-cols-3 gap-2 mb-3">
                     <div className="flex justify-start">
                         <label className="flex items-center gap-2">
                             <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
@@ -12479,7 +12530,7 @@ const l2Log = historyDesc.find(h =>
                         </label>
                     </div>
                     <div className="flex justify-end">
-                        <label className="flex items-center gap-2">
+                         <label className="flex items-center gap-2">
                             <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
                                 {selectedRequest.type === 'HO' && <span className="text-lg font-bold leading-none mb-1">✓</span>}
                             </div> 
@@ -12491,7 +12542,7 @@ const l2Log = historyDesc.find(h =>
                     <span className="font-bold">ความสำคัญ:</span>
                     {['Normal', 'Urgent', 'Critical'].map(p => (
                         <label key={p} className="flex items-center gap-2">
-                            <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
+                             <div className="w-5 h-5 border border-black flex items-center justify-center bg-white">
                                 {selectedRequest.priority === p && <span className="text-lg font-bold leading-none mb-1">✓</span>}
                             </div> 
                             <span>{p === 'Normal' ? 'ปกติ' : p === 'Urgent' ? 'ด่วน' : 'ด่วนมาก'}</span>
@@ -12500,7 +12551,7 @@ const l2Log = historyDesc.find(h =>
                 </div>
             </div>
 
-            {/* --- ตารางรายการ (แก้ไข Logic แสดงจำนวนและหมายเหตุ) --- */}
+            {/* --- ตารางรายการ --- */}
             <table className="w-full border-collapse preview-table">
                 <thead>
                     <tr>
@@ -12525,138 +12576,170 @@ const l2Log = historyDesc.find(h =>
                     </tr>
                 </thead>
                
-           <tbody className="divide-y">
-    {selectedRequest.items.map((item, i) => {
-        // 1. ถ้าปิดงานแล้ว (Completed) แสดงยอดรับจริง, ถ้ายังไม่ปิด (Partial) แสดงยอดสั่ง
-        const displayQty = isJobClosed ? (item.receivedTotal || 0) : item.qty;
-        
-        // 2. คำนวณยอด
-        const received = item.receivedTotal || 0;
-        const remaining = Math.max(0, item.qty - received);
+                <tbody className="divide-y">
+                    {selectedRequest.items.map((item, i) => {
+                        const displayQty = isJobClosed ? (item.receivedTotal || 0) : item.qty;
+                        const received = item.receivedTotal || 0;
+                        const remaining = Math.max(0, item.qty - received);
 
-        return (
-            <tr key={i}>
-                <td className="text-center font-bold border border-black p-2">{i + 1}</td>
-                <td className="border border-black p-2">
-    {/* ⭐ START: เพิ่มส่วนแสดงรหัสสินค้า (Item Code) ⭐ */}
-    {(() => {
-        // 1. ค้นหาในคลัง (Inventory) โดยดูจาก ชื่อ และ โครงการ
-        const stockItem = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
-        
-        // 2. ถ้าไม่เจอในคลัง ให้ลองหาในทรัพย์สิน (Assets) - กรณีใบยืม
-        const assetItem = !stockItem ? assets.find(a => a.name === item.name && a.project === selectedRequest.job) : null;
-        
-        // 3. ดึง ID มาแสดง (ใช้ getDisplayId เพื่อตัดส่วนเกินออก)
-        const showId = stockItem ? getDisplayId(stockItem.id) : (assetItem ? assetItem.id : null);
+                        return (
+                            <tr key={i}>
+                                <td className="text-center font-bold border border-black p-2">{i + 1}</td>
+                                <td className="border border-black p-2">
+                                    {(() => {
+                                        const stockItem = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
+                                        const assetItem = !stockItem ? assets.find(a => a.name === item.name && a.project === selectedRequest.job) : null;
+                                        const showId = stockItem ? getDisplayId(stockItem.id) : (assetItem ? assetItem.id : null);
 
-        return showId ? (
-            <div className="text-[10px] font-mono font-bold text-slate-600 mb-1 bg-slate-100 px-1 rounded w-fit border border-slate-300">
-                รหัส: {showId}
-            </div>
-        ) : null;
-    })()}
-    {/* ⭐ END: จบส่วนเพิ่มรหัส ⭐ */}
+                                        return showId ? (
+                                            <div className="text-[10px] font-mono font-bold text-slate-600 mb-1 bg-slate-100 px-1 rounded w-fit border border-slate-300">
+                                                รหัส: {showId}
+                                            </div>
+                                        ) : null;
+                                    })()}
 
-    <div className="font-bold text-black text-sm">{item.name}</div>
-    <div className="mt-1 pl-2 text-xs text-gray-700">
-        จำนวน: <span className="font-bold text-base">{displayQty}</span> {item.unit}
-    </div>
-</td>
-                <td className="text-center align-middle border border-black p-2">
-                    {item.subJob || item.matCode ? (
-                        <div className="flex flex-col gap-1 text-xs font-bold">
-                            {item.subJob && <span>Sub: {item.subJob}</span>}
-                            {/* เปลี่ยน EP: เป็น Mat.: */}
-{item.matCode && <span>Mat.: {item.matCode}</span>}
-                        </div>
-                    ) : '-'}
-                </td>
-                <td className="text-left align-top border border-black p-2">
-                    <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
-                        {formatDateTh(selectedRequest.dateRequired)}
-                    </div>
-                    {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
-                    
-                    {/* ⭐ Logic แสดงหมายเหตุ Partial (รับของบางส่วน) */}
-                    {isPartial && !isJobClosed && (
-                        received > 0 ? (
-                            // กรณีรับแล้วบางส่วน
-                            <div className="mt-2 text-[10px] bg-yellow-50 p-1 border border-yellow-200 rounded text-yellow-800 font-bold">
-                                * รับแล้ว: {received} / ค้าง: {remaining}
-                            </div>
-                        ) : (
-                            // กรณีรายการนี้ยังไม่ได้รับเลย
-                            <div className="mt-2 text-[10px] bg-red-50 p-1 border border-red-200 rounded text-red-700 font-bold">
-                                * ยังไม่ได้รับ
-                            </div>
-                        )
-                    )}
-                </td>
-            </tr>
-        );
-    })}
-</tbody>
+                                    <div className="font-bold text-black text-sm">{item.name}</div>
+                                    <div className="mt-1 pl-2 text-xs text-gray-700">
+                                        จำนวน: <span className="font-bold text-base">{displayQty}</span> {item.unit}
+                                    </div>
+                                </td>
+                                <td className="text-center align-middle border border-black p-2">
+                                    {item.subJob || item.matCode ? (
+                                        <div className="flex flex-col gap-1 text-xs font-bold">
+                                            {item.subJob && <span>Sub: {item.subJob}</span>}
+                                            {item.matCode && <span>Mat.: {item.matCode}</span>}
+                                        </div>
+                                    ) : '-'}
+                                </td>
+                                <td className="text-left align-top border border-black p-2">
+                                    <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
+                                        {formatDateTh(selectedRequest.dateRequired)}
+                                    </div>
+                                    {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
+                                    
+                                    {isPartial && !isJobClosed && (
+                                        received > 0 ? (
+                                            <div className="mt-2 text-[10px] bg-yellow-50 p-1 border border-yellow-200 rounded text-yellow-800 font-bold">
+                                                * รับแล้ว: {received} / ค้าง: {remaining}
+                                            </div>
+                                        ) : (
+                                            <div className="mt-2 text-[10px] bg-red-50 p-1 border border-red-200 rounded text-red-700 font-bold">
+                                                * ยังไม่ได้รับ
+                                            </div>
+                                        )
+                                    )}
+                                </td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
             </table>
-<div className="mt-8 signature-section break-inside-avoid">
-                <div className={`grid ${selectedRequest.type === 'Withdraw' ? 'grid-cols-3' : 'grid-cols-4'} gap-4 text-center`}>
-                    
-                    {/* 1. ผู้ขอ */}
-                    <div className="border border-black p-2 h-36 flex flex-col justify-between relative bg-white">
-                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
-                        <div className="flex-1 flex items-center justify-center">
-                            {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
-                        </div>
-                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                            <div className="font-bold">{nameReq}</div>
-                            <div>วันที่: {dateReq}</div>
-                        </div>
-                    </div>
-
-                    {/* 2. สโตร์ (ผู้จ่ายของ หรือ ผู้รับของ) */}
-                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                        {/* ⭐ แสดงชื่อหัวข้อตามเงื่อนไข (storeLabel) */}
-                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">{storeLabel}</div>
-                        <div className="flex-1 flex items-center justify-center">
-                            {/* ⭐ แสดงลายเซ็น (sigStore) */}
-                            {sigStore ? 
-                                <img src={sigStore} className="max-h-16 max-w-full object-contain"/> : 
-                                <span className="text-gray-300 text-xs">..........................</span>
-                            }
-                        </div>
-                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                            <div className="font-bold">{nameStore}</div>
-                            <div>วันที่: {dateStore}</div>
-                        </div>
-                    </div>
-
-                    {/* 3. ผู้อนุมัติ L1 */}
-                    <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                        <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">
-                            {['Withdraw', 'Borrow'].includes(selectedRequest.type) ? 'ผู้อนุมัติ' : 'ผู้อนุมัติ (Level 1)'}
-                        </div>
-                        <div className="flex-1 flex items-center justify-center">
-                            {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
-                        </div>
-                        <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                            <div className="font-bold">{nameL1}</div>
-                            <div>วันที่: {dateL1}</div>
-                        </div>
-                    </div>
-
-                    {/* 4. ผู้อนุมัติ L2 (แสดงเฉพาะงานซื้อ) */}
-                    {selectedRequest.type !== 'Withdraw' && (
+{/* --- SIGNATURES SECTION (REARRANGED - RAW JSX) --- */}
+            <div className="mt-8 signature-section break-inside-avoid">
+                {selectedRequest.type === 'Withdraw' ? (
+                    /* 🟢 กรณีเบิก (Withdraw) */
+                    <div className="grid grid-cols-3 gap-4 text-center">
+                        {/* 1. ผู้ขอ */}
                         <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
-                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 2)</div>
+                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
                             <div className="flex-1 flex items-center justify-center">
-                                {sigL2 ? <img src={sigL2} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
                             </div>
                             <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
-                                <div className="font-bold">{nameL2}</div>
-                                <div>วันที่: {dateL2}</div>
+                                <div className="font-bold">{nameReq}</div>
+                                <div>วันที่: {dateReq}</div>
                             </div>
                         </div>
-                    )}
-                </div>
+                        {/* 2. สโตร์ */}
+                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">{storeLabel}</div>
+                            <div className="flex-1 flex items-center justify-center">
+                                {sigStore ? <img src={sigStore} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                            </div>
+                            <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                <div className="font-bold">{nameStore}</div>
+                                <div>วันที่: {dateStore}</div>
+                            </div>
+                        </div>
+                        {/* 3. ผู้อนุมัติ */}
+                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ</div>
+                            <div className="flex-1 flex items-center justify-center">
+                                {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                            </div>
+                            <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                <div className="font-bold">{nameL1}</div>
+                                <div>วันที่: {dateL1}</div>
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    /* 🔵 กรณีซื้อ (Local/HO) -> 2 แถว */
+                    <div className="flex flex-col gap-4">
+                        {/* แถวที่ 1 */}
+                        <div className="grid grid-cols-3 gap-4 text-center">
+                            {/* 1. ผู้ขอ */}
+                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
+                                <div className="flex-1 flex items-center justify-center">
+                                    {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
+                                </div>
+                                <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                    <div className="font-bold">{nameReq}</div>
+                                    <div>วันที่: {dateReq}</div>
+                                </div>
+                            </div>
+                            {/* 2. ฝ่ายจัดซื้อ (NEW) */}
+                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ฝ่ายจัดซื้อ (Purchasing)</div>
+                                <div className="flex-1 flex items-center justify-center">
+                                    {sigPurchasing ? <img src={sigPurchasing} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                </div>
+                                <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                    <div className="font-bold">{namePurchasing}</div>
+                                    <div>วันที่: {datePurchasing}</div>
+                                </div>
+                            </div>
+                            {/* 3. สโตร์ */}
+                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">{storeLabel}</div>
+                                <div className="flex-1 flex items-center justify-center">
+                                    {sigStore ? <img src={sigStore} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                </div>
+                                <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                    <div className="font-bold">{nameStore}</div>
+                                    <div>วันที่: {dateStore}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* แถวที่ 2 */}
+                        <div className="grid grid-cols-2 gap-4 text-center px-10">
+                            {/* 4. ผู้อนุมัติ L1 */}
+                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 1)</div>
+                                <div className="flex-1 flex items-center justify-center">
+                                    {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                </div>
+                                <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                    <div className="font-bold">{nameL1}</div>
+                                    <div>วันที่: {dateL1}</div>
+                                </div>
+                            </div>
+                            {/* 5. ผู้อนุมัติ L2 */}
+                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                                <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 2)</div>
+                                <div className="flex-1 flex items-center justify-center">
+                                    {sigL2 ? <img src={sigL2} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                </div>
+                                <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
+                                    <div className="font-bold">{nameL2}</div>
+                                    <div>วันที่: {dateL2}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </>
         );
