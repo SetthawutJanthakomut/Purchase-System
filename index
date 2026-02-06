@@ -3824,19 +3824,25 @@ const handleEditItem = (index) => {
           setOrderItems(newItems);
       };
 
-// --- HELPER: ดึงรูปภาพล่าสุดจากประวัติ (Smart Image Fetcher) ---
 const getItemLatestImage = (item) => {
     // ค้นหาใน invLogs (ซึ่งเรียงจาก ใหม่ -> เก่า อยู่แล้ว)
     const log = invLogs.find(l => {
         // ต้องมีรูปเท่านั้น
         if (!l.images || l.images.length === 0) return false;
         
-        // ถ้าเป็น Asset ให้เช็ค ID (แม่นยำกว่า)
-        if (item.id && item.id.startsWith('AST')) {
+        // ⭐ [แก้ไขใหม่] ถ้ามี ID ให้เช็คที่ ID เท่านั้น (ไม่สนใจว่าขึ้นต้นด้วย AST หรือไม่)
+        // เพื่อป้องกันรายการชื่อซ้ำไปดึงรูปผิดตัว
+        if (item.id && l.assetId) {
             return l.assetId === item.id;
         }
-        // ถ้าเป็น Inventory หรือ Asset ที่ไม่มี ID ให้เช็คจากชื่อ
-        return l.item === item.name;
+
+        // กรณี Inventory: ถ้าไม่มี ID ใน Log (Log รุ่นเก่า) อนุโลมให้เช็คจากชื่อได้
+        // แต่ถ้าเป็น Asset (มี serial) จะไม่เช็คชื่อ เพื่อป้องกันรูปซ้ำ
+        if (item.serial === undefined) { 
+             return l.item === item.name;
+        }
+        
+        return false;
     });
 
     // ถ้าเจอ Log ที่มีรูป ให้คืนค่ารูปแรก
@@ -3844,15 +3850,21 @@ const getItemLatestImage = (item) => {
     return null;
 };
 
-// --- HELPER: ดึงรูปภาพ 'ทั้งหมด' จากประวัติล่าสุด (สำหรับดู Fullscreen) ---
 const getItemLatestImages = (item) => {
     // ใช้ Logic เดียวกันแต่ return images ทั้ง array
     const log = invLogs.find(l => {
         if (!l.images || l.images.length === 0) return false;
-        if (item.id && item.id.startsWith('AST')) {
+        
+        // ⭐ [แก้ไขใหม่] เช็ค ID เป็นหลักเหมือนกัน
+        if (item.id && l.assetId) {
              return l.assetId === item.id;
         }
-        return l.item === item.name;
+
+        if (item.serial === undefined) { 
+             return l.item === item.name;
+        }
+
+        return false;
     });
     return log ? log.images : [];
 };
@@ -4486,7 +4498,15 @@ const confirmReturnAsset = async () => {
         const returnerSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
 
         // บันทึก Log ของ Asset
-        await addInvLog('Return Asset', asset.name, 'Return', `รับคืน: ${statusText} โดย ${returnerSignature} ${returnAssetData.note ? `(${returnAssetData.note})` : ''}`, logAttachments, asset.currentRequestId);
+        await addInvLog(
+            'Return Asset', 
+            asset.name, 
+            'Return', 
+            `รับคืน: ${statusText} โดย ${returnerSignature} ${returnAssetData.note ? `(${returnAssetData.note})` : ''}`, 
+            logAttachments, 
+            asset.currentRequestId, 
+            asset.id // 👈 ใส่ ID ทรัพย์สิน เพื่อให้ประวัติไปโผล่ในหน้ารายละเอียดของตัวนั้นๆ
+        );
         
         // บันทึก Log ของ Request (เพื่อให้ไปโชว์ใน PDF ช่อง Returned By)
         if (asset.currentRequestId) {
@@ -6663,7 +6683,9 @@ const PublicAnnouncementPopup = () => (
                                   <thead className="bg-gray-100 text-gray-600 font-medium border-b">
                                       <tr>
                                           <th className="px-6 py-3">ID</th>
+                                          <th className="px-6 py-3">ประเภท</th>
                                           <th className="px-6 py-3">เรื่อง</th>
+                                          
                                           <th className="px-6 py-3">ผู้ขอ</th>
                                           <th className="px-6 py-3">
                                               <div className="flex items-center gap-1 cursor-pointer">
@@ -6730,6 +6752,38 @@ const PublicAnnouncementPopup = () => (
                                                               )}
                                                           </div>
                                                       </td>
+
+                                                      <td className="px-6 py-4">
+    {(() => {
+        let label = req.type;
+        let style = "bg-gray-100 text-gray-600 border-gray-200";
+        
+        if (req.type === 'Local') {
+            label = 'สั่งซื้อ Local';
+            style = "bg-orange-50 text-orange-700 border-orange-200";
+        } else if (req.type === 'HO') {
+            if (req.purchaseType === 'Rent') {
+                label = 'HO (เช่า)';
+                style = "bg-indigo-50 text-indigo-700 border-indigo-200";
+            } else {
+                label = 'HO (ซื้อขาด)';
+                style = "bg-purple-50 text-purple-700 border-purple-200";
+            }
+        } else if (req.type === 'Withdraw') {
+            label = 'เบิก';
+            style = "bg-pink-50 text-pink-700 border-pink-200";
+        } else if (req.type === 'Borrow') {
+            label = 'ยืม';
+            style = "bg-blue-50 text-blue-700 border-blue-200";
+        }
+        
+        return (
+            <span className={`text-[10px] px-2 py-1 rounded border font-bold whitespace-nowrap ${style}`}>
+                {label}
+            </span>
+        );
+    })()}
+</td>
                                                       <td className="px-6 py-4">
                                                           <div className="font-bold text-gray-800">{req.items[0]?.name}</div>
                                                           {req.items.length > 1 && <span className="text-xs text-gray-500 bg-gray-100 px-1.5 rounded">+{req.items.length - 1} รายการ</span>}
