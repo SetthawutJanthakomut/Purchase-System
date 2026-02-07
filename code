@@ -2441,10 +2441,11 @@ function sendDailyPendingSummary() {
   const requests = getSheetData('Requests');
   const users = getSheetData('Users');
   
-  // 1. กรองเฉพาะ User ที่ Active และมีสิทธิ์อนุมัติ (Level 1=8, Level 2=9) หรือ Admin(2)
+  // 1. กรองเฉพาะ User ที่ Active และมีสิทธิ์อนุมัติ (Level 1=8, Level 2=9) 
+  // ⭐ แก้ไข: ตัด p.includes(2) ออก เพื่อไม่ให้ดึง Admin เข้ามาในลิสต์
   const approvers = users.filter(u => 
     u.status === 'Activated' && u.email && u.email.includes('@') &&
-    (u.isSuperAdmin || (u.permissions && Object.values(u.permissions).some(p => p.includes(2) || p.includes(8) || p.includes(9))))
+    (u.isSuperAdmin || (u.permissions && Object.values(u.permissions).some(p => p.includes(8) || p.includes(9))))
   );
 
   if (approvers.length === 0) return;
@@ -2463,8 +2464,10 @@ function sendDailyPendingSummary() {
 
       // เช็ค Project Permission ของ User นี้
       const userPerms = user.isSuperAdmin ? [2, 8, 9] : (user.permissions?.[req.job] || []);
-      const isL1 = userPerms.includes(8) || userPerms.includes(2);
-      const isL2 = userPerms.includes(9) || userPerms.includes(2);
+      
+      // ⭐ แก้ไข: ตัด userPerms.includes(2) ออกจากการตรวจสอบสิทธิ์ L1/L2
+      const isL1 = userPerms.includes(8); 
+      const isL2 = userPerms.includes(9); 
 
       // Logic การอนุมัติ (ล้อตามหน้าเว็บ)
       if (req.status === 'Pending Head') {
