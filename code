@@ -155,8 +155,9 @@ function processEmailAction(e) {
   let userObj = allUsers.find(u => u.email && approver.toLowerCase().includes(u.email.toLowerCase()));
   let userDisplay = approver; 
   
-  if (userObj) {
-      userDisplay = `${userObj.empId} ${userObj.firstName} ${userObj.lastName} (อนุมัติทางอีเมล)`;
+if (userObj) {
+      
+      userDisplay = `${userObj.empId} ${userObj.firstName} ${userObj.lastName} (${approver})`;
   }
 
   let successCount = 0;
@@ -215,11 +216,12 @@ function processEmailAction(e) {
       if (isApprove) {
           // --- กรณีอนุมัติ ---
           
-          if (isWithdrawOrBorrow) {
+         if (isWithdrawOrBorrow) {
               // เบิก/ยืม -> จบเลย
               newStatus = 'Ready to Disburse';
-              logActionText = 'อนุมัติแล้ว (รอดำเนินการ)';
-          } 
+              // ⭐ แก้ไข: ใช้ข้อความให้ตรงกับ Status Label เพื่อให้ใบเบิกดึงชื่อไปโชว์ในช่องผู้อนุมัติได้
+              logActionText = 'รอจ่ายของ (เบิก/ยืม)';
+          }
           else if (currentRole === 'Head') {
               // ✅ Level 1 อนุมัติ -> ส่งต่อให้ L2
               newStatus = 'Pending PM';
@@ -502,7 +504,6 @@ function getBudgetInfoForEmail_FullDetail(req) {
 
 function sendApprovalEmail(req, targetEmail, targetRole) {
   console.log(`[SendEmail] ===== START =====`);
-  
   if (!targetEmail || targetEmail.trim() === '') {
     console.error(`[SendEmail] ❌ ERROR: Target email is empty!`);
     return;
@@ -511,7 +512,6 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
   // โหลดข้อมูล Inventory และ Assets เพื่อเช็คสต็อก
   const inventory = getSheetData('Inventory');
   const assets = getSheetData('Assets');
-
   const scriptUrl = ScriptApp.getService().getUrl();
   const approverName = targetEmail; 
 
@@ -519,7 +519,6 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
   const rejectLink = `${scriptUrl}?action=reject&id=${req.id}&role=${targetRole}&approver=${approverName}`;
   
   let grandTotal = 0;
-  
   // แปลงหน่วยเวลาเช่าเป็นภาษาไทย
   const getRentalUnitTh = (unit) => {
       if(unit === 'Day') return 'วัน';
@@ -569,7 +568,9 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
             ${isRent ? `<div style="font-size:10px; color:blue;">x ${duration} ${rentalUnitTh}</div>` : ''}
         </td>
         <td style="padding: 12px 5px; text-align: right; vertical-align: top; white-space: nowrap;">
-            <div style="font-size: 12px; color:#666;">@${item.unitPrice.toLocaleString()}</div>
+            <div style="font-size: 12px; color:#666;">
+                @${item.unitPrice.toLocaleString()} ${isRent ? '/' + rentalUnitTh : ''}
+            </div>
             <div style="font-weight: bold; color: #333; font-size: 14px;">${total.toLocaleString()}</div>
         </td>
       </tr>
@@ -631,7 +632,9 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
             <table class="meta-table" style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; color: #444;">
               <tr>
                 <td style="padding: 5px; color: #888;">ประเภท:</td>
-                <td style="padding: 5px; font-weight: bold; color: #333;">${req.type} ${req.purchaseType || ''}</td>
+                <td style="padding: 5px; font-weight: bold; color: #333;">
+                    ${req.type === 'HO' ? (req.purchaseType === 'Rent' ? 'HO (เช่า)' : 'HO (ซื้อขาด)') : req.type}
+                </td>
               </tr>
               <tr>
                 <td style="padding: 5px; color: #888;">วันที่ต้องการ:</td>
@@ -678,7 +681,7 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
               <a href="${rejectLink}" class="btn btn-reject">❌ ไม่อนุมัติ (Reject)</a>
               
               <div style="margin-top: 20px;">
-                 <a href="${scriptUrl}" target="_blank" class="btn btn-link">เปิดดูในแอป (Open App)</a>
+                <a href="${scriptUrl}" target="_blank" class="btn btn-link">เปิดดูในแอป (Open App)</a>
               </div>
 
               <p style="font-size: 12px; color: #999; margin-top: 15px;">เมื่อกดปุ่ม ระบบจะบันทึกสถานะทันที</p>
@@ -2490,9 +2493,8 @@ function sendDailyPendingSummary() {
   });
   console.log("[DailySummary] Finished.");
 }
-/**
- * 3. ฟังก์ชันสร้าง HTML อีเมลสรุป (เพิ่มปุ่มลิงก์เข้า Web App)
- */
+
+
 function sendSummaryEmailToUser(user, items) {
   const scriptUrl = ScriptApp.getService().getUrl();
   const approverEmail = user.email;
@@ -2504,6 +2506,14 @@ function sendSummaryEmailToUser(user, items) {
   const bulkRejectLink = `${scriptUrl}?action=bulk_reject&ids=${allIds}&approver=${approverEmail}&role=Batch`;
 
   let tableRows = '';
+  
+  // ⭐ [เพิ่ม Helper] แปลงหน่วยเวลาเช่าเป็นภาษาไทย
+  const getRentalUnitTh = (unit) => {
+      if(unit === 'Day') return 'วัน';
+      if(unit === 'Month') return 'เดือน';
+      if(unit === 'Year') return 'ปี';
+      return unit || 'เดือน'; // Default
+  };
   
   items.forEach((req, idx) => {
     // ลิงก์รายตัว
@@ -2524,9 +2534,15 @@ function sendSummaryEmailToUser(user, items) {
     let reqGrandTotal = 0;
 
     req.items.forEach(item => {
-        const duration = (req.type === 'HO' && req.purchaseType === 'Rent') ? (item.duration || 1) : 1;
+        // ⭐ เช็คประเภทว่าเป็นเช่าหรือไม่
+        const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
+        const duration = isRent ? (item.duration || 1) : 1;
+        // คำนวณราคารวม
         const lineTotal = (item.qty || 0) * (item.unitPrice || 0) * duration;
         reqGrandTotal += lineTotal;
+        
+        // แปลงหน่วยนับเวลา
+        const rentalUnitTh = getRentalUnitTh(item.rentalUnit);
 
         itemsDetailHtml += `
           <tr style="border-bottom: 1px dashed #eee;">
@@ -2535,8 +2551,15 @@ function sendSummaryEmailToUser(user, items) {
                ${item.subJob ? `<br/><span style="font-size:10px; color:#1565c0; background:#e3f2fd; padding:1px 3px; border-radius:2px;">Sub: ${item.subJob}</span>` : ''}
                ${item.matCode ? `<br/><span style="font-size:10px; color:#7b1fa2; background:#f3e5f5; padding:1px 3px; border-radius:2px;">Mat: ${item.matCode}</span>` : ''}
             </td>
-            <td style="padding: 4px; text-align: center; white-space: nowrap;">${item.qty} ${item.unit}</td>
-            <td style="padding: 4px; text-align: right;">${(item.unitPrice || 0).toLocaleString()}</td>
+            <td style="padding: 4px; text-align: center; white-space: nowrap;">
+                ${item.qty} ${item.unit}
+                ${/* ⭐ แสดงระยะเวลาเช่า */ ''}
+                ${isRent ? `<div style="font-size:10px; color:blue;">x ${duration} ${rentalUnitTh}</div>` : ''}
+            </td>
+            <td style="padding: 4px; text-align: right;">
+                ${/* ⭐ แสดงราคา/หน่วยเวลา */ ''}
+                ${(item.unitPrice || 0).toLocaleString()} ${isRent ? '/' + rentalUnitTh : ''}
+            </td>
             <td style="padding: 4px; text-align: right; font-weight: bold;">${lineTotal.toLocaleString()}</td>
           </tr>
         `;
@@ -2545,12 +2568,23 @@ function sendSummaryEmailToUser(user, items) {
     // ----------------------------------------------------
 
     const statusLabel = req.status === 'Pending Head' ? 'Level 1' : 'Level 2';
+    
+    // ⭐ แปลงชื่อประเภท (Type) ให้เป็นภาษาไทย
+    let displayType = req.type;
+    if (req.type === 'HO') {
+        displayType = req.purchaseType === 'Rent' ? 'HO (เช่า)' : 'HO (ซื้อขาด)';
+    } else if (req.type === 'Local') {
+        displayType = 'Local (ซื้อ)';
+    }
 
     tableRows += `
       <tr style="border-bottom: 2px solid #e0e0e0; background-color: #fff;">
         <td style="padding: 12px; vertical-align: top; width: 15%;">
             <div style="font-weight:bold; color:#1976d2; font-size:14px;">${req.id}</div>
-            <div style="font-size:11px; color:#666; margin-bottom:4px;">${req.type}</div>
+            
+            ${/* ⭐ ใช้ตัวแปร displayType ที่แปลงแล้ว */ ''}
+            <div style="font-size:11px; color:#666; margin-bottom:4px;">${displayType}</div>
+            
             <div style="font-size:10px; background:#f5f5f5; padding:2px 6px; border-radius:4px; display:inline-block; border:1px solid #ddd;">${statusLabel}</div>
         </td>
         <td style="padding: 12px; vertical-align: top; width: 20%;">
