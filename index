@@ -1314,6 +1314,7 @@ const handleRegisterRequestOTP = () => {
             </div>
         );
     };
+
 // --- Helper: Print Check Logic (UPDATED HO Flow) ---
       const handleOpenPrintPreview = (req) => {
           const historyDesc = [...(req.history || [])].reverse();
@@ -1323,53 +1324,7 @@ const handleRegisterRequestOTP = () => {
               return logAction === statusKey || logAction === label || logAction.includes(label);
           };
 
-          // 1. Requester
-          const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
-          
-          // 2. Level 1 (คนที่ส่งไป Pending PM หรือ Ready to Disburse)
-          let l1Log = historyDesc.find(h => 
-              isActionMatch(h.action, 'Pending PM') || 
-              ((req.type === 'Withdraw' || req.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
-          );
-
-          // 3. Level 2 (L2)
-          let l2Log = null;
-          if (req.type === 'Local') {
-              // Local Flow ใหม่: L2 คือคนส่งไป Pending Check
-              l2Log = historyDesc.find(h => isActionMatch(h.action, 'Pending Check')); 
-              if (!l2Log) l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log); 
-          } else {
-              // HO Flow: L2 คือคนกด Approved
-              l2Log = historyDesc.find(h => 
-                  isActionMatch(h.action, 'Approved') && 
-                  h !== l1Log &&
-                  (!h.note || !h.note.includes('เปลี่ยนเป็น HO'))
-              );
-          }
-
-          // 4. ⭐ [แก้ไข HO] ฝ่ายจัดซื้อ (Purchasing)
-          let purchasingLog = null;
-          if (['Local', 'HO'].includes(req.type)) {
-              if (req.type === 'Local') {
-                  // Local: คนกด Ordered หรือ Approved
-                  purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Ordered')); 
-                  if (!purchasingLog) {
-                      purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l2Log && h !== l1Log);
-                  }
-              } else {
-                  // ⭐ HO: ดึงคนที่กดส่งไป "Pending Head" (เพราะตรวจสอบเป็นขั้นตอนแรก)
-                  purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Head'));
-                  
-                  // Fallback: หาจาก Note เผื่อเป็น Flow เก่า
-                  if (!purchasingLog) {
-                       purchasingLog = historyDesc.find(h => 
-                          h.note && (h.note.includes('ตรวจสอบผ่าน') || h.note.includes('Verify') || h.note.includes('เปลี่ยนเป็น HO'))
-                       );
-                  }
-              }
-          }
-
-          // ตรวจสอบ User และ Signature
+          // ⭐ ย้าย getUser มาไว้ตรงนี้ (บนสุด) เพื่อให้เรียกใช้ได้ทุกจุด
           const getUser = (log) => {
               if(!log || !log.user) return null;
               let txt = log.user.replace(' (Email)', '').trim();
@@ -1381,6 +1336,77 @@ const handleRegisterRequestOTP = () => {
                   (`${u.firstName} ${u.lastName}` === txt)
               );
           };
+
+          // 1. Requester
+          const reqLog = historyDesc.find(h => h.action === 'Draft' || h.action === 'Create' || h.action.includes('สร้าง')) || historyDesc[historyDesc.length - 1];
+          
+          // 2. Level 1 (คนที่ส่งไป Pending PM หรือ Ready to Disburse)
+          let l1Log = historyDesc.find(h => 
+              isActionMatch(h.action, 'Pending PM') || 
+              ((req.type === 'Withdraw' || req.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
+          );
+
+          // 3. Level 2 (L2) - แก้ไข Logic รองรับ Flow เปลี่ยน Local->HO
+          let l2Log = null;
+          if (req.type === 'Local') {
+              // Local Flow: L2 คือคนส่งไป Pending Check
+              l2Log = historyDesc.find(h => isActionMatch(h.action, 'Pending Check')); 
+              if (!l2Log) l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log); 
+          } else {
+              // HO Flow Logic (Updated):
+              
+              // 1. ลองหาจาก "Pending Check" ก่อน (สำหรับเคส Local -> HO)
+              const pendingCheckLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Check'));
+              
+              if (pendingCheckLog) {
+                  const uCheck = getUser(pendingCheckLog); // ✅ ตอนนี้เรียกใช้ได้แล้ว
+                  const uReq = getUser(reqLog); 
+                  
+                  // ถ้าคนกด Check ไม่ใช่ผู้ขอ -> แสดงว่าเป็น L2 จาก Local Flow
+                  const isRequester = (uCheck && uReq && uCheck.id === uReq.id) || 
+                                      (pendingCheckLog.user === reqLog.user);
+                                      
+                  if (!isRequester) {
+                      l2Log = pendingCheckLog;
+                  }
+              }
+
+              // 2. ถ้ายังไม่เจอ (หรือเป็น HO ปกติ) ให้หาจาก Approved
+              if (!l2Log) {
+                  l2Log = historyDesc.find(h => 
+                      isActionMatch(h.action, 'Approved') && 
+                      h !== l1Log &&
+                      (!h.note || !h.note.includes('เปลี่ยนเป็น HO'))
+                  );
+              }
+          }
+
+          // 4. ฝ่ายจัดซื้อ (Purchasing)
+          let purchasingLog = null;
+          if (['Local', 'HO'].includes(req.type)) {
+              if (req.type === 'Local') {
+                  // Local: คนกด Ordered หรือ Approved
+                  purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Ordered')); 
+                  if (!purchasingLog) {
+                      const hasCheckStep = historyDesc.some(h => isActionMatch(h.action, 'Pending Check'));
+                      if (hasCheckStep) {
+                          purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved'));
+                      } else {
+                          purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l2Log && h !== l1Log);
+                      }
+                  }
+              } else {
+                  // HO: ดึงคนที่กดส่งไป "Pending Head"
+                  purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Head'));
+                  
+                  // Fallback
+                  if (!purchasingLog) {
+                      purchasingLog = historyDesc.find(h => 
+                          h.note && (h.note.includes('ตรวจสอบผ่าน') || h.note.includes('Verify') || h.note.includes('เปลี่ยนเป็น HO'))
+                       );
+                  }
+              }
+          }
 
           const userReq = getUser(reqLog);
           const userL1 = getUser(l1Log);
@@ -1407,7 +1433,6 @@ const handleRegisterRequestOTP = () => {
               openPOPreview(req);
           }
       };
-
 
 
 const handleSaveProject = async () => {
@@ -7007,6 +7032,150 @@ const PublicAnnouncementPopup = () => (
                   );
               })()}
 
+
+              {/* --- ANNOUNCEMENT MANAGEMENT TAB (UPDATED: MULTI-TOPIC) --- */}
+{activeTab === 'announcement' && hasPermission(28) && (
+    <div className="space-y-6 max-w-5xl mx-auto">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[85vh]">
+            <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
+                <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
+                   <Megaphone className="w-5 h-5 text-indigo-600"/> จัดการประกาศข่าวสาร (System Announcement)
+                </h3>
+                <button 
+                    onClick={() => setAnnounceForm({ id: '', title: '', detail: '', active: true })}
+                    className="bg-indigo-600 text-white text-sm font-bold px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center gap-2"
+                >
+                    <Plus className="w-4 h-4"/> สร้างประกาศใหม่
+                </button>
+            </div>
+            
+            <div className="flex flex-1 overflow-hidden">
+                {/* Left: List of Announcements */}
+                <div className="w-1/3 border-r border-gray-200 overflow-y-auto bg-gray-50">
+                    {announcements.length === 0 && <div className="p-8 text-center text-gray-400 text-sm">ยังไม่มีประกาศ</div>}
+                    {announcements.map((item) => (
+                        <div 
+                            key={item.id}
+                            onClick={() => setAnnounceForm(item)}
+                            className={`p-4 border-b cursor-pointer transition-colors hover:bg-white ${announceForm.id === item.id ? 'bg-white border-l-4 border-l-indigo-600 shadow-sm' : ''}`}
+                        >
+                            <div className="flex justify-between items-start mb-1">
+                                <h4 className={`font-bold text-sm ${announceForm.id === item.id ? 'text-indigo-700' : 'text-gray-700'}`}>{item.title}</h4>
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${item.active ? 'bg-green-50 text-green-600 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                                    {item.active ? 'Active' : 'Inactive'}
+                                </span>
+                            </div>
+                            <p className="text-xs text-gray-500 line-clamp-2">{item.detail}</p>
+                            <div className="mt-2 text-[10px] text-gray-400 flex justify-between">
+    <span>{item.timestamp}</span>
+</div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Right: Edit Form */}
+                <div className="w-2/3 p-6 overflow-y-auto bg-white">
+                    <div className="max-w-xl mx-auto space-y-4">
+                        <div className="flex justify-between items-center mb-4">
+                            <h4 className="font-bold text-gray-800 text-lg">
+                                {announceForm.id ? 'แก้ไขประกาศ' : 'สร้างประกาศใหม่'}
+                            </h4>
+                            {announceForm.id && (
+                                <span className="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">{announceForm.id}</span>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-1.5">หัวข้อ (Title)</label>
+                            <input 
+                                type="text" 
+                                className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                placeholder="ระบุหัวข้อเรื่อง..."
+                                value={announceForm.title}
+                                onChange={e => setAnnounceForm({...announceForm, title: e.target.value})}
+                            />
+                        </div>
+                        <div>
+                             <label className="block text-sm font-bold text-gray-700 mb-1.5">รายละเอียด (Details)</label>
+                            <textarea 
+                                rows="8"
+                                className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                placeholder="ระบุรายละเอียดข้อความ..."
+                                value={announceForm.detail}
+                                onChange={e => setAnnounceForm({...announceForm, detail: e.target.value})}
+                             ></textarea>
+                        </div>
+
+                        <div className="flex gap-3 pt-4 border-t border-gray-100 mt-6">
+                            {announceForm.id && (
+                                <>
+                                    <button 
+                                        onClick={() => {
+                                            if(!confirm('ยืนยันลบประกาศนี้?')) return;
+                                            setIsAnnounceLoading(true);
+                                            google.script.run.withSuccessHandler(() => {
+                                                setAnnouncements(prev => prev.filter(a => a.id !== announceForm.id));
+                                                setAnnounceForm({ id: '', title: '', detail: '', active: true });
+                                                setIsAnnounceLoading(false);
+                                                showToast('ลบประกาศเรียบร้อย');
+                                            }).deleteAnnouncementItem(announceForm.id);
+                                        }}
+                                        className="bg-white border border-red-200 text-red-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50"
+                                        disabled={isAnnounceLoading}
+                                    >
+                                        ลบ
+                                    </button>
+
+                                    <button 
+                                        onClick={() => {
+                                            const newStatus = !announceForm.active;
+                                            setIsAnnounceLoading(true);
+                                            google.script.run.withSuccessHandler((res) => {
+                                                setAnnouncements(prev => prev.map(a => a.id === announceForm.id ? {...a, active: newStatus} : a));
+                                                setAnnounceForm({...announceForm, active: newStatus});
+                                                setIsAnnounceLoading(false);
+                                                showToast(res.message);
+                                            }).toggleAnnouncementStatus(announceForm.id, newStatus);
+                                        }}
+                                        className={`px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${announceForm.active ? 'bg-orange-50 text-orange-600 border-orange-200 hover:bg-orange-100' : 'bg-green-50 text-green-600 border-green-200 hover:bg-green-100'}`}
+                                        disabled={isAnnounceLoading}
+                                    >
+                                        {announceForm.active ? 'หยุดประกาศ (Unpublish)' : 'เริ่มประกาศ (Publish)'}
+                                    </button>
+                                </>
+                            )}
+                            
+                            <div className="flex-1"></div>
+
+                            <button 
+                                onClick={() => {
+                                    if(!announceForm.title || !announceForm.detail) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
+                                    setIsAnnounceLoading(true);
+                                    const payload = { ...announceForm, updatedBy: `${user.firstName} ${user.lastName}` };
+                                    google.script.run.withSuccessHandler((res) => {
+                                        if (announceForm.id) {
+                                            setAnnouncements(prev => prev.map(a => a.id === res.data.id ? res.data : a));
+                                        } else {
+                                            setAnnouncements(prev => [res.data, ...prev]);
+                                            setAnnounceForm(res.data); // Set current to saved one
+                                        }
+                                        setIsAnnounceLoading(false);
+                                        showToast(res.message);
+                                    }).saveAnnouncementItem(payload);
+                                }}
+                                className="bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 shadow-md flex items-center gap-2"
+                                disabled={isAnnounceLoading}
+                            >
+                                <Save className="w-4 h-4"/> บันทึกข้อมูล
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+)}
+
 {activeTab === 'orders' && (
   <div className="space-y-6 max-w-7xl mx-auto pb-24 relative">
     
@@ -7209,7 +7378,7 @@ const PublicAnnouncementPopup = () => (
                                         <button type="button" onClick={() => openRejectModal(req.id)} className="px-3 py-1.5 border border-red-300 text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 shadow-sm">ไม่อนุมัติ</button>
                                         {/* ⭐ แก้ไข: Local ส่งไป Check, HO ส่งไป Approved (เพราะ HO ตรวจมาแล้ว) */}
                                         <button type="button" onClick={() => handleApprovalUpdate(req.id, req.type === 'Local' ? 'Pending Check' : 'Approved')} className="px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 shadow-sm">
-                                            {req.type === 'Local' ? 'ส่งตรวจสอบ (Check)' : 'อนุมัติ (Approve)'}
+                                            {req.type === 'Local' ? 'อนุมัติ' : 'อนุมัติ (Approve)'}
                                         </button>
                                       </>
                                     )}
@@ -12166,20 +12335,39 @@ const relatedAssets = sourceAssets.filter(a =>
                       isActionMatch(h.action, 'Pending PM') || 
                       ((selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') && isActionMatch(h.action, 'Ready to Disburse'))
                   );
-
-                  // Logic หา L2
+// Logic หา L2 - แก้ไข Logic รองรับ Flow เปลี่ยน Local->HO
                   let l2Log = null;
                   if (selectedRequest.type === 'Local') {
                       l2Log = historyDesc.find(h => isActionMatch(h.action, 'Pending Check')); 
                       if (!l2Log) l2Log = historyDesc.find(h => isActionMatch(h.action, 'Approved') && h !== l1Log); 
                   } else {
-                      l2Log = historyDesc.find(h => 
-                          isActionMatch(h.action, 'Approved') && 
-                          h !== l1Log &&
-                          (!h.note || !h.note.includes('เปลี่ยนเป็น HO'))
-                      );
-                  }
+                      // HO Flow Logic (Updated):
+                      
+                      // 1. ลองหาจาก "Pending Check" ก่อน (สำหรับเคส Local -> HO)
+                      const pendingCheckLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Check'));
+                      
+                      if (pendingCheckLog) {
+                          const uCheck = getUser(pendingCheckLog);
+                          const uReq = getUser(reqLog); 
+                          
+                          // ถ้าคนกด Check ไม่ใช่ผู้ขอ -> แสดงว่าเป็น L2 จาก Local Flow
+                          const isRequester = (uCheck && uReq && uCheck.id === uReq.id) || 
+                                              (pendingCheckLog.user === reqLog.user);
+                                              
+                          if (!isRequester) {
+                              l2Log = pendingCheckLog;
+                          }
+                      }
 
+                      // 2. ถ้ายังไม่เจอ ให้หาจาก Approved ตามปกติ
+                      if (!l2Log) {
+                          l2Log = historyDesc.find(h => 
+                              isActionMatch(h.action, 'Approved') && 
+                              h !== l1Log &&
+                              (!h.note || !h.note.includes('เปลี่ยนเป็น HO'))
+                          );
+                      }
+                  }
                   // ⭐ [แก้ไข HO] Logic หาฝ่ายจัดซื้อ (Purchasing)
                   let purchasingLog = null;
                   if (['Local', 'HO'].includes(selectedRequest.type)) {
@@ -12452,39 +12640,45 @@ const relatedAssets = sourceAssets.filter(a =>
         const dateStore = storeLog ? formatDateTh(storeLog.date) : '....../....../......';
 
         // --- B. ⭐ Logic หาคนเซ็นช่องฝ่ายจัดซื้อ (Purchasing) ---
-        let purchasingLog = null;
+      let purchasingLog = null;
         
         if (selectedRequest.type === 'HO') {
-            // HO: หาคนที่ Verify หรือ เปลี่ยนเป็น HO
-            purchasingLog = historyDesc.find(h => 
-                h.note && (
-                    h.note.includes('ตรวจสอบผ่าน') || 
-                    h.note.includes('Verify') || 
-                    h.note.includes('ตรวจสอบเอกสาร') ||
-                    h.note.includes('เปลี่ยนเป็น HO')
-                )
-            );
+            // ✅ HO แก้ไข: ดึงจาก Action "Pending Head" (คือจังหวะที่จัดซื้อส่งงานให้ Level 1)
+            // นี่คือจุดที่ยืนยันว่าจัดซื้อตรวจสอบเสร็จแล้ว
+            purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Pending Head'));
+
+            // Fallback: ถ้าหาไม่เจอ ให้ลองหาจาก Note (เผื่อเคสเก่า หรือเคสเปลี่ยนจาก Local)
+            if (!purchasingLog) {
+                purchasingLog = historyDesc.find(h => 
+                    h.note && (
+                        h.note.includes('ตรวจสอบผ่าน') || 
+                        h.note.includes('Verify') || 
+                        h.note.includes('ตรวจสอบเอกสาร') ||
+                        h.note.includes('เปลี่ยนเป็น HO')
+                    )
+                );
+            }
         } 
         else if (selectedRequest.type === 'Local') {
-            // Local:
-            // 1. หาคนที่กด "สั่งซื้อ" (Ordered) -> ถือเป็นจัดซื้อแน่นอน
-            purchasingLog = historyDesc.find(h => h.action === 'Ordered');
-
-            // 2. ถ้ายังไม่มีสั่งซื้อ ให้หาคนที่กด "อนุมัติ" (Approved) 
-            // **เฉพาะ Flow ใหม่** (คือต้องมีสถานะ Pending Check เกิดขึ้นก่อนหน้านั้น)
-            if (!purchasingLog) {
-                const hasCheckStep = historyDesc.some(h => h.action === 'Pending Check');
-                if (hasCheckStep) {
-                    // หา Log Approved ล่าสุด (ซึ่งคือคนที่กดผ่านจากหน้า Check)
-                    purchasingLog = historyDesc.find(h => h.action === 'Approved');
-                }
-            }
+            // ✅ Local แก้ไข: ดึงทันทีเมื่อ "Approved" (ตรวจสอบเสร็จ) หรือ "Ordered"
             
-            // 3. Fallback: หาจาก Note เผื่อกรณีอื่นๆ
+            // 1. หาจากสถานะ Ordered (ถ้ามี)
+            purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Ordered'));
+
+            // 2. ถ้ายังไม่กดสั่งซื้อ ให้หาจากสถานะ Approved (ที่ต่อจาก Pending Check)
             if (!purchasingLog) {
-                 purchasingLog = historyDesc.find(h => 
-                    h.note && (h.note.includes('ตรวจสอบผ่าน') || h.note.includes('Verify'))
-                );
+                // เช็คว่ามีขั้นตอนการส่งตรวจสอบ (Pending Check) หรือไม่ เพื่อความชัวร์ว่าเป็น Flow ใหม่
+                const hasCheckStep = historyDesc.some(h => isActionMatch(h.action, 'Pending Check'));
+                
+                if (hasCheckStep) {
+                    // ถ้ามี Pending Check -> คนที่กด Approved ถัดมาคือ "ฝ่ายจัดซื้อ"
+                    purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved'));
+                } else {
+                    // กรณี Flow เก่า หรือไม่มีการ Check -> อาจจะใช้ Approved ล่าสุด (ระวังทับซ้อนกับ L2)
+                    // แต่ถ้าเป็น Local ปกติ L2 จะส่งไป Pending Check ไม่ใช่ Approved
+                    // ดังนั้น Approved ใน Local มักจะเป็น Purchasing เสมอ
+                    purchasingLog = historyDesc.find(h => isActionMatch(h.action, 'Approved'));
+                }
             }
         }
         const userPurchasing = getUser(purchasingLog);
@@ -15038,6 +15232,9 @@ const relatedAssets = sourceAssets.filter(a =>
         </div>
     </div>
 )}
+
+
+
         </div>
       );
     };
