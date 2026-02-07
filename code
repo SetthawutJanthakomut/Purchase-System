@@ -1,27 +1,24 @@
 
+
 // --- CONFIGURATION ---
 // ⭐ เปลี่ยนมาดึงจาก Script Properties แทนการใส่ URL ตรงๆ
 const SUPABASE_URL = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
 const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY');
 
 
-
 function doGet(e) {
-  // ⭐ ตรวจสอบ Action จากอีเมล
+  // ตรวจสอบ Action จากอีเมล
   if (e.parameter && e.parameter.action) {
+    const act = e.parameter.action;
     
-    // กรณี 1: กดอนุมัติ (Approve) -> ทำรายการทันที
-    if (e.parameter.action === 'approve') {
-      return processEmailAction(e);
+    // กรณี Bulk Reject: ต้องเปิดฟอร์มเพื่อถามเหตุผล (รวม)
+    if (act === 'bulk_reject') {
+        return createBulkRejectForm(e); // สร้างฟอร์มใหม่สำหรับ Bulk
     }
     
-    // กรณี 2: กดไม่อนุมัติ (Reject) -> เปิดฟอร์มกรอกเหตุผล
-    if (e.parameter.action === 'reject') {
-      return createRejectForm(e);
-    }
-
-    // กรณี 3: ยืนยันการไม่อนุมัติจากฟอร์ม (Confirm Reject) -> บันทึกข้อมูล
-    if (e.parameter.action === 'confirm_reject') {
+    // กรณี Approve All / Confirm Bulk Reject -> Process
+    if (act === 'approve' || act === 'reject' || act === 'confirm_reject' || 
+        act === 'bulk_approve' || act === 'confirm_bulk_reject') {
       return processEmailAction(e);
     }
   }
@@ -132,124 +129,176 @@ function createRejectForm(e) {
   return HtmlService.createHtmlOutput(html);
 }
 
+// ฟังก์ชันประมวลผลการอนุมัติ (แก้ไขสถานะ Local/HO และข้อความ Log ให้ถูกต้อง)
 function processEmailAction(e) {
-  const action = e.parameter.action; 
-  const reqId = e.parameter.id;
-  const approver = e.parameter.approver;
-  const role = e.parameter.role;
+  const action = e.parameter.action;
+  
+  // 1. แปลง IDs เป็น Array
+  let targetIds = [];
+  if (e.parameter.ids) {
+      targetIds = e.parameter.ids.split(',');
+  } else if (e.parameter.id) {
+      targetIds = [e.parameter.id];
+  }
+
+  const approver = e.parameter.approver; // Email ของคนกด
+  const urlRole = e.parameter.role;
   const customNote = e.parameter.note || ''; 
 
-  console.log(`[ProcessEmail] ===== START =====`);
-  console.log(`[ProcessEmail] Action: ${action} | ID: ${reqId} | Approver: ${approver}`);
+  console.log(`[ProcessEmail] Action: ${action} | Targets: ${targetIds.length} | Approver: ${approver}`);
 
-  // ค้นหา User เพื่อแสดงชื่อใน Log
+  // 2. โหลดข้อมูล
   const allUsers = getSheetData('Users');
-  let userDisplay = approver + " (Email)";
-  const foundUser = allUsers.find(u => u.email && approver.includes(u.email));
-  if (foundUser) {
-      userDisplay = `${foundUser.empId} ${foundUser.firstName} ${foundUser.lastName} (Email)`;
-  }
-
   const requests = getSheetData('Requests');
-  const reqIndex = requests.findIndex(r => r.id === reqId);
-
-  if (reqIndex === -1) return HtmlService.createHtmlOutput("<h2>❌ ไม่พบเอกสาร</h2>");
-
-let req = requests[reqIndex];
   
-  // ⭐⭐ [แก้ไข] Validation Check: เพิ่ม role 'Approver'
-  const isWithdrawOrBorrow = (req.type === 'Withdraw' || req.type === 'Borrow');
-  let isValidRole = false;
-
-  if (role === 'Head' && req.status === 'Pending Head') isValidRole = true;
-  else if (role === 'PM' && req.status === 'Pending PM') isValidRole = true;
-  else if (isWithdrawOrBorrow && role === 'PM' && req.status === 'Pending Head') isValidRole = true;
-  // ✅ เพิ่ม: ถ้าเป็น Role 'Approver' (มาจากเมลรวม) ถือว่าผ่านเสมอสำหรับงานเบิก/ยืมที่ยังรออนุมัติ
-  else if (role === 'Approver' && isWithdrawOrBorrow && req.status === 'Pending Head') isValidRole = true;
-
-  if (!isValidRole) {
-     return HtmlService.createHtmlOutput("<h2>⚠️ รายการนี้ถูกดำเนินการไปแล้ว หรือคุณไม่มีสิทธิ์ในสถานะปัจจุบัน</h2>");
+  // 3. เตรียมชื่อผู้ดำเนินการ
+  let userObj = allUsers.find(u => u.email && approver.toLowerCase().includes(u.email.toLowerCase()));
+  let userDisplay = approver; 
+  
+  if (userObj) {
+      userDisplay = `${userObj.empId} ${userObj.firstName} ${userObj.lastName} (อนุมัติทางอีเมล)`;
   }
 
-  // ⭐⭐ [แก้ไข] Update Status Logic
-  let newStatus = '';
-  let logNote = '';
-  if (action === 'approve') {
-    // กรณี เบิก/ยืม: ไม่ว่าใครกด (Head/PM) ให้ไปสถานะรอจ่ายของทันที
-    if (isWithdrawOrBorrow) {
-        newStatus = 'Ready to Disburse';
-    } 
-    // กรณี ซื้อ (Local/HO): เป็นไปตาม Step เดิม
-    else {
-        if (role === 'Head') {
-            newStatus = 'Pending PM';
-        } else if (role === 'PM') {
-            newStatus = 'Approved';
-        }
-    }
-    logNote = `Approved via Email by ${approver}`;
-  } else if (action === 'confirm_reject') { 
-    newStatus = 'Rejected';
-    logNote = `Rejected via Email by ${approver}: ${customNote}`; 
-  }
+  let successCount = 0;
+  let failCount = 0;
+  let skippedCount = 0;
 
-  if (!req.docNumber && (newStatus === 'Approved' || newStatus === 'Ready to Disburse')) {
-      // เรียกใช้ฟังก์ชันที่เพิ่งเพิ่มเข้าไป
-      const count = getNextDocIndex(requests, req.type, req.purchaseType);
-      req.docNumber = generateDocId(req.type, count, req.purchaseType);
+  // 4. วนลูปทำรายการ
+  targetIds.forEach(reqId => {
+      const reqIndex = requests.findIndex(r => r.id === reqId);
+      if (reqIndex === -1) { failCount++; return; }
+
+      let req = requests[reqIndex];
       
-      // บันทึก Log เพิ่มเติมว่าระบบสร้างเลขให้แล้ว
-      logNote += ` (Generated Doc No: ${req.docNumber})`;
-  }
+      // ป้องกันทำซ้ำ
+      if (req.status !== 'Pending Head' && req.status !== 'Pending PM') {
+           skippedCount++;
+           return;
+      }
 
-  // Save Data
-  req.status = newStatus;
-  if (!req.history) req.history = [];
-  req.history.push({
-    date: new Date().toLocaleString('th-TH'),
-    action: newStatus,
-    user: userDisplay,
-    note: logNote
+      // -- ตรวจสอบสิทธิ์ --
+      const isWithdrawOrBorrow = (req.type === 'Withdraw' || req.type === 'Borrow');
+      let isValidRole = false;
+      let currentRole = urlRole;
+
+      // ถ้ามาจากปุ่ม Bulk (Batch) ให้คำนวณ Role เอง
+      if (urlRole === 'Batch' || !urlRole) {
+          const userPerms = userObj?.permissions?.[req.job] || [];
+          const isL1 = userPerms.includes(8) || userObj?.isSuperAdmin;
+          const isL2 = userPerms.includes(9) || userObj?.isSuperAdmin;
+
+          if (req.status === 'Pending Head') {
+              if (isWithdrawOrBorrow && (isL1 || isL2)) { isValidRole = true; currentRole = 'Approver'; }
+              else if (isL1) { isValidRole = true; currentRole = 'Head'; }
+          } 
+          else if (req.status === 'Pending PM' && isL2) {
+              isValidRole = true;
+              currentRole = 'PM';
+          }
+      } else {
+          // ถ้ามาจากปุ่มเดี่ยว (Single)
+          if (urlRole === 'Head' && req.status === 'Pending Head') isValidRole = true;
+          else if (urlRole === 'PM' && req.status === 'Pending PM') isValidRole = true;
+          else if (isWithdrawOrBorrow && urlRole === 'PM' && req.status === 'Pending Head') isValidRole = true;
+          else if (urlRole === 'Approver' && isWithdrawOrBorrow && req.status === 'Pending Head') isValidRole = true;
+      }
+
+      if (!isValidRole) { failCount++; return; }
+
+      // -- 5. กำหนด Status และ ข้อความ Log (แก้ไขตรงนี้) --
+      let newStatus = '';
+      let logActionText = ''; 
+      let logNoteText = '';   
+      
+      const isApprove = action.includes('approve');
+      
+      if (isApprove) {
+          // --- กรณีอนุมัติ ---
+          
+          if (isWithdrawOrBorrow) {
+              // เบิก/ยืม -> จบเลย
+              newStatus = 'Ready to Disburse';
+              logActionText = 'อนุมัติแล้ว (รอดำเนินการ)';
+          } 
+          else if (currentRole === 'Head') {
+              // ✅ Level 1 อนุมัติ -> ส่งต่อให้ L2
+              newStatus = 'Pending PM';
+              logActionText = 'รออนุมัติ Level 2'; 
+          } 
+          else if (currentRole === 'PM') {
+              // ✅ Level 2 อนุมัติ
+              if (req.type === 'Local') {
+                  // ถ้าเป็น Local -> ส่งให้จัดซื้อ Check
+                  // ⭐ แก้ไข: ใช้ Key 'Pending Check' เพื่อให้หน้าเว็บแสดงเป็น "รอฝ่ายจัดซื้อตรวจสอบ (Check)"
+                  newStatus = 'Pending Check';
+                  logActionText = 'รอฝ่ายจัดซื้อตรวจสอบ (Check)'; 
+              } else {
+                  // ถ้าเป็น HO -> จบกระบวนการ
+                  newStatus = 'Approved';
+                  logActionText = 'อนุมัติแล้ว (รอดำเนินการ)'; 
+              }
+          } 
+          else {
+              // Fallback
+              newStatus = 'Ready to Disburse';
+              logActionText = 'อนุมัติแล้ว (รอดำเนินการ)';
+          }
+      } else {
+          // --- กรณีไม่อนุมัติ ---
+          newStatus = 'Rejected';
+          logActionText = 'ไม่อนุมัติ (Rejected)';
+          logNoteText = customNote ? `เหตุผล: ${customNote}` : '';
+      }
+
+      // -- 6. Generate Doc No --
+      if (!req.docNumber && (newStatus === 'Pending PM' || newStatus === 'Approved' || newStatus === 'Pending Check' || newStatus === 'Ready to Disburse')) {
+          const count = getNextDocIndex(requests, req.type, req.purchaseType);
+          req.docNumber = generateDocId(req.type, count, req.purchaseType);
+          if (logNoteText) logNoteText += ' ';
+          logNoteText += `(New Doc No: ${req.docNumber})`;
+      }
+
+      // -- 7. บันทึกข้อมูล --
+      req.status = newStatus;
+      if (!req.history) req.history = [];
+      
+      req.history.push({
+          date: new Date().toLocaleString('th-TH'), 
+          action: logActionText,                    
+          user: userDisplay,                        
+          note: logNoteText                         
+      });
+      
+      saveDataToSheet('Requests', req.id, req);
+      
+      // -- 8. แจ้งเตือน --
+      if (newStatus === 'Pending PM') {
+          try {
+              const pmEmails = findApproverEmails(req.job, 9);
+              if (pmEmails) sendApprovalEmail(req, pmEmails, 'PM');
+          } catch(e) { console.error("Err sending PM email", e); }
+      }
+      
+      try { handleStatusNotification(req); } catch(e){}
+
+      successCount++;
   });
+
+  // -- 9. แสดงผลหน้าเว็บ --
+  const isReject = action.includes('reject');
+  const color = isReject ? 'red' : 'green';
+  const msgTitle = isReject ? 'บันทึกการไม่อนุมัติ' : 'บันทึกการอนุมัติ';
   
-  saveDataToSheet('Requests', req.id, req);
-
-  // --- Trigger Logic ---
+  let summaryMsg = `<p>ทำรายการสำเร็จ: <strong>${successCount}</strong> รายการ</p>`;
+  if (skippedCount > 0) summaryMsg += `<p style="color:gray; font-size: 12px;">(ข้ามไป <strong>${skippedCount}</strong> รายการ เนื่องจากสถานะเปลี่ยนไปแล้ว)</p>`;
+  if (failCount > 0) summaryMsg += `<p style="color:orange; font-size: 12px;">(ทำรายการไม่ได้/ไม่มีสิทธิ์: ${failCount} รายการ)</p>`;
   
-  // 1. ถ้าต้องส่งต่อ Level 2 (Pending PM) ให้ส่งปุ่มอนุมัติ
-  if (newStatus === 'Pending PM') {
-    try {
-      const pmEmails = findApproverEmails(req.job, 9);
-      if (pmEmails) sendApprovalEmail(req, pmEmails, 'PM');
-    } catch (e) {
-      console.error(`[ProcessEmail] Failed to send PM email: ${e.toString()}`);
-    }
-  }
-
-  // 2. ⭐⭐ [เพิ่มใหม่] แจ้งเตือนเจ้าของ (Requester) ว่ามีการทำรายการแล้ว ⭐⭐
-  try {
-      // เรียกฟังก์ชันแจ้งเตือน (ระบบจะกรองเองว่าถ้าเป็น Pending PM จะไม่ส่งซ้ำให้ผู้อนุมัติ แต่จะส่งให้เจ้าของ)
-      handleStatusNotification(req);
-  } catch (e) {
-      console.error(`[ProcessEmail] Failed to notify owner: ${e.toString()}`);
-  }
-
-  // Return HTML Result
-  const color = newStatus === 'Rejected' ? 'red' : 'green';
-  const message = newStatus === 'Rejected' ? 'บันทึกการไม่อนุมัติเรียบร้อย' : 'อนุมัติเรียบร้อย';
-  
-  // แสดงผลชื่อสถานะแบบใหม่ในหน้าเว็บตอบกลับ
-  let displayStatus = newStatus;
-  if (newStatus === 'Pending Head') displayStatus = 'Pending Level 1';
-  if (newStatus === 'Pending PM') displayStatus = 'Pending Level 2';
-
   return HtmlService.createHtmlOutput(`
-    <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-      <h1 style="color: ${color};">${message}</h1>
-      <p>เอกสาร: <strong>${reqId}</strong></p>
-      <p>สถานะปัจจุบัน: <strong>${displayStatus}</strong></p>
-      ${customNote ? `<p>เหตุผล: ${customNote}</p>` : ''}
-      <button onclick="window.close()" style="padding: 10px 20px; margin-top:20px; cursor: pointer;">ปิดหน้านี้</button>
+    <div style="font-family: 'Sarabun', sans-serif; text-align: center; padding: 50px;">
+      <h1 style="color: ${color};">${msgTitle} เสร็จสิ้น</h1>
+      ${summaryMsg}
+      <p style="color:#555;">ระบบได้บันทึกประวัติและลายเซ็นอิเล็กทรอนิกส์เรียบร้อยแล้ว</p>
+      <button onclick="window.close()" style="padding: 10px 25px; margin-top:20px; cursor: pointer; border:none; background:#333; color:white; border-radius:5px;">ปิดหน้านี้</button>
     </div>
   `);
 }
@@ -2349,4 +2398,290 @@ function forceAuth() {
   DriveApp.getRootFolder(); 
   MailApp.getRemainingDailyQuota();
   console.log("Authorization Complete!");
+}
+
+// --- DAILY SUMMARY TRIGGER ---
+
+// ฟังก์ชันสร้าง Trigger (กด Run ครั้งเดียวเพื่อเปิดใช้งาน)
+function setupDailySummaryTrigger() {
+  // ลบ Trigger เดิมกันซ้ำ
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'sendDailyPendingSummary') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  
+  // ตั้งเวลา: ทุกวัน เวลา 08:00 น.
+  ScriptApp.newTrigger('sendDailyPendingSummary')
+      .timeBased()
+      .everyDays(1)
+      .atHour(8)
+      .create();
+  console.log("✅ Daily Summary Trigger setup complete (08:00 AM daily).");
+}
+
+function sendDailyPendingSummary() {
+  console.log("[DailySummary] Starting...");
+  
+  const requests = getSheetData('Requests');
+  const users = getSheetData('Users');
+  
+  // 1. กรองเฉพาะ User ที่ Active และมีสิทธิ์อนุมัติ (Level 1=8, Level 2=9) หรือ Admin(2)
+  const approvers = users.filter(u => 
+    u.status === 'Activated' && u.email && u.email.includes('@') &&
+    (u.isSuperAdmin || (u.permissions && Object.values(u.permissions).some(p => p.includes(2) || p.includes(8) || p.includes(9))))
+  );
+
+  if (approvers.length === 0) return;
+
+  // 2. วนลูปหา User แต่ละคนว่ามีงานค้างอะไรบ้าง
+  approvers.forEach(user => {
+    let pendingList = [];
+
+    // กรอง Request ที่สถานะเป็น Pending Head หรือ Pending PM
+    const activeReqs = requests.filter(r => r.status === 'Pending Head' || r.status === 'Pending PM');
+
+    activeReqs.forEach(req => {
+      // เช็คสิทธิ์ว่า User คนนี้ อนุมัติใบนี้ได้ไหม
+      let canApprove = false;
+      let roleForAction = '';
+
+      // เช็ค Project Permission ของ User นี้
+      const userPerms = user.isSuperAdmin ? [2, 8, 9] : (user.permissions?.[req.job] || []);
+      const isL1 = userPerms.includes(8) || userPerms.includes(2);
+      const isL2 = userPerms.includes(9) || userPerms.includes(2);
+
+      // Logic การอนุมัติ (ล้อตามหน้าเว็บ)
+      if (req.status === 'Pending Head') {
+          // เบิก/ยืม: ได้ทั้ง L1 และ L2
+          if ((req.type === 'Withdraw' || req.type === 'Borrow') && (isL1 || isL2)) {
+              canApprove = true;
+              roleForAction = 'Approver'; // Role กลาง
+          } 
+          // ซื้อ: เฉพาะ L1
+          else if (['Local', 'HO'].includes(req.type) && isL1) {
+              canApprove = true;
+              roleForAction = 'Head';
+          }
+      } 
+      else if (req.status === 'Pending PM') {
+          // Level 2 (PM) เท่านั้น
+          if (isL2) {
+              canApprove = true;
+              roleForAction = 'PM';
+          }
+      }
+
+      if (canApprove) {
+        pendingList.push({ ...req, roleForAction });
+      }
+    });
+
+    // 3. ถ้ามีรายการค้าง ให้ส่งเมล
+    if (pendingList.length > 0) {
+      try {
+        sendSummaryEmailToUser(user, pendingList);
+        console.log(`[DailySummary] Sent to ${user.email} (${pendingList.length} items)`);
+      } catch (e) {
+        console.error(`[DailySummary] Failed to send to ${user.email}: ${e}`);
+      }
+    }
+  });
+  console.log("[DailySummary] Finished.");
+}
+/**
+ * 3. ฟังก์ชันสร้าง HTML อีเมลสรุป (เพิ่มปุ่มลิงก์เข้า Web App)
+ */
+function sendSummaryEmailToUser(user, items) {
+  const scriptUrl = ScriptApp.getService().getUrl();
+  const approverEmail = user.email;
+  
+  // รวบรวม ID ทั้งหมดสำหรับปุ่ม Bulk
+  const allIds = items.map(i => i.id).join(',');
+  
+  const bulkApproveLink = `${scriptUrl}?action=bulk_approve&ids=${allIds}&approver=${approverEmail}&role=Batch`;
+  const bulkRejectLink = `${scriptUrl}?action=bulk_reject&ids=${allIds}&approver=${approverEmail}&role=Batch`;
+
+  let tableRows = '';
+  
+  items.forEach((req, idx) => {
+    // ลิงก์รายตัว
+    const approveLink = `${scriptUrl}?action=approve&id=${req.id}&role=${req.roleForAction}&approver=${approverEmail}`;
+    const rejectLink = `${scriptUrl}?action=reject&id=${req.id}&role=${req.roleForAction}&approver=${approverEmail}`;
+    
+    // --- ส่วนสร้างตารางรายการสินค้า (Inner Table) ---
+    let itemsDetailHtml = `
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; background-color: #ffffff; border: 1px solid #eee; margin-top: 5px;">
+        <tr style="background-color: #f9f9f9; color: #666; border-bottom: 1px solid #eee;">
+          <th style="padding: 4px; text-align: left;">รายการ</th>
+          <th style="padding: 4px; text-align: center; width: 50px;">จำนวน</th>
+          <th style="padding: 4px; text-align: right; width: 70px;">ราคา/หน่วย</th>
+          <th style="padding: 4px; text-align: right; width: 70px;">รวม</th>
+        </tr>
+    `;
+
+    let reqGrandTotal = 0;
+
+    req.items.forEach(item => {
+        const duration = (req.type === 'HO' && req.purchaseType === 'Rent') ? (item.duration || 1) : 1;
+        const lineTotal = (item.qty || 0) * (item.unitPrice || 0) * duration;
+        reqGrandTotal += lineTotal;
+
+        itemsDetailHtml += `
+          <tr style="border-bottom: 1px dashed #eee;">
+            <td style="padding: 4px; color: #333;">
+               ${item.name}
+               ${item.subJob ? `<br/><span style="font-size:10px; color:#1565c0; background:#e3f2fd; padding:1px 3px; border-radius:2px;">Sub: ${item.subJob}</span>` : ''}
+               ${item.matCode ? `<br/><span style="font-size:10px; color:#7b1fa2; background:#f3e5f5; padding:1px 3px; border-radius:2px;">Mat: ${item.matCode}</span>` : ''}
+            </td>
+            <td style="padding: 4px; text-align: center; white-space: nowrap;">${item.qty} ${item.unit}</td>
+            <td style="padding: 4px; text-align: right;">${(item.unitPrice || 0).toLocaleString()}</td>
+            <td style="padding: 4px; text-align: right; font-weight: bold;">${lineTotal.toLocaleString()}</td>
+          </tr>
+        `;
+    });
+    itemsDetailHtml += `</table>`;
+    // ----------------------------------------------------
+
+    const statusLabel = req.status === 'Pending Head' ? 'Level 1' : 'Level 2';
+
+    tableRows += `
+      <tr style="border-bottom: 2px solid #e0e0e0; background-color: #fff;">
+        <td style="padding: 12px; vertical-align: top; width: 15%;">
+            <div style="font-weight:bold; color:#1976d2; font-size:14px;">${req.id}</div>
+            <div style="font-size:11px; color:#666; margin-bottom:4px;">${req.type}</div>
+            <div style="font-size:10px; background:#f5f5f5; padding:2px 6px; border-radius:4px; display:inline-block; border:1px solid #ddd;">${statusLabel}</div>
+        </td>
+        <td style="padding: 12px; vertical-align: top; width: 20%;">
+            <div style="font-weight:bold; font-size:13px;">${req.job}</div>
+            <div style="font-size:12px; color:#444; margin-top:4px;">ผู้ขอ: ${req.requester}</div>
+            <div style="font-size:11px; color:#e65100; margin-top:4px;">Due: ${req.dateRequired}</div>
+        </td>
+        <td style="padding: 12px; vertical-align: top; width: 50%;">
+            ${itemsDetailHtml}
+            <div style="text-align: right; font-size: 13px; font-weight: bold; color: #1565c0; margin-top: 5px;">
+               ยอดรวมสุทธิ: ${reqGrandTotal.toLocaleString()} บาท
+            </div>
+        </td>
+        <td style="padding: 12px; text-align: center; vertical-align: middle; width: 15%;">
+            <a href="${approveLink}" style="display:block; text-decoration:none; background:#2e7d32; color:white; padding:6px 10px; border-radius:4px; font-size:12px; font-weight:bold; margin-bottom:6px;">
+               ✓ อนุมัติ
+            </a>
+            <a href="${rejectLink}" style="display:block; text-decoration:none; background:#c62828; color:white; padding:6px 10px; border-radius:4px; font-size:12px; font-weight:bold;">
+               ✕ ไม่ผ่าน
+            </a>
+        </td>
+      </tr>
+    `;
+  });
+
+  const htmlBody = `
+    <!DOCTYPE html>
+    <html>
+    <body style="font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; padding: 20px;">
+      <div style="max-width: 900px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+        
+        <div style="background-color: #1976d2; padding: 20px; color: white; text-align: center;">
+          <h2 style="margin: 0; font-size: 24px;">สรุปรายการรออนุมัติประจำวัน</h2>
+          <p style="margin: 5px 0 0; opacity: 0.9;">เรียนคุณ ${user.firstName} ${user.lastName}</p>
+        </div>
+        
+        <div style="padding: 20px;">
+          <p>มีรายการรอการตรวจสอบและอนุมัติจากท่าน จำนวน <strong>${items.length}</strong> รายการ ดังนี้:</p>
+          
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 25px;">
+            <thead style="background-color: #eceff1; color: #37474f; font-weight: bold;">
+              <tr>
+                <th style="padding: 10px; text-align: left;">เอกสาร</th>
+                <th style="padding: 10px; text-align: left;">โครงการ/ข้อมูล</th>
+                <th style="padding: 10px; text-align: left;">รายละเอียดสินค้า</th>
+                <th style="padding: 10px; text-align: center;">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+
+          <div style="background-color: #e3f2fd; padding: 20px; border-radius: 8px; text-align: center; border: 1px dashed #90caf9;">
+            <p style="margin: 0 0 15px 0; font-weight: bold; color: #0d47a1; font-size: 16px;">⚡ ดำเนินการทั้งหมด (${items.length} รายการ)</p>
+            
+            <a href="${bulkApproveLink}" style="display:inline-block; text-decoration:none; background:#1565c0; color:white; padding:12px 30px; border-radius:6px; font-weight:bold; margin: 0 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+               ✅ อนุมัติทั้งหมด (Approve All)
+            </a>
+            
+            <a href="${bulkRejectLink}" style="display:inline-block; text-decoration:none; background:#b71c1c; color:white; padding:12px 30px; border-radius:6px; font-weight:bold; margin: 0 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+               ❌ ไม่อนุมัติทั้งหมด (Reject All)
+            </a>
+          </div>
+
+          <div style="text-align: center; margin-top: 25px; border-top: 1px solid #eee; padding-top: 20px;">
+            <p style="font-size: 13px; color: #666; margin-bottom: 10px;">ต้องการตรวจสอบข้อมูลต้นฉบับ ดูไฟล์แนบ หรือดูประวัติ?</p>
+            <a href="${scriptUrl}" target="_blank" style="display:inline-block; text-decoration:none; background:#455a64; color:white; padding:10px 25px; border-radius:50px; font-weight:bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                เข้าสู่ระบบเพื่อดูรายละเอียด (Open Web App)
+            </a>
+          </div>
+          
+          <div style="margin-top: 30px; text-align: center; font-size: 11px; color: #999;">
+             <p>ระบบ PurchaseHub System | อีเมลอัตโนมัติ</p>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  GmailApp.sendEmail(approverEmail, `[PurchaseHub] สรุปงานรออนุมัติ (${items.length} รายการ)`, '', { htmlBody: htmlBody });
+}
+
+function createBulkRejectForm(e) {
+  const ids = e.parameter.ids;
+  const approver = e.parameter.approver;
+  const scriptUrl = ScriptApp.getService().getUrl();
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <base target="_top">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; display: flex; justify-content: center; padding-top: 50px; }
+          .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 90%; max-width: 400px; }
+          h2 { color: #d93025; margin-top: 0; }
+          textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px; margin: 15px 0; font-family: inherit; }
+          button { background-color: #d93025; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px; }
+          button:hover { background-color: #b02015; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>❌ ยืนยันการไม่อนุมัติทั้งหมด</h2>
+          <p>จำนวนเอกสาร: <strong>${ids.split(',').length} รายการ</strong></p>
+          <p>กรุณาระบุเหตุผลรวม (Common Reason):</p>
+          <form id="rejectForm">
+            <textarea id="reason" rows="4" placeholder="ระบุสาเหตุที่ไม่อนุมัติ..." required></textarea>
+            <button type="submit">ยืนยัน (Confirm Reject All)</button>
+          </form>
+          <script>
+            document.getElementById('rejectForm').onsubmit = function(e) {
+              e.preventDefault();
+              var reason = document.getElementById('reason').value;
+              var btn = document.querySelector('button');
+              btn.disabled = true;
+              btn.innerText = 'กำลังบันทึก...';
+              var finalUrl = "${scriptUrl}?action=confirm_bulk_reject" + 
+                             "&ids=${ids}" + 
+                             "&approver=${approver}" + 
+                             "&role=Batch" +
+                             "&note=" + encodeURIComponent(reason);
+              window.top.location.href = finalUrl;
+            };
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
+  return HtmlService.createHtmlOutput(html);
 }
