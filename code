@@ -1,5 +1,4 @@
 
-
 // --- CONFIGURATION ---
 // ⭐ เปลี่ยนมาดึงจาก Script Properties แทนการใส่ URL ตรงๆ
 const SUPABASE_URL = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
