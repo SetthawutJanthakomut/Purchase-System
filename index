@@ -227,7 +227,8 @@ const STATUS_LABELS = {
       'Ready to Disburse': 'รอจ่ายของ (เบิก/ยืม)',
       'Completed': 'ได้รับของแล้ว/จบงาน',
       'Returned': 'คืนของแล้ว (Returned)',
-      'Rejected': 'ไม่อนุมัติ (Rejected)'
+      'Rejected': 'ไม่อนุมัติ (Rejected)',
+      'Cancelled': 'ยกเลิก (Cancelled)'
     };
 
     const STATUS_STEPS_LOCAL = ['Pending Head', 'Pending PM', 'Pending Check', 'Approved', 'Ordered', 'Completed'];
@@ -269,6 +270,7 @@ const StatusBadge = ({ status, type, onClick }) => { // ⭐ รับ onClick �
       else if (status === 'Completed') color = 'bg-green-100 text-green-800 border border-green-200';
       else if (status === 'Returned') color = 'bg-teal-100 text-teal-800 border border-teal-200';
       else if (status === 'Rejected') color = 'bg-red-100 text-red-800 border border-red-200';
+      else if (status === 'Cancelled') color = 'bg-slate-200 text-slate-600 border border-slate-300';
       
       // ⭐ เพิ่ม cursor-pointer และ onClick
       return (
@@ -4141,6 +4143,20 @@ const getSelectionItems = () => {
           showToast('เรียกคืนเอกสารกลับมาเป็นแบบร่างแล้ว');
       };
 
+const handleCancelOrder = (req) => {
+          if (!confirm(`ยืนยันการ "ยกเลิก" เอกสาร ${req.id} หรือไม่?`)) return;
+
+          const reason = prompt("กรุณาระบุหมายเหตุ/สาเหตุการยกเลิก:");
+          if (reason === null) return; // กด Cancel
+          if (!reason.trim()) {
+              showToast("จำเป็นต้องระบุหมายเหตุการยกเลิก", "error");
+              return;
+          }
+
+          const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+          handleUpdateStatus(req.id, 'Cancelled', `ยกเลิกรายการ: ${reason}`);
+      };
+
       const handleRemoveItem = (index) => {
           const newItems = [...orderItems];
           newItems.splice(index, 1);
@@ -7340,6 +7356,31 @@ const PublicAnnouncementPopup = () => (
                                                 </button>
                                             );
                                         }
+                                    }
+                                    return null;
+                                })()}
+
+
+                                {(() => {
+                                    // เงื่อนไขสิทธิ์: เจ้าของ หรือ มีสิทธิ์ 15 (รับของ) หรือ 24 (จ่ายของ)
+                                    const myName = `${user.firstName} ${user.lastName}`;
+                                    const isOwner = req.requester === myName || req.requester === 'Current User';
+                                    const hasRight = isOwner || hasPermission(15) || hasPermission(24);
+                                    
+                                    // เงื่อนไขสถานะ: ไม่ใช่ Draft, Completed, และสถานะจบงานอื่นๆ
+                                    const isActive = !['Draft', 'Completed', 'Cancelled', 'Rejected', 'Returned'].includes(req.status);
+
+                                    if (hasRight && isActive) {
+                                        return (
+                                            <button 
+                                                type="button" 
+                                                onClick={() => handleCancelOrder(req)} 
+                                                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-100 hover:text-red-600 shadow-sm transition-colors"
+                                                title="ยกเลิกรายการนี้"
+                                            >
+                                                <XCircle className="w-3 h-3"/> ยกเลิก
+                                            </button>
+                                        );
                                     }
                                     return null;
                                 })()}
