@@ -189,7 +189,7 @@ const ROLES = {
         'EA', // (Each) หน่วยนับมาตรฐาน
         'ชิ้น', 'อัน', 'ชุด', 
         'เส้น', 'เมตร', 'ม้วน', 
-        'kg', 'ลิตร', 'แกลลอน', 'ถุง', 'ปี๊บ', 'กระป๋อง', 'ขวด', 'หลอด', // ของเหลว/วัสดุ
+        'kg', 'ตัน', 'ลิตร', 'แกลลอน', 'ถุง', 'ปี๊บ', 'กระป๋อง', 'ขวด', 'หลอด', // ของเหลว/วัสดุ
         'ใบ', 'ตัว', 'คู่', 'ข้าง', // เสื้อผ้า/อุปกรณ์เซฟตี้
         'เครื่อง', 'คัน', // เครื่องจักร/ยานพาหนะ
         'เล่ม', 'แผ่น', 'ด้าม', 'ตลับ' // เครื่องเขียน/สำนักงาน
@@ -2432,6 +2432,8 @@ const handleCreateOrder = async (e, isDraft = false) => {
     }
 };
 
+// ค้นหาฟังก์ชัน handleRefresh (ประมาณบรรทัด 3100) แล้วแทนที่ด้วยโค้ดนี้
+
 const handleRefresh = () => {
     setIsLoading(true);
     setIsError(false); // Reset Error
@@ -2444,15 +2446,16 @@ const handleRefresh = () => {
             if(data.projects) setProjects(data.projects);
             if(data.users) setAllUsers(data.users);
             
-            // (Optional: โหลด Logs ใหม่ด้วยก็ได้ถ้าต้องการ)
-            
-            setIsLoading(false);
-            showToast('รีเฟรชข้อมูลล่าสุดเรียบร้อย');
+            // ⭐ [แก้ไข] ดึง Logs กลับมาด้วย (สำคัญ)
+            google.script.run.withSuccessHandler((logs) => {
+                if (logs && logs.length > 0) setInvLogs(logs);
+                setIsLoading(false);
+                showToast('รีเฟรชข้อมูลล่าสุดเรียบร้อย');
+            }).getRecentLogs(200); // ดึง 200 รายการล่าสุด
         })
-        .withFailureHandler((error) => { // ⭐ เพิ่ม Failure Handler
+        .withFailureHandler((error) => {
             setIsLoading(false);
             showToast('รีเฟรชล้มเหลว: ' + error.message, 'error');
-            // ไม่ต้อง setIsError(true) ก็ได้ถ้าอยากให้ user ทำงานต่อในหน้าเดิม
         })
         .loadInitialData();
 };
