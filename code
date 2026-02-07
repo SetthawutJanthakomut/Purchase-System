@@ -995,18 +995,29 @@ function loadInitialData() {
   };
 }
 
-// ⭐ เพิ่มฟังก์ชันใหม่สำหรับโหลด Logs แยกต่างหาก
-// ดึงข้อมูลแค่ 100 รายการล่าสุด (ช่วยลดภาระได้มหาศาล)
-function getRecentLogs(limit = 100) {
-  // order=id.desc คือเรียงจาก id ล่าสุด (ถ้า id คุณรันตามเวลา)
-  // limit=100 คือเอาแค่ 100 รายการ
-  const params = `?select=payload&order=id.desc&limit=${limit}`; 
-  const jsonResponse = callSupabase('logs', 'get', null, params);
-  const data = JSON.parse(jsonResponse);
+// ค้นหาฟังก์ชัน getRecentLogs (ประมาณบรรทัด 2564) แล้วแทนที่ด้วยโค้ดนี้
+
+// ⭐ ปรับปรุง: เพิ่ม limit พื้นฐานเป็น 200 และลองเรียงตาม created_at ถ้าทำได้
+function getRecentLogs(limit = 200) {
+  // ลองเรียงตาม created_at (เวลาที่บันทึกเข้า Database จริง) จะแม่นยำกว่า id ที่เป็น string
+  // แต่ถ้าไม่มี created_at ให้ใช้ id.desc เหมือนเดิม
+  // หมายเหตุ: Supabase ปกติจะมี created_at ให้ถ้าตอนสร้างตารางติ๊กเลือกไว้
   
-  if (Array.isArray(data)) {
-    return data.map(row => row.payload);
-  } else {
+  // ใช้ id.desc ไปก่อนเพื่อความชัวร์ (เพราะ id คุณ gen จาก date string) 
+  // แต่เพิ่ม limit ให้เยอะขึ้นเพื่อโอกาสเจอข้อมูลล่าสุดจริง
+  const params = `?select=payload&order=id.desc&limit=${limit}`;
+  
+  const jsonResponse = callSupabase('logs', 'get', null, params);
+  
+  try {
+    const data = JSON.parse(jsonResponse);
+    if (Array.isArray(data)) {
+      return data.map(row => row.payload);
+    } else {
+      return [];
+    }
+  } catch (e) {
+    console.error("Error parsing logs: " + e.toString());
     return [];
   }
 }
