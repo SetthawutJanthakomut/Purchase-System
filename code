@@ -2738,3 +2738,225 @@ function createBulkRejectForm(e) {
   `;
   return HtmlService.createHtmlOutput(html);
 }
+
+
+/**
+ * ฟังก์ชัน Rollback ระดับ Super Admin (ฉบับแก้ไข: Encode URL Parameter)
+ */
+function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+
+    // 1. โหลดข้อมูล
+    var requests = getSheetData('Requests');
+    var inventory = getSheetData('Inventory');
+    var assets = getSheetData('Assets');
+    
+    // ⭐ [แก้ไขจุดที่ Error] เปลี่ยน ->> เป็น -%3E%3E เพื่อให้ UrlFetchApp ทำงานได้
+    // เดิม: var relatedLogs = getSheetData('Logs', '&payload->>relatedRequestId=eq.' + requestId);
+    var relatedLogs = getSheetData('Logs', '&payload-%3E%3ErelatedRequestId=eq.' + requestId);
+
+    var reqIndex = requests.findIndex(function(r) { return r.id === requestId; });
+    if (reqIndex === -1) throw new Error("ไม่พบเอกสาร ID: " + requestId);
+    var req = requests[reqIndex];
+
+    var logsToSave = [];
+    var inventoryUpdates = new Map(); 
+    var assetsToUpdate = new Map();
+    var assetsToDelete = new Set(); 
+
+    var dateStr = new Date().toLocaleString('th-TH');
+
+    // -------------------------------------------------------------------------
+    // 2. 🔄 PROCESS ROLLBACK BASED ON LOGS
+    // -------------------------------------------------------------------------
+    
+    if (relatedLogs && relatedLogs.length > 0) {
+      relatedLogs.forEach(function(log) {
+        // ข้าม Log ที่ถูก Revert ไปแล้ว
+        if (log.action.includes('(Reverted)')) return;
+
+        // --- A. กรณีรับของเข้า (Stock In) -> ต้องดึงออก ---
+        if (log.action.includes('Stock In') && log.assetId) {
+           var qty = 0;
+           if (log.change.includes('+')) qty = parseInt(log.change.replace('+', ''));
+           else if (log.change.includes('Start:')) qty = parseInt(log.change.split(':')[1]);
+           
+           if (qty > 0) {
+               var inv = inventory.find(function(i) { return i.id === log.assetId; });
+               if (inv) {
+                   var currentInv = inventoryUpdates.get(inv.id) || JSON.parse(JSON.stringify(inv));
+                   currentInv.qty = Math.max(0, currentInv.qty - qty);
+                   currentInv.lastUpdated = dateStr;
+                   inventoryUpdates.set(inv.id, currentInv);
+
+                   logsToSave.push({
+                       date: dateStr, action: 'Rollback (Deduct)', item: inv.name, change: '-' + qty,
+                       note: 'Rollback: ดึงยอดรับของคืน (Ref Log: ' + log.date + ')',
+                       by: adminInfo, relatedRequestId: requestId, assetId: inv.id
+                   });
+               }
+           }
+        }
+
+        // --- B. กรณีลงทะเบียนทรัพย์สิน (Register Asset) -> ต้องลบทิ้ง ---
+        else if ((log.action.includes('Register Asset') || log.action.includes('Add Asset')) && log.assetId) {
+            if (log.relatedRequestId === requestId) {
+                assetsToDelete.add(log.assetId);
+            }
+        }
+
+        // --- C. กรณีเบิกออก (Withdraw) -> ต้องคืนยอดเข้า ---
+        else if (log.action.includes('Withdraw') && log.assetId) {
+            var qty = 0;
+            // เช็คว่าเป็นตัวเลขติดลบหรือไม่ เช่น "-5"
+            if (log.change.includes('-')) qty = Math.abs(parseInt(log.change));
+            
+            if (qty > 0) {
+               var inv = inventory.find(function(i) { return i.id === log.assetId; });
+               if (inv) {
+                   var currentInv = inventoryUpdates.get(inv.id) || JSON.parse(JSON.stringify(inv));
+                   currentInv.qty += qty;
+                   currentInv.lastUpdated = dateStr;
+                   inventoryUpdates.set(inv.id, currentInv);
+
+                   logsToSave.push({
+                       date: dateStr, action: 'Rollback (Return)', item: inv.name, change: '+' + qty,
+                       note: 'Rollback: คืนยอดเบิกกลับคลัง (Ref Log: ' + log.date + ')',
+                       by: adminInfo, relatedRequestId: requestId, assetId: inv.id
+                   });
+               }
+            }
+        }
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. 🧹 FALLBACK CLEANUP (เก็บตก)
+    // -------------------------------------------------------------------------
+    
+    // Fallback: ลบทรัพย์สินที่ยังผูกกับ Request นี้ (เผื่อ Log หาย)
+    if (['Local', 'HO'].includes(req.type)) {
+        var linkedAssets = assets.filter(function(a) { return a.currentRequestId === req.id; });
+        linkedAssets.forEach(function(asset) {
+            if (!assetsToDelete.has(asset.id)) {
+                assetsToDelete.add(asset.id);
+            }
+        });
+    }
+
+    // Fallback: ปลดสถานะการยืม (Borrow)
+    if (req.type === 'Borrow') {
+        var borrowedAssets = assets.filter(function(a) { return a.currentRequestId === req.id && a.status === 'Borrowed'; });
+        borrowedAssets.forEach(function(asset) {
+            if (!assetsToUpdate.has(asset.id)) {
+                var updatedAsset = JSON.parse(JSON.stringify(asset));
+                updatedAsset.status = 'Available';
+                updatedAsset.holder = '-';
+                updatedAsset.currentRequestId = null;
+                updatedAsset.lastUpdated = dateStr;
+                assetsToUpdate.set(asset.id, updatedAsset);
+
+                logsToSave.push({
+                    date: dateStr, action: 'Rollback (Free)', item: asset.name, change: 'Status: Available',
+                    note: 'Rollback: ยกเลิกการยืม',
+                    by: adminInfo, relatedRequestId: requestId, assetId: asset.id
+                });
+            }
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. 💾 SAVE CHANGES
+    // -------------------------------------------------------------------------
+
+    // 4.1 Update Inventory
+    if (inventoryUpdates.size > 0) {
+        var invRecords = [];
+        inventoryUpdates.forEach(function(value) { invRecords.push({ id: value.id, payload: value }); });
+        var urlInv = SUPABASE_URL + '/rest/v1/inventory';
+        var optInv = {
+            method: 'post', headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
+            payload: JSON.stringify(invRecords)
+        };
+        UrlFetchApp.fetch(urlInv, optInv);
+    }
+
+    // 4.2 Update Assets
+    if (assetsToUpdate.size > 0) {
+        var astRecords = [];
+        assetsToUpdate.forEach(function(value) { astRecords.push({ id: value.id, payload: value }); });
+        var urlAst = SUPABASE_URL + '/rest/v1/assets';
+        var optAst = {
+            method: 'post', headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
+            payload: JSON.stringify(astRecords)
+        };
+        UrlFetchApp.fetch(urlAst, optAst);
+    }
+
+    // 4.3 Delete Assets (วนลบทีละรายการเพื่อความชัวร์)
+    if (assetsToDelete.size > 0) {
+        assetsToDelete.forEach(function(assetId) {
+            deleteDataFromSheet('Assets', assetId);
+        });
+        logsToSave.push({
+            date: dateStr, action: 'Rollback (Delete)', item: 'Multiple Assets', change: '-' + assetsToDelete.size + ' Items',
+            note: 'Rollback: ลบทรัพย์สินที่สร้างจากเอกสารนี้',
+            by: adminInfo, relatedRequestId: requestId
+        });
+    }
+
+    // 5. Manage Request History
+    var statusFlow = ['Draft', 'Pending Head', 'Pending PM', 'Pending Check', 'Approved', 'PR Issued', 'PO Issued', 'Ordered', 'Contract Pending', 'Contract Signed', 'Shipping', 'Partially Received', 'Ready to Disburse', 'Completed', 'Received', 'Returned'];
+    var targetIdx = statusFlow.indexOf(targetStatus);
+
+    if (req.history) {
+        req.history.forEach(function(h) {
+            var actionKey = h.action.replace(/ \(.+\)/, '');
+            var hIdx = statusFlow.indexOf(actionKey);
+            var isFutureStatus = (hIdx > targetIdx);
+            var isTransaction = ['Received', 'Completed', 'Partially Received', 'Returned', 'Issued', 'จ่ายของ', 'รับของ'].some(function(k) { return h.action.includes(k); });
+
+            if ((isFutureStatus || isTransaction) && !h.action.includes('(Reverted)')) {
+                h.action = h.action + " (Reverted)"; 
+            }
+        });
+    }
+
+    req.history.push({
+        date: dateStr, action: 'Rollback to ' + targetStatus, user: adminInfo + ' (Super Admin)',
+        note: 'Rollback System: ย้อนสถานะและคืนยอด (อ้างอิง Logs). เหตุผล: ' + reason
+    });
+
+    // 6. Reset Request Data
+    req.status = targetStatus;
+    req.items.forEach(function(item) {
+        item.receivedTotal = 0;
+        item.receivedLog = [];
+    });
+    saveDataToSheet('Requests', req.id, req);
+
+    // 7. Save Logs
+    if (logsToSave.length > 0) {
+        var logRecords = logsToSave.map(function(log) {
+             var logId = log.date + '_' + Math.floor(Math.random() * 10000);
+             return { id: logId, payload: log };
+        });
+        var urlLog = SUPABASE_URL + '/rest/v1/logs';
+        var optLog = {
+            method: 'post', headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
+            payload: JSON.stringify(logRecords)
+        };
+        UrlFetchApp.fetch(urlLog, optLog);
+    }
+
+    return { success: true, message: 'Rollback เสร็จสิ้น! ระบบดึงข้อมูลคืนตามประวัติการทำรายการเรียบร้อยแล้ว', request: req };
+
+  } catch (e) {
+    console.error(e);
+    return { success: false, message: 'Rollback Error: ' + e.toString() };
+  } finally {
+    lock.releaseLock();
+  }
+}
