@@ -391,6 +391,10 @@ const [errorMessage, setErrorMessage] = useState(''); // ⭐ เก็บข้�
 
 const [showAuditModal, setShowAuditModal] = useState(false);
 const [auditItems, setAuditItems] = useState([]); // เก็บรายการที่กำลังนับ
+
+const [showSuperRollbackModal, setShowSuperRollbackModal] = useState(false);
+const [rollbackTarget, setRollbackTarget] = useState('');
+const [rollbackReason, setRollbackReason] = useState('');
   
 
 
@@ -2026,7 +2030,8 @@ const handleRemoveCurrentInvImage = () => {
     }
 };
 
-// --- LOGIC: UPDATE INVENTORY (Fix: Update Log References) ---
+// [ค้นหาฟังก์ชัน handleUpdateInventory เดิม แล้วแทนที่ด้วยโค้ดนี้]
+
 const handleUpdateInventory = async () => {
     if (!editingStockItem) return;
 
@@ -2050,11 +2055,11 @@ const handleUpdateInventory = async () => {
         
         // 2. สร้าง ID เต็ม (Real ID)
         let inputId = editingStockItem.id;
-        if (inputId.includes('|')) inputId = inputId.split('|')[0]; // ตัดส่วนท้ายออกก่อน
+        if (inputId.includes('|')) inputId = inputId.split('|')[0];
         
         let finalId = `${inputId}|${editingStockItem.project}|${currentType}`;
         
-        // 3. เช็ค ID ซ้ำ (ถ้าซ้ำให้รันเลขต่อ)
+        // 3. เช็ค ID ซ้ำ
         if (finalId !== editingStockItem.originalId) { 
              let counter = 1;
              while (inventory.some(i => i.id === finalId && i.id !== editingStockItem.originalId)) {
@@ -2089,48 +2094,63 @@ const handleUpdateInventory = async () => {
             newImages: []
         };
 
-        // ⭐ 6. จัดการกรณีเปลี่ยนรหัส (Change ID Logic) ⭐
+        // ⭐ 6. เปรียบเทียบข้อมูลเพื่อบันทึกประวัติ (Detailed Change Log)
+        const oldItem = inventory.find(i => i.id === editingStockItem.originalId);
+        let changes = [];
+        const val = (v) => (v === null || v === undefined || v === '') ? '-' : v; // Helper
+
+        if (oldItem) {
+            // ประเภท
+            if (val(oldItem.stockType) !== val(updatedItem.stockType)) changes.push(`ประเภท: ${val(oldItem.stockType)} -> ${val(updatedItem.stockType)}`);
+            // รหัสสินค้า
+            if (val(getDisplayId(oldItem.id)) !== val(inputId)) changes.push(`รหัส: ${getDisplayId(oldItem.id)} -> ${inputId}`);
+            // ชื่อสินค้า
+            if (val(oldItem.name) !== val(updatedItem.name)) changes.push(`ชื่อ: ${val(oldItem.name)} -> ${val(updatedItem.name)}`);
+            // คงเหลือ
+            if (oldItem.qty !== updatedItem.qty) changes.push(`Qty: ${oldItem.qty} -> ${updatedItem.qty}`);
+            // หน่วยนับ
+            if (val(oldItem.unit) !== val(updatedItem.unit)) changes.push(`หน่วย: ${val(oldItem.unit)} -> ${val(updatedItem.unit)}`);
+            // Min Stock
+            if (oldItem.minStock !== updatedItem.minStock) changes.push(`Min Stock: ${oldItem.minStock} -> ${updatedItem.minStock}`);
+            // ราคา
+            if (oldItem.price !== updatedItem.price) changes.push(`ราคา: ${oldItem.price} -> ${updatedItem.price}`);
+            // หมายเหตุ
+            if (val(oldItem.note) !== val(updatedItem.note)) changes.push(`Note: ${val(oldItem.note)} -> ${val(updatedItem.note)}`);
+            // รูปภาพ
+            if (newUploadedFiles.length > 0) changes.push(`รูปภาพ: อัปเดตใหม่`);
+        }
+
+        // 7. จัดการกรณีเปลี่ยนรหัส (Change ID Logic)
         if (editingStockItem.originalId !== finalId) {
-             // 6.1 ลบสินค้าตัวเก่าออกจาก Sheet
              await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Inventory', editingStockItem.originalId)); 
              
-             // 6.2 ⭐ สั่ง Backend อัปเดต ID ใน Logs (ต้องมีฟังก์ชันนี้ใน Backend หรือ Loop แก้เอง)
-             // (ในที่นี้เขียนแบบ Loop แก้ที่หน้าบ้าน แล้วส่งไปบันทึกทีละตัว หรือถ้ามีฟังก์ชัน updateLogItemId ใน Backend ให้เรียกใช้แทน)
-             
-             // Option A: เรียก Backend Function (แนะนำวิธีนี้ถ้ามี)
              try {
                  await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(editingStockItem.originalId, finalId));
-             } catch (e) {
-                 console.log("Backend updateLogItemId not found, skipping backend log update.");
-             }
+             } catch (e) { console.log("Backend updateLogItemId error"); }
 
-             // 6.3 ⭐ อัปเดต State Logs หน้าบ้านทันที (เพื่อให้ค้นหาเจอโดยไม่ต้อง Refresh)
              setInvLogs(prevLogs => prevLogs.map(log => {
-                 // ถ้า Log เป็นของรายการเก่า (เช็คจาก assetId หรือ item name+project)
-                 if (log.assetId === editingStockItem.originalId) {
-                     return { ...log, assetId: finalId }; // เปลี่ยนเป็น ID ใหม่
-                 }
+                 if (log.assetId === editingStockItem.originalId) return { ...log, assetId: finalId };
                  return log;
              }));
         }
 
-        // 7. Update Inventory State
+        // 8. Update State & Save
         setInventory(prev => {
             const filtered = prev.filter(i => i.id !== editingStockItem.originalId);
             return [...filtered, updatedItem];
         });
 
-        // 8. Save Inventory
         const { images, newImages, originalId, originalName, originalProject, ...itemForServer } = updatedItem;
         await saveInventoryToSheet(itemForServer);
 
-        // 9. Add Log (Change History)
+        // 9. Add Log
         const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-        const changeNote = editingStockItem.originalId !== finalId 
-            ? `เปลี่ยนรหัส: ${getDisplayId(editingStockItem.originalId)} -> ${getDisplayId(finalId)}` 
-            : `แก้ไขข้อมูล`;
+        
+        // ใช้ข้อมูล Changes ที่เตรียมไว้
+        const changeDetail = changes.length > 0 ? changes.join('\n') : 'แก้ไขข้อมูล (ไม่มีการเปลี่ยนแปลงค่า)';
+        const noteText = `โครงการ: ${updatedItem.project}\n${changeDetail}`;
             
-        addInvLog('Update Stock', updatedItem.name, 'Edit', `โครงการ: ${updatedItem.project} | ${changeNote}`, logAttachments, null, finalId);
+        await addInvLog('Update Stock', updatedItem.name, 'Edit', noteText, logAttachments, null, finalId);
         
         setIsLoading(false);
         setShowEditInvModal(false);
@@ -2143,6 +2163,8 @@ const handleUpdateInventory = async () => {
         showToast("Error: " + error.message, 'error');
     }
 };
+
+
       // 3. จัดการ Checkbox
       const toggleSelectAsset = (id) => {
           setSelectedAssets(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -2432,32 +2454,38 @@ const handleCreateOrder = async (e, isDraft = false) => {
     }
 };
 
-// ค้นหาฟังก์ชัน handleRefresh (ประมาณบรรทัด 3100) แล้วแทนที่ด้วยโค้ดนี้
-
+// --- ฟังก์ชัน Refresh ข้อมูล (อัปเดตใหม่: ดึงประวัติ Logs กลับมาด้วย) ---
 const handleRefresh = () => {
     setIsLoading(true);
-    setIsError(false); // Reset Error
-    
+    setIsError(false); // Reset Error state
+
+    // 1. โหลดข้อมูลหลัก (Requests, Inventory, Assets, Users, Projects)
     google.script.run
         .withSuccessHandler((data) => {
+            // อัปเดตข้อมูลหลัก
             if(data.requests) setRequests(data.requests);
             if(data.inventory) setInventory(data.inventory);
             if(data.assets) setAssets(data.assets);
             if(data.projects) setProjects(data.projects);
             if(data.users) setAllUsers(data.users);
             
-            // ⭐ [แก้ไข] ดึง Logs กลับมาด้วย (สำคัญ)
+            // 2. ⭐⭐ สั่งดึงประวัติ (Logs) ต่อทันที ⭐⭐
             google.script.run.withSuccessHandler((logs) => {
-                if (logs && logs.length > 0) setInvLogs(logs);
-                setIsLoading(false);
-                showToast('รีเฟรชข้อมูลล่าสุดเรียบร้อย');
-            }).getRecentLogs(200); // ดึง 200 รายการล่าสุด
+                if (logs && logs.length > 0) {
+                    setInvLogs(logs); // อัปเดตตัวแปร invLogs ที่ใช้แสดงในหน้าประวัติ
+                }
+                
+                setIsLoading(false); // หยุดหมุน
+                showToast('รีเฟรชข้อมูลและประวัติล่าสุดเรียบร้อย');
+                
+            }).getRecentLogs(200); // ดึง 200 รายการล่าสุด (เพื่อให้หน้าประวัติอัปเดต)
+
         })
         .withFailureHandler((error) => {
             setIsLoading(false);
             showToast('รีเฟรชล้มเหลว: ' + error.message, 'error');
         })
-        .loadInitialData();
+        .loadInitialData(); // เรียกฟังก์ชันหลักที่ Backend
 };
 
 // --- LOGIC: New User Count (นับผู้ใช้ใหม่) ---
@@ -4614,6 +4642,8 @@ const confirmReturnAsset = async () => {
 };
 
 // --- LOGIC: UPDATE ASSET (UPDATED: Change ID & Update Logs) ---
+
+
 const handleUpdateAsset = async (e) => {
     e.preventDefault();
     
@@ -4667,55 +4697,67 @@ const handleUpdateAsset = async (e) => {
             newImages: [] 
         };
         
-        // 4. Compare Changes & Handle ID Change
+        // ⭐ 4. Compare Changes (Detailed Log)
         let changes = [];
-        if (originalAsset) {
-            if (originalAsset.id !== updatedAsset.id) changes.push(`ID: ${originalAsset.id} -> ${updatedAsset.id}`);
-            if (originalAsset.name !== updatedAsset.name) changes.push(`Name: ${originalAsset.name} -> ${updatedAsset.name}`);
-            if (originalAsset.status !== updatedAsset.status) changes.push(`Status: ${originalAsset.status} -> ${updatedAsset.status}`);
-            if (originalAsset.note !== updatedAsset.note) changes.push(`Note Updated`);
-            if (newUploadedFiles.length > 0) changes.push(`Added ${newUploadedFiles.length} photos`);
-        }
-        const changeLog = changes.length > 0 ? changes.join(', ') : 'Update Info';
+        const val = (v) => (v === null || v === undefined || v === '') ? '-' : v;
 
-        // ⭐ ตรวจสอบการเปลี่ยน ID (หัวใจสำคัญ)
+        if (originalAsset) {
+            // รหัสทรัพย์สิน
+            if (val(originalAsset.id) !== val(updatedAsset.id)) changes.push(`ID: ${originalAsset.id} -> ${updatedAsset.id}`);
+            // ชื่อรายการ
+            if (val(originalAsset.name) !== val(updatedAsset.name)) changes.push(`ชื่อ: ${originalAsset.name} -> ${updatedAsset.name}`);
+            // Serial Number
+            if (val(originalAsset.serial) !== val(updatedAsset.serial)) changes.push(`S/N: ${val(originalAsset.serial)} -> ${val(updatedAsset.serial)}`);
+            
+            // ข้อมูลราคา/เช่า
+            if (updatedAsset.ownerType === 'Rent') {
+                if (originalAsset.rentalPrice !== updatedAsset.rentalPrice) changes.push(`ค่าเช่า: ${originalAsset.rentalPrice} -> ${updatedAsset.rentalPrice}`);
+                if (val(originalAsset.rentalUnit) !== val(updatedAsset.rentalUnit)) changes.push(`หน่วยเช่า: ${val(originalAsset.rentalUnit)} -> ${val(updatedAsset.rentalUnit)}`);
+                if (val(originalAsset.rentalStart) !== val(updatedAsset.rentalStart)) changes.push(`เริ่มสัญญา: ${val(originalAsset.rentalStart)} -> ${val(updatedAsset.rentalStart)}`);
+                if (val(originalAsset.rentalEnd) !== val(updatedAsset.rentalEnd)) changes.push(`สิ้นสุดสัญญา: ${val(originalAsset.rentalEnd)} -> ${val(updatedAsset.rentalEnd)}`);
+            } else {
+                if (originalAsset.price !== updatedAsset.price) changes.push(`ราคาซื้อ: ${originalAsset.price} -> ${updatedAsset.price}`);
+            }
+
+            // สถานะ
+            if (val(originalAsset.status) !== val(updatedAsset.status)) changes.push(`สถานะ: ${val(originalAsset.status)} -> ${val(updatedAsset.status)}`);
+            // หมายเหตุ
+            if (val(originalAsset.note) !== val(updatedAsset.note)) changes.push(`Note: ${val(originalAsset.note)} -> ${val(updatedAsset.note)}`);
+            // รูปภาพ
+            if (newUploadedFiles.length > 0) changes.push(`รูปภาพ: อัปเดตใหม่`);
+        }
+   
+        const changeLog = changes.length > 0 ? changes.join('\n') : 'แก้ไขข้อมูล (ไม่มีการเปลี่ยนแปลงค่า)';
+
+        // 5. Handle ID Change
         if (originalAsset && originalAsset.id !== updatedAsset.id) {
-             // 4.1 ลบตัวเก่าออกจาก Sheet
              await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Assets', originalAsset.id)); 
-             
-             // 4.2 ⭐ สั่ง Backend อัปเดต ID ใน Logs (เรียกฟังก์ชันใหม่ที่เพิ่งเพิ่มไปใน code.gs)
              try {
                  await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(originalAsset.id, updatedAsset.id));
-             } catch (e) {
-                 console.log("Backend updateLogItemId error:", e);
-             }
+             } catch (e) { console.log("Backend updateLogItemId error"); }
 
-             // 4.3 ⭐ อัปเดต State Logs หน้าบ้านทันที (เพื่อให้เห็นผลทันทีโดยไม่ต้องรีเฟรช)
              setInvLogs(prevLogs => prevLogs.map(log => {
-                 if (log.assetId === originalAsset.id) {
-                     return { ...log, assetId: updatedAsset.id };
-                 }
+                 if (log.assetId === originalAsset.id) return { ...log, assetId: updatedAsset.id };
                  return log;
              }));
         }
 
-        // 5. Update Asset State & Save
+        // 6. Update Asset State & Save
         setAssets(prev => {
-            // กรองตัวเก่าออก (กรณีเปลี่ยน ID) หรือแทนที่ตัวเดิม
             const filtered = prev.filter(a => a.id !== editingAssetItem.originalId);
             return [...filtered, updatedAsset];
         });
         
         const { images, newImages, originalId, ...assetForServer } = updatedAsset;
-        saveAssetToSheet(assetForServer); // บันทึกตัวใหม่
+        saveAssetToSheet(assetForServer); 
 
-        // 6. Log Action
+        // 7. Log Action
         const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-        addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
+        await addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
         
         setIsLoading(false);
         setShowEditAssetModal(false);
-        setEditingAssetItem(null); // เคลียร์ค่า
+        setEditingAssetItem(null);
         showToast('แก้ไขข้อมูลและอัปเดตประวัติเรียบร้อย');
 
     } catch (error) {
@@ -5102,8 +5144,8 @@ const existingInv = inventory.find(inv => inv.name === item.name && inv.project 
           
           // 2. ถ้ามี: ดึงรหัสเดิมมา, ไม่ติ๊ก Auto
           // 3. ถ้าไม่มี: รหัสว่าง, ติ๊ก Auto ไว้ก่อน
-          const defaultInvId = existingInv ? existingInv.id : '';
-          const defaultAuto = !existingInv;
+          const defaultInvId = existingInv ? getDisplayId(existingInv.id) : '';
+          const defaultAuto = false;
 
 
           return { 
@@ -5130,7 +5172,7 @@ const existingInv = inventory.find(inv => inv.name === item.name && inv.project 
       setShowReceiveGoodsModal(true);
   };
 
-// --- LOGIC: CONFIRM RECEIVE (Auto Gen Support) ---
+// --- LOGIC: CONFIRM RECEIVE (FIXED: qtyToReceive Scope) ---
 const handleConfirmReceive = async () => {
     if (!selectedRequest) return;
 
@@ -5142,11 +5184,17 @@ const handleConfirmReceive = async () => {
         // ⭐ เตรียม List ชั่วคราวสำหรับเช็คเลขรัน (เหมือน Import)
         let currentInvList = [...inventory];
         let runNoCount = inventory.length;
+        
+        // ⭐ ประกาศตัวแปรนับ Asset ไว้ข้างนอก Loop เพื่อให้รันเลขต่อเนื่องกันได้ถูกต้อง
+        let currentAssetCount = assets.length;
 
         for (const item of receiveItems) {
+            // ⭐⭐⭐ [แก้ไขจุดที่เกิด Error] ย้ายมาประกาศตรงนี้เพื่อให้ใช้ได้ทั้ง Inventory และ Asset
+            const qtyToReceive = item.receivedQty;
+
             if (item.targetType === 'Inventory') {
                 
-                // ... (ส่วน Upload Image คงเดิม) ...
+                // --- ส่วน Upload Image (Inventory) ---
                 let logImages = [];
                 if (item.receiveImages && item.receiveImages.length > 0) {
                     const uploadPromises = item.receiveImages.map(imgObj => {
@@ -5158,7 +5206,7 @@ const handleConfirmReceive = async () => {
                     logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
                 }
 
-                const qtyToReceive = item.receivedQty;
+                // const qtyToReceive = item.receivedQty; // ❌ ลบบรรทัดนี้ออก (เพราะประกาศข้างบนแล้ว)
                 const targetType = 'System'; // รับของ = System เสมอ
 
                 // 2. เช็คของเดิม
@@ -5172,7 +5220,7 @@ const handleConfirmReceive = async () => {
                 const mainImageName = logImages.length > 0 ? logImages[0].name : (existing ? existing.image : null);
 
                 if (existing) {
-                    // ✅ MERGE
+                    // ✅ MERGE (อัปเดตของเดิม)
                     const updatedInv = { 
                         ...existing, 
                         id: existing.id, 
@@ -5187,7 +5235,7 @@ const handleConfirmReceive = async () => {
                     await addInvLog('Stock In (Merge)', item.name, `+${qtyToReceive}`, `รับเข้าโครงการ ${project} (System)`, logImages, selectedRequest.id, existing.id);
 
                 } else {
-                    // ✅ NEW ITEM (ต้อง Gen ID)
+                    // ✅ NEW ITEM (สร้างใหม่ ต้อง Gen ID)
                     let baseId = item.inventoryId; // ลองดูว่ามีรหัสกรอกมาไหม
                     
                     if (item.isInvAutoId || !baseId) {
@@ -5222,12 +5270,15 @@ const handleConfirmReceive = async () => {
                 }
             }
              else {
-                // --- กรณี Asset ---
+                // --- กรณี Asset (ทรัพย์สิน) ---
+                // ตอนนี้ qtyToReceive มีค่าแล้ว โค้ดส่วนนี้จะทำงานได้ถูกต้อง
                 const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
+                
                 for (const assetReg of assetsToProcess) {
-                    currentAssetCount++;
+                    currentAssetCount++; // เพิ่มเลขรัน
+                    
                     let assetLogImages = [];
-                    // ... (Image Upload Logic เหมือนเดิม) ...
+                    // ... (Image Upload Logic สำหรับ Asset) ...
                     if (assetReg.images && assetReg.images.length > 0) {
                         const uploadPromises = assetReg.images.map(imgObj => {
                             return new Promise((resolve, reject) => {
@@ -5268,7 +5319,7 @@ const handleConfirmReceive = async () => {
                     addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียนเข้าโครงการ ${project}`, assetLogImages, selectedRequest.id, assetId);
                 }
             }
-        }
+        } 
 
 // Update Request Status (คงเดิม)
         const updatedItems = selectedRequest.items.map(originalItem => {
@@ -5686,6 +5737,46 @@ const handleConfirmDisburse = async () => {
       };
 
       const openPRModal = (id) => { setPrData({ requestId: id, file: null, prNumber: '' }); setShowPRModal(true); };
+
+
+      // --- LOGIC: SUPER ADMIN ROLLBACK ---
+const handleSuperRollbackConfirm = async () => {
+    if (!rollbackTarget) { showToast('กรุณาเลือกสถานะปลายทาง', 'error'); return; }
+    if (!rollbackReason) { showToast('กรุณาระบุเหตุผล', 'error'); return; }
+
+    if (!confirm(`⚠️ ยืนยันการ Rollback?\n\nการกระทำนี้จะ:\n1. ดึงของคืนจากสต็อก/ทรัพย์สิน (ถ้ามีการรับแล้ว)\n2. ลบทรัพย์สินที่สร้างขึ้นใหม่\n3. แก้ไขประวัติเพื่อให้เอกสารย้อนหลังถูกต้อง`)) return;
+
+    setIsLoading(true);
+    const adminInfo = `${user.empId} ${user.firstName} ${user.lastName}`;
+
+    try {
+        const result = await new Promise((resolve, reject) => {
+            google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .processSuperAdminRollback(selectedRequest.id, rollbackTarget, rollbackReason, adminInfo);
+        });
+
+        if (result.success) {
+            showToast(result.message);
+            // อัปเดตข้อมูลหน้าจอ
+            setRequests(prev => prev.map(r => r.id === result.request.id ? result.request : r));
+            setSelectedRequest(result.request);
+            setShowSuperRollbackModal(false);
+            setRollbackReason('');
+            
+            // รีเฟรช Inventory/Assets เพราะมีการคืนของ
+            handleRefresh(); 
+        } else {
+            showToast(result.message, 'error');
+        }
+    } catch (err) {
+        console.error(err);
+        showToast('Error: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
 
 const handleSubmitPR = async () => { 
@@ -9197,6 +9288,25 @@ const PublicAnnouncementPopup = () => (
                      
                     <div className="flex items-center gap-2">
 
+                    {user.isSuperAdmin && (
+    <button 
+        onClick={() => {
+            // กำหนด Default Target ตามประเภท
+            let defaultTarget = 'Approved';
+            if (selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') defaultTarget = 'Approved'; // = Ready to Disburse จริงๆคือ Approved ใน Logic เดิม
+            else if (['Local', 'HO'].includes(selectedRequest.type)) defaultTarget = 'Approved';
+            
+            setRollbackTarget(defaultTarget);
+            setRollbackReason('');
+            setShowSuperRollbackModal(true);
+        }}
+        className="flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 shadow-md transition-colors"
+        title="Admin Rollback (คืนของ/ย้อนสถานะ)"
+    >
+        <RotateCcw className="w-4 h-4"/> Admin Rollback
+    </button>
+)}
+
 {/* --- [START] ส่วนที่เพิ่มใหม่: ปุ่มจัดการ Cost --- */}
                         {/* 1. ปุ่มแก้ไข (แสดงเมื่อมีสิทธิ์ 29 และไม่อยู่ในโหมดแก้ไข) */}
                         {!isCostEditMode && hasPermission(29) && (
@@ -10355,10 +10465,10 @@ const relatedAssets = sourceAssets.filter(a =>
             const existingInv = inventory.find(inv => inv.name === val && inv.project === selectedRequest.job);
             
             if (existingInv) {
-                // ✅ เจอของเดิม: ดึงรหัสมาใส่ + ปลดติ๊ก Auto
-                n[idx].inventoryId = existingInv.id;
-                n[idx].isInvAutoId = false; 
-            } else {
+    // ✅ เจอของเดิม: ดึงรหัสมาใส่ (ตัดส่วนเกิน) + ปลดติ๊ก Auto
+    n[idx].inventoryId = getDisplayId(existingInv.id); // ⭐ แก้ไขตรงนี้
+    n[idx].isInvAutoId = false; 
+} else {
                 // ❌ ไม่เจอ (ของใหม่): เคลียร์รหัส + ติ๊ก Auto (หรือจะปล่อยว่างให้กรอกเองก็ได้)
                 // n[idx].inventoryId = ''; 
                 // n[idx].isInvAutoId = true;
@@ -15272,6 +15382,100 @@ const relatedAssets = sourceAssets.filter(a =>
             </div>
             <div className="p-3 bg-gray-50 text-center border-t">
                 <button onClick={() => setShowActorModal(false)} className="text-xs font-bold text-gray-500 hover:text-gray-800">ปิดหน้าต่าง</button>
+            </div>
+        </div>
+    </div>
+)}
+
+{/* --- SUPER ADMIN ROLLBACK MODAL --- */}
+{showSuperRollbackModal && (
+    <div className="fixed inset-0 bg-gray-900/80 flex items-center justify-center z-[300] p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 border-t-4 border-red-600">
+            <h3 className="font-bold text-lg text-red-700 mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-6 h-6"/> Super Admin Rollback
+            </h3>
+            
+            <div className="bg-red-50 p-3 rounded-lg border border-red-100 text-xs text-red-800 mb-4">
+                <p className="font-bold">ระบบจะทำการ:</p>
+                <ul className="list-disc pl-4 mt-1 space-y-1">
+                    <li>ย้อนสถานะเอกสารไปยังขั้นตอนที่เลือก</li>
+                    <li><b>คืนยอดสต็อก</b> หรือ <b>ลบทรัพย์สิน</b> ที่รับเข้า/จ่ายออกไปแล้ว</li>
+                    <li>บันทึกประวัติการย้อนกลับ (Revert Logs)</li>
+                    <li>แก้ไขลายเซ็นใน PDF ให้ถูกต้อง</li>
+                </ul>
+            </div>
+
+            <div className="space-y-4">
+                <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">ย้อนกลับไปสถานะ (Target Status)</label>
+                    <select 
+                        className="w-full p-2 border border-gray-300 rounded-lg text-sm bg-white"
+                        value={rollbackTarget}
+                        onChange={(e) => setRollbackTarget(e.target.value)}
+                    >
+                        {/* ⭐ แก้ไข: แสดงตัวเลือกตามประเภทเอกสาร เพื่อป้องกันการเลือกสถานะผิด Flow */}
+                        {(() => {
+                            if (selectedRequest.type === 'Withdraw' || selectedRequest.type === 'Borrow') {
+                                return (
+                                    <>
+                                        <option value="">-- เลือกสถานะ --</option>
+                                        <option value="Draft">แบบร่าง (Draft) - เริ่มต้นใหม่</option>
+                                        <option value="Pending Head">รออนุมัติ (Level 1/2) - รอหัวหน้า/PM อนุมัติ</option>
+                                        <option value="Ready to Disburse">รอจ่ายของ (Ready) - อนุมัติแล้ว รอสโตร์จ่าย</option>
+                                        <option value="Completed">จ่ายของแล้ว/จบงาน (Completed)</option>
+                                        {selectedRequest.type === 'Borrow' && <option value="Returned">คืนของแล้ว (Returned)</option>}
+                                    </>
+                                );
+                            } else if (selectedRequest.type === 'Local') {
+                                return (
+                                    <>
+                                        <option value="">-- เลือกสถานะ --</option>
+                                        <option value="Draft">แบบร่าง (Draft)</option>
+                                        <option value="Pending Head">รออนุมัติ Level 1</option>
+                                        <option value="Pending PM">รออนุมัติ Level 2</option>
+                                        <option value="Pending Check">รอตรวจสอบ (Purchasing Check)</option>
+                                        <option value="Approved">อนุมัติแล้ว (รอสั่งซื้อ)</option>
+                                        <option value="Ordered">สั่งซื้อแล้ว (รอรับของ)</option>
+                                        <option value="Completed">รับของแล้ว (Completed)</option>
+                                    </>
+                                );
+                            } else { // HO
+                                return (
+                                    <>
+                                        <option value="">-- เลือกสถานะ --</option>
+                                        <option value="Draft">แบบร่าง (Draft)</option>
+                                        <option value="Pending Check">รอตรวจสอบ (Check)</option>
+                                        <option value="Pending Head">รออนุมัติ Level 1</option>
+                                        <option value="Pending PM">รออนุมัติ Level 2</option>
+                                        <option value="Approved">อนุมัติแล้ว (Approved)</option>
+                                        <option value="PR Issued">ออก PR แล้ว</option>
+                                        <option value="PO Issued">ออก PO แล้ว</option>
+                                        {selectedRequest.purchaseType === 'Rent' && <option value="Contract Pending">รอทำสัญญา</option>}
+                                        {selectedRequest.purchaseType === 'Rent' && <option value="Contract Signed">ทำสัญญาแล้ว</option>}
+                                        <option value="Shipping">ระหว่างจัดส่ง</option>
+                                        <option value="Completed">รับของแล้ว (Completed)</option>
+                                    </>
+                                );
+                            }
+                        })()}
+                    </select>
+                </div>
+                
+                <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">เหตุผลการ Rollback</label>
+                    <textarea 
+                        className="w-full p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500 outline-none"
+                        rows="3"
+                        placeholder="ระบุสาเหตุ..."
+                        value={rollbackReason}
+                        onChange={(e) => setRollbackReason(e.target.value)}
+                    ></textarea>
+                </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+                <button onClick={() => setShowSuperRollbackModal(false)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-600 font-bold hover:bg-gray-50">ยกเลิก</button>
+                <button onClick={handleSuperRollbackConfirm} className="flex-1 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 shadow-md">ยืนยัน Rollback</button>
             </div>
         </div>
     </div>
