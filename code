@@ -2097,6 +2097,8 @@ function updateProjectGlobalData(newProject, oldId, oldName) {
  * ฟังก์ชันอัปเดตสถานะและสร้างเลขที่เอกสารแบบเข้าคิว (Lock)
  * ใช้แทนการ saveRequestToSheet แบบเดิมเมื่อมีการเปลี่ยนสถานะ
  */
+
+// ... existing code ...
 function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
   // 1. เริ่มระบบล็อก (รอคิวได้นานสุด 15 วินาที)
   var lock = LockService.getScriptLock();
@@ -2110,16 +2112,15 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     // 2. ดึงข้อมูลล่าสุดจาก Database
     var requests = getSheetData('Requests');
     var index = requests.findIndex(function(r) { return r.id === id; });
-    
     if (index === -1) return { success: false, message: 'ไม่พบข้อมูลเอกสารนี้ในระบบ' };
     
     var req = requests[index];
-    
-   // 3. อัปเดตข้อมูล (สถานะ)
+
+    // 3. อัปเดตข้อมูล (สถานะ)
     req.status = newStatus;
 
-   // ⭐ [แก้ไข] สร้างตัวแปรเก็บสถานะไว้ก่อน (Flag) ว่าต้องการสร้างเลขใหม่หรือไม่
-    var shouldGenNewDoc = false; 
+    // ⭐ [แก้ไข] สร้างตัวแปรเก็บสถานะไว้ก่อน (Flag) ว่าต้องการสร้างเลขใหม่หรือไม่
+    var shouldGenNewDoc = false;
 
     if (extraUpdates) {
       // ถ้ามีการส่ง docNumber: null มา 
@@ -2148,9 +2149,9 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
         
         var isUseReady = ['Withdraw', 'Borrow'].includes(req.type) && 
             ['Ready to Disburse', 'Completed', 'Returned'].includes(newStatus);
-
+        
         // ⭐ [แก้ไข] ใช้ตัวแปร shouldGenNewDoc ที่เราเก็บไว้ตอนแรก แทนการเช็คจาก extraUpdates ซ้ำ
-        var isForceGen = shouldGenNewDoc; 
+        var isForceGen = shouldGenNewDoc;
 
         if (isBuyReady || isUseReady || isForceGen) {
             // นับเลขล่าสุดจากฐานข้อมูลโดยตรง
@@ -2170,12 +2171,15 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     saveDataToSheet('Requests', req.id, req);
 
     // 7. จัดการส่งอีเมล (แยก Logic มาจาก syncRequest เดิม)
+    /* 🔴 [STOPPED] หยุดการส่งเมลเฉพาะส่วน Update Status ชั่วคราว 
+       (เพื่อให้การกดเปลี่ยนสถานะหน้าเว็บเร็วขึ้น หรือป้องกันเมลรบกวน)
     try {
-        triggerEmails(req);        // ส่งเมลขออนุมัติ (ถ้ามี)
+        triggerEmails(req); // ส่งเมลขออนุมัติ (ถ้ามี)
         handleStatusNotification(req); // ส่งเมลแจ้งเตือนสถานะ
     } catch (err) {
         console.error("Email Error: " + err);
     }
+    */
 
     return { success: true, request: req };
 
@@ -2186,6 +2190,7 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     lock.releaseLock();
   }
 }
+// ... existing code ...
 
 // Helper: ฟังก์ชันส่งเมลขออนุมัติ (แยกออกมาเพื่อให้เรียกใช้ได้สะดวก)
 function triggerEmails(request) {
