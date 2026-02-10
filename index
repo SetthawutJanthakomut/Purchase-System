@@ -5427,6 +5427,7 @@ const handleConfirmReceive = async () => {
       };
 
       // --- LOGIC: OPEN DISBURSE MODAL (UPDATED: SPLIT STOCK) ---
+// --- LOGIC: OPEN DISBURSE MODAL (UPDATED: REJECT & PARTIAL) ---
 const openDisburseModal = (reqId) => {
     const req = requests.find(r => r.id === reqId);
     if (!req) return;
@@ -5437,7 +5438,7 @@ const openDisburseModal = (reqId) => {
         const sysStock = inventory.find(i => 
             i.name === item.name && 
             i.project === req.job && 
-            (i.stockType === 'System' || !i.stockType) // Default System
+            (i.stockType === 'System' || !i.stockType)
         );
         
         // 2. หาสต็อก "นอกระบบ" (NonSystem)
@@ -5450,29 +5451,29 @@ const openDisburseModal = (reqId) => {
         const sysQtyAvailable = sysStock ? sysStock.qty : 0;
         const nonQtyAvailable = nonStock ? nonStock.qty : 0;
 
-        // 3. Logic: Default ให้ตัด "ในระบบ" ก่อน ถ้าไม่พอค่อยไป "นอกระบบ"
+        // 3. Logic: Default ให้ตัด "ในระบบ" ก่อน
         let useSys = 0;
         let useNon = 0;
 
         if (sysQtyAvailable >= item.qty) {
             useSys = item.qty;
         } else {
-            useSys = sysQtyAvailable; // เอาเท่าที่มี
-            // ส่วนที่ขาด ให้ไปลองตัดนอกระบบ (แต่ต้องไม่เกินที่มี)
+            useSys = sysQtyAvailable;
             const needed = item.qty - useSys;
             useNon = Math.min(needed, nonQtyAvailable);
         }
 
         return {
             ...item,
-            // เก็บข้อมูลสต็อกคงเหลือไว้โชว์
             sysStockId: sysStock ? sysStock.id : null,
             nonStockId: nonStock ? nonStock.id : null,
             sysAvailable: sysQtyAvailable,
             nonAvailable: nonQtyAvailable,
-            // ค่าที่จะจ่ายจริง (แก้ไขได้)
             useSys: useSys,
-            useNon: useNon
+            useNon: useNon,
+            // ⭐ ตัวแปรใหม่สำหรับ Checkbox ปฏิเสธ
+            isRejected: false,
+            rejectReason: ''
         };
     });
 
@@ -5480,7 +5481,6 @@ const openDisburseModal = (reqId) => {
     setDisburseData({ requestId: reqId, note: '', images: [] });
     setShowDisburseModal(true);
 };
-
 
 
       
@@ -5507,40 +5507,53 @@ const handleRemoveDisburseImage = (index) => {
     }));
 };
 
-
-// --- LOGIC: CONFIRM DISBURSE (UPDATED: SPLIT DEDUCTION & INDIVIDUAL LOGS) ---
+// --- LOGIC: CONFIRM DISBURSE (UPDATED: SAVE REJECT INFO TO ITEM) ---
 const handleConfirmDisburse = async () => {
     const req = requests.find(r => r.id === disburseData.requestId);
     if (!req) return;
 
-    // --- Validation 1: เช็คยอดรวมเทียบกับ Order (เหมือนเดิม) ---
+    // --- Validation 1: ห้ามจ่ายเกินจำนวนที่ขอ ---
     if (req.type === 'Withdraw') {
-        const mismatchItems = disburseItems.filter(item => (item.useSys + item.useNon) !== item.qty);
-        if (mismatchItems.length > 0) {
-            const msg = mismatchItems.map(i => `- ${i.name}: สั่ง ${i.qty} แต่จ่ายรวม ${i.useSys + i.useNon}`).join('\n');
-            if (!confirm(`⚠️ คำเตือน: จำนวนจ่ายไม่ตรงกับคำขอ\n\n${msg}\n\nยืนยันที่จะบันทึกยอดตามจริงหรือไม่?`)) return;
+        const overQtyItems = disburseItems.filter(item => !item.isRejected && (item.useSys + item.useNon) > item.qty);
+        if (overQtyItems.length > 0) {
+            const msg = overQtyItems.map(i => `- ${i.name}: ขอ ${i.qty} แต่จ่ายรวม ${i.useSys + i.useNon}`).join('\n');
+            alert(`❌ ไม่สามารถบันทึกได้ เนื่องจาก "จ่ายเกิน" จำนวนที่ขอ:\n\n${msg}\n\nกรุณาแก้ไขจำนวนให้ถูกต้อง`);
+            return;
         }
 
-        // ⭐⭐ [เพิ่มใหม่] Validation 2: เช็คยอดเกินสต็อก (Over Stock) ⭐⭐
+        // --- Validation 2: เช็คยอดเกินสต็อก ---
         const overStockItems = [];
         disburseItems.forEach(item => {
-            if (item.useSys > item.sysAvailable) {
-                overStockItems.push(`- ${item.name} (ในระบบ): กรอก ${item.useSys} / มี ${item.sysAvailable}`);
-            }
-            if (item.useNon > item.nonAvailable) {
-                overStockItems.push(`- ${item.name} (นอกระบบ): กรอก ${item.useNon} / มี ${item.nonAvailable}`);
+            if (!item.isRejected) {
+                if (item.useSys > item.sysAvailable) overStockItems.push(`- ${item.name} (ในระบบ): กรอก ${item.useSys} / มี ${item.sysAvailable}`);
+                if (item.useNon > item.nonAvailable) overStockItems.push(`- ${item.name} (นอกระบบ): กรอก ${item.useNon} / มี ${item.nonAvailable}`);
             }
         });
 
         if (overStockItems.length > 0) {
             alert(`❌ ไม่สามารถบันทึกได้ เนื่องจากยอดเกินคลังสินค้า:\n\n${overStockItems.join('\n')}\n\nกรุณาแก้ไขจำนวนให้ถูกต้อง`);
-            return; // หยุดการทำงานทันที
+            return;
+        }
+    }
+
+    // --- Validation 3: ถ้าติ๊ก "ไม่ให้เบิก" ต้องใส่เหตุผล ---
+    const missingReason = disburseItems.filter(item => item.isRejected && !item.rejectReason.trim());
+    if (missingReason.length > 0) {
+        alert(`❌ กรุณาระบุ "เหตุผล" สำหรับรายการที่ติ๊กไม่ให้เบิก/ยืม:\n\n${missingReason.map(i => `- ${i.name}`).join('\n')}`);
+        return;
+    }
+
+    // --- Confirm Dialog ---
+    if (req.type === 'Withdraw') {
+        const shortItems = disburseItems.filter(item => !item.isRejected && (item.useSys + item.useNon) < item.qty);
+        if (shortItems.length > 0) {
+            if (!confirm(`⚠️ มีรายการที่ "จ่ายไม่ครบ" ตามคำขอ (ระบบจะบันทึกยอดจ่ายจริง):\n\nยืนยันที่จะดำเนินการต่อหรือไม่?`)) return;
         }
     }
 
     setIsLoading(true);
     try {
-        // Upload Images (เหมือนเดิม)
+        // Upload Images
         let logImages = [];
         if (disburseData.images && disburseData.images.length > 0) {
             const uploadPromises = disburseData.images.map(imgObj => {
@@ -5552,139 +5565,90 @@ const handleConfirmDisburse = async () => {
             logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
 
-// ============================
-        // 🟢 กรณี 1: Withdraw (ตัดสต็อกแยกประเภท)
-        // ============================
+        let logDetails = [];
+
+        // 1. Process Logic (Withdraw / Borrow)
         if (req.type === 'Withdraw') {
             const currentInv = [...inventory];
-            let logDetails = [];
-
             for (const item of disburseItems) {
+                if (item.isRejected) {
+                    logDetails.push(`❌ ${item.name}: ไม่ให้เบิก [เหตุผล: ${item.rejectReason}]`);
+                    continue;
+                }
                 let itemLogParts = [];
-
-                // A. ตัดสต็อก ในระบบ
+                // ตัดสต็อก (System/NonSystem) ... (Logic ตัดสต็อกคงเดิม)
                 if (item.useSys > 0 && item.sysStockId) {
                     const targetIdx = currentInv.findIndex(i => i.id === item.sysStockId);
                     if (targetIdx !== -1) {
-                        const updated = { 
-                            ...currentInv[targetIdx], 
-                            qty: Math.max(0, currentInv[targetIdx].qty - item.useSys),
-                            lastUpdated: new Date().toLocaleString('th-TH')
-                        };
+                        const updated = { ...currentInv[targetIdx], qty: Math.max(0, currentInv[targetIdx].qty - item.useSys), lastUpdated: new Date().toLocaleString('th-TH') };
                         currentInv[targetIdx] = updated;
-                        // Sync Backend
                         await new Promise(r => google.script.run.withSuccessHandler(r).syncInventory(updated));
-                        
-                        // ⭐ [เพิ่มใหม่] บันทึก Log เข้าประวัติของสินค้าตัวนี้ (ในระบบ)
-                        await addInvLog(
-                            'Withdraw', 
-                            item.name, 
-                            `-${item.useSys}`, 
-                            `จ่ายของ (ในระบบ) อ้างอิง: ${req.docNumber || req.id}`, 
-                            [], 
-                            req.id, 
-                            item.sysStockId // 👈 สำคัญ: ส่ง ID สินค้าไปด้วย เพื่อให้มันไปโผล่ในหน้าประวัติรายตัว
-                        );
-
+                        await addInvLog('Withdraw', item.name, `-${item.useSys}`, `จ่ายของ (ในระบบ) Ref: ${req.docNumber || req.id}`, [], req.id, item.sysStockId);
                         itemLogParts.push(`ในระบบ: ${item.useSys}`);
                     }
                 }
-
-                // B. ตัดสต็อก นอกระบบ
                 if (item.useNon > 0 && item.nonStockId) {
                     const targetIdx = currentInv.findIndex(i => i.id === item.nonStockId);
                     if (targetIdx !== -1) {
-                        const updated = { 
-                            ...currentInv[targetIdx], 
-                            qty: Math.max(0, currentInv[targetIdx].qty - item.useNon),
-                            lastUpdated: new Date().toLocaleString('th-TH')
-                        };
+                        const updated = { ...currentInv[targetIdx], qty: Math.max(0, currentInv[targetIdx].qty - item.useNon), lastUpdated: new Date().toLocaleString('th-TH') };
                         currentInv[targetIdx] = updated;
-                        // Sync Backend
                         await new Promise(r => google.script.run.withSuccessHandler(r).syncInventory(updated));
-
-                        // ⭐ [เพิ่มใหม่] บันทึก Log เข้าประวัติของสินค้าตัวนี้ (นอกระบบ)
-                        await addInvLog(
-                            'Withdraw', 
-                            item.name, 
-                            `-${item.useNon}`, 
-                            `จ่ายของ (นอกระบบ) อ้างอิง: ${req.docNumber || req.id}`, 
-                            [], 
-                            req.id, 
-                            item.nonStockId // 👈 สำคัญ: ส่ง ID สินค้าไปด้วย
-                        );
-
+                        await addInvLog('Withdraw', item.name, `-${item.useNon}`, `จ่ายของ (นอกระบบ) Ref: ${req.docNumber || req.id}`, [], req.id, item.nonStockId);
                         itemLogParts.push(`นอกระบบ: ${item.useNon}`);
                     }
                 }
-
-                // เก็บข้อความสรุปไว้ใช้ตอนท้าย (เหมือนเดิม)
-                if (itemLogParts.length > 0) {
-                    const totalPaid = (item.useSys || 0) + (item.useNon || 0);
-                    const diffMsg = totalPaid !== item.qty ? ` (ไม่ครบ/เกิน: สั่ง ${item.qty})` : '';
-                    logDetails.push(`${item.name} รวม ${totalPaid}${diffMsg} [${itemLogParts.join(', ')}]`);
-                }
+                const totalPaid = (item.useSys || 0) + (item.useNon || 0);
+                logDetails.push(`✅ ${item.name} (ขอ ${item.qty} | จ่าย ${totalPaid}) [${itemLogParts.join(', ')}]`);
             }
-            
             setInventory(currentInv);
-
-            // 3. บันทึก History รวม (อันนี้คืออันที่ User เห็นในหน้า All Logs)
-            const finalNote = `จ่ายของโครงการ ${req.job}:\n` + logDetails.join('\n') + (disburseData.note ? `\nNote: ${disburseData.note}` : '');
-            
-            // ⭐ Log นี้ไม่ต้องใส่ Asset ID เพื่อให้เป็น Log กลางของ Request นี้
+            const finalNote = `ผลการจ่ายของ:\n` + logDetails.join('\n') + (disburseData.note ? `\nNote: ${disburseData.note}` : '');
             await addInvLog('Withdraw', 'Multiple Items', 'Out', finalNote, logImages, req.id);
-        }
-        
-        // ============================
-        // 🔵 กรณี 2: Borrow (เหมือนเดิม)
-        // ============================
-        else if (req.type === 'Borrow') {
-            const targetAssetsMap = new Map();
-            req.items.forEach(item => {
-                if (item.assetId) targetAssetsMap.set(item.assetId, item);
-            });
 
+        } else if (req.type === 'Borrow') {
+            const targetAssetsMap = new Map();
+            req.items.forEach((item, idx) => {
+                const dItem = disburseItems[idx];
+                if (item.assetId && !dItem.isRejected) targetAssetsMap.set(item.assetId, item);
+            });
             const updatedAssets = assets.map(asset => {
-                if (targetAssetsMap.has(asset.id)) {
-                    const item = targetAssetsMap.get(asset.id);
-                    return { 
-                        ...asset, 
-                        status: 'Borrowed', 
-                        holder: req.requester, 
-                        currentRequestId: req.id, 
-                        lastUpdated: new Date().toLocaleString('th-TH'),
-                        image: logImages.length > 0 ? logImages[0].name : asset.image 
-                    };
-                }
+                if (targetAssetsMap.has(asset.id)) return { ...asset, status: 'Borrowed', holder: req.requester, currentRequestId: req.id, lastUpdated: new Date().toLocaleString('th-TH'), image: logImages.length > 0 ? logImages[0].name : asset.image };
                 return asset;
             });
-
-            for (const asset of updatedAssets) {
-                if (targetAssetsMap.has(asset.id)) {
-                    await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(asset));
-                    await addInvLog('Borrow', asset.name, 'Out', `ยืมโดย ${req.requester} (Type: ${asset.ownerType})`, logImages, req.id, asset.id);
+            for (let i = 0; i < disburseItems.length; i++) {
+                const dItem = disburseItems[i];
+                if (dItem.isRejected) logDetails.push(`❌ ${dItem.name}: ไม่ให้ยืม [เหตุผล: ${dItem.rejectReason}]`);
+                else {
+                    const asset = updatedAssets.find(a => a.id === dItem.assetId);
+                    if (asset) {
+                        await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(asset));
+                        await addInvLog('Borrow', asset.name, 'Out', `ยืมโดย ${req.requester}`, logImages, req.id, asset.id);
+                        logDetails.push(`✅ ${dItem.name}: ยืมสำเร็จ`);
+                    }
                 }
             }
             setAssets(updatedAssets);
+            const finalNote = `ผลการยืม:\n` + logDetails.join('\n') + (disburseData.note ? `\nNote: ${disburseData.note}` : '');
+            await addInvLog('Borrow', 'Multiple Items', 'Out', finalNote, logImages, req.id);
         }
 
+        // ⭐ 4. Update Request Status & Save Item Info (Rejected & Qty)
         const updatedItems = req.items.map((item, idx) => {
-            const dItem = disburseItems[idx]; // จับคู่ด้วยลำดับ (Index)
+            const dItem = disburseItems[idx];
             let totalPaid = 0;
+            if (dItem.isRejected) totalPaid = 0;
+            else if (req.type === 'Withdraw') totalPaid = (dItem.useSys || 0) + (dItem.useNon || 0);
+            else totalPaid = item.qty;
 
-            if (req.type === 'Withdraw') {
-                // กรณีเบิก: รวมยอด ในระบบ + นอกระบบ
-                totalPaid = (dItem.useSys || 0) + (dItem.useNon || 0);
-            } else {
-                // กรณียืม: จ่ายเต็มตามจำนวน (เพราะเลือกรายชิ้น)
-                totalPaid = item.qty;
-            }
-
-            return { ...item, receivedTotal: totalPaid }; // บันทึกยอด
+            return { 
+                ...item, 
+                receivedTotal: totalPaid,
+                // ⭐ บันทึกข้อมูล Reject ลงไปใน Item
+                isItemRejected: dItem.isRejected || false,
+                rejectReason: dItem.isRejected ? dItem.rejectReason : null
+            };
         });
 
-        // 4. Update Request Status
-        handleUpdateStatus(req.id, 'Completed', `จ่ายของ/ยืมของเรียบร้อย ${disburseData.note}`, logImages, { items: updatedItems });
+        handleUpdateStatus(req.id, 'Completed', `ปิดงานจ่ายของ/ยืมของ`, logImages, { items: updatedItems });
         
         setShowDisburseModal(false);
         showToast('บันทึกข้อมูลเรียบร้อย');
@@ -5696,6 +5660,7 @@ const handleConfirmDisburse = async () => {
         setIsLoading(false);
     }
 };
+
       const openRejectModal = (reqId) => { setRejectData({ requestId: reqId, reason: '' }); setShowRejectModal(true); };
       const handleConfirmReject = () => { handleUpdateStatus(rejectData.requestId, 'Rejected', `ไม่อนุมัติ: ${rejectData.reason}`); setShowRejectModal(false); showToast('บันทึกการไม่อนุมัติเรียบร้อย'); };
 
@@ -9008,10 +8973,15 @@ const PublicAnnouncementPopup = () => (
                               
                               <div className="flex flex-col gap-2">
                                   {/* ปุ่มเลือกรูป */}
-                                  <label className="cursor-pointer bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200 flex items-center gap-2 transition-colors w-fit">
-                                      <Camera className="w-4 h-4"/> เพิ่มรูปภาพ
-                                      <input type="file" multiple className="hidden" onChange={handleTempItemImageSelect}/>
-                                  </label>
+                                  <label className="cursor-pointer bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-200 flex items-center gap-2 transition-colors">
+            <ImageIcon className="w-4 h-4"/> เลือกจากอัลบั้ม
+            <input type="file" multiple accept="image/*" className="hidden" onChange={handleTempItemImageSelect}/>
+        </label>
+        {/* ปุ่มกล้อง */}
+        <label className="cursor-pointer bg-green-50 text-green-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-100 border border-green-200 flex items-center gap-2 transition-colors">
+            <Camera className="w-4 h-4"/> ถ่ายรูป
+            <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleTempItemImageSelect}/>
+        </label>
 
                                   {/* ตารางแสดงรูป (Preview Grid) */}
                                   {tempItem.images && tempItem.images.length > 0 && (
@@ -10594,10 +10564,17 @@ const relatedAssets = sourceAssets.filter(a =>
                            
                            <div className="flex flex-col gap-2">
                                {/* ปุ่มเลือกรูป */}
-                               <label className="cursor-pointer bg-gray-50 text-gray-600 px-4 py-2 rounded-lg text-xs font-bold hover:bg-gray-100 border border-gray-300 flex items-center gap-2 transition-colors w-fit">
-                                   <Camera className="w-4 h-4"/> เพิ่มรูปภาพ
-                                   <input type="file" multiple className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx)}/>
-                               </label>
+                               <label className="flex-1 cursor-pointer bg-gray-50 text-gray-600 px-2 py-2 rounded-lg text-xs font-bold hover:bg-gray-100 border border-gray-300 flex flex-col items-center justify-center gap-1 transition-colors">
+                   <ImageIcon className="w-4 h-4"/> 
+                   <span>อัลบั้ม</span>
+                   <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx)}/>
+               </label>
+               {/* ปุ่มกล้อง */}
+               <label className="flex-1 cursor-pointer bg-blue-50 text-blue-600 px-2 py-2 rounded-lg text-xs font-bold hover:bg-blue-100 border border-blue-300 flex flex-col items-center justify-center gap-1 transition-colors">
+                   <Camera className="w-4 h-4"/>
+                   <span>ถ่ายรูป</span>
+                   <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx)}/>
+               </label>
                                
                                {/* ตารางแสดงรูป (Preview Grid) */}
                                {item.receiveImages && item.receiveImages.length > 0 && (
@@ -10734,11 +10711,17 @@ const relatedAssets = sourceAssets.filter(a =>
                                           <label className="text-[10px] font-bold text-gray-400 block mb-1">รูปภาพ (Images)</label>
                                           
                                           <div className="flex flex-col gap-2">
+                                              
                                               {/* ปุ่มเลือกรูป */}
-                                              <label className="cursor-pointer bg-white border border-gray-300 text-gray-600 px-3 py-1 rounded text-xs hover:bg-gray-50 flex items-center justify-center gap-1 shadow-sm w-full">
-                                                  <Camera className="w-3 h-3"/> เพิ่มรูป
-                                                  <input type="file" multiple className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx, assetIdx)}/>
-                                              </label>
+                                              <label className="flex-1 cursor-pointer bg-white border border-gray-300 text-gray-600 px-2 py-1.5 rounded text-xs hover:bg-gray-50 flex items-center justify-center gap-1 shadow-sm">
+              <ImageIcon className="w-3 h-3"/> อัลบั้ม
+              <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx, assetIdx)}/>
+          </label>
+          {/* ปุ่มกล้อง */}
+          <label className="flex-1 cursor-pointer bg-indigo-50 border border-indigo-200 text-indigo-600 px-2 py-1.5 rounded text-xs hover:bg-indigo-100 flex items-center justify-center gap-1 shadow-sm">
+              <Camera className="w-3 h-3"/> ถ่ายรูป
+              <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleReceiveImageSelect(e, idx, assetIdx)}/>
+          </label>
 
                                               {/* ตารางแสดงรูป (Preview Grid) */}
                                               {assetReg.images && assetReg.images.length > 0 && (
@@ -10926,14 +10909,23 @@ const relatedAssets = sourceAssets.filter(a =>
                         </div>
                     </div>
 
-                    {/* Image Upload */}
-                    <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1.5">รูปภาพ ({newStockItem.images ? newStockItem.images.length : 0})</label>
-                        <label className="cursor-pointer flex items-center justify-center gap-2 w-full p-3 border border-dashed border-green-300 rounded-xl bg-green-50 text-green-700 text-sm font-bold hover:bg-green-100 transition-colors">
-                            <Camera className="w-4 h-4"/> เลือกรูปสินค้า
-                            <input type="file" multiple className="hidden" onChange={handleStockImageSelect}/>
-                        </label>
-                    </div>
+                   <div>
+    <label className="block text-sm font-bold text-gray-700 mb-1.5">รูปภาพ ({newStockItem.images ? newStockItem.images.length : 0})</label>
+    <div className="flex gap-2">
+        {/* ปุ่มอัลบั้ม */}
+        <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-16 border-2 border-dashed border-green-300 bg-green-50 rounded-xl hover:bg-green-100 transition-colors text-green-700 group">
+            <ImageIcon className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform"/>
+            <span className="text-[10px] font-bold">อัลบั้ม</span>
+            <input type="file" multiple accept="image/*" className="hidden" onChange={handleStockImageSelect}/>
+        </label>
+        {/* ปุ่มกล้อง */}
+        <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-16 border-2 border-dashed border-teal-400 bg-teal-50 rounded-xl hover:bg-teal-100 transition-colors text-teal-700 group">
+            <Camera className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform"/>
+            <span className="text-[10px] font-bold">ถ่ายรูป</span>
+            <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleStockImageSelect}/>
+        </label>
+    </div>
+</div>
 
                     {/* Image Preview Grid */}
                     {newStockItem.images && newStockItem.images.length > 0 && (
@@ -11085,12 +11077,22 @@ const relatedAssets = sourceAssets.filter(a =>
                             </select>
                         </div>
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1.5">รูปภาพ ({newAssetItem.images.length})</label>
-                            <label className="cursor-pointer flex items-center justify-center gap-2 w-full p-2.5 border border-dashed border-indigo-300 rounded-xl bg-indigo-50 text-indigo-600 text-sm font-bold hover:bg-indigo-100 transition-colors">
-                                <Camera className="w-4 h-4"/> เลือกรูป
-                                <input type="file" multiple className="hidden" onChange={(e) => handleAssetImageSelect(e, false)}/>
-                            </label>
-                        </div>
+    <label className="block text-sm font-bold text-gray-700 mb-1.5">รูปภาพ ({newAssetItem.images.length})</label>
+    <div className="flex gap-2">
+        {/* ปุ่มอัลบั้ม */}
+        <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed border-indigo-300 bg-indigo-50 rounded-xl hover:bg-indigo-100 text-indigo-600 transition-colors group">
+            <ImageIcon className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+            <span className="text-[10px] font-bold">อัลบั้ม</span>
+            <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAssetImageSelect(e, false)}/>
+        </label>
+        {/* ปุ่มกล้อง */}
+        <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed border-blue-400 bg-blue-50 rounded-xl hover:bg-blue-100 text-blue-600 transition-colors group">
+            <Camera className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+            <span className="text-[10px] font-bold">ถ่ายรูป</span>
+            <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleAssetImageSelect(e, false)}/>
+        </label>
+    </div>
+</div>
                         
                         
                         {/* ⭐ Show Holder input only when 'Borrowed' */}
@@ -11730,169 +11732,177 @@ const relatedAssets = sourceAssets.filter(a =>
                 
        <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
                     {disburseItems.map((item, idx) => {
-                        const req = requests.find(r => r.id === disburseData.requestId);
-                        
-                        // ⭐ สร้าง Object สำหรับดึงรูป (ถ้ามี Asset ID ให้ใช้เป็น ID หลักเพื่อความแม่นยำ)
-                        const itemForImage = { ...item, id: item.assetId || item.id };
+    const req = requests.find(r => r.id === disburseData.requestId);
+    const itemForImage = { ...item, id: item.assetId || item.id };
 
-                        // ⭐ Component แสดงรูปภาพ (Image Block) - Updated
-                        const ImageBlock = (
-                            <div 
-                                className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 border overflow-hidden relative cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all shadow-sm"
-                                onClick={(e) => {
-                                    // ⭐ แก้ไข: ดึงรูปทั้งหมดมาแสดง
-                                    const images = getItemLatestImages(itemForImage);
-                                    if (images.length > 0) {
-                                        e.stopPropagation();
-                                        setViewingAttachments({ attachments: images });
-                                    }
-                                }}
-                                title="คลิกเพื่อดูรูปภาพขยายทั้งหมด"
-                            >
-                                {(() => {
-                                    // Preview ยังคงใช้รูปแรก
-                                    const img = getItemLatestImage(itemForImage);
-                                    // เช็คจำนวนรูปเพื่อแสดง Badge
-                                    const allImages = getItemLatestImages(itemForImage);
-                                    
-                                    if (img) {
-                                        return (
-                                            <>
-                                                <img 
-                                                    src={getDriveImageUrl(img.url || img.base64)} 
-                                                    alt="preview" 
-                                                    className="w-full h-full object-cover hover:scale-110 transition-transform duration-300" 
-                                                    onError={(e) => e.target.style.display = 'none'}
-                                                />
-                                                {/* แสดงจำนวนรูปถ้ามีมากกว่า 1 */}
-                                                {allImages.length > 1 && (
-                                                    <div className="absolute top-0 left-0 bg-black/60 text-white px-1 text-[9px] rounded-br">
-                                                        +{allImages.length - 1}
-                                                    </div>
-                                                )}
-                                                <div className="absolute bottom-0 right-0 bg-black/50 text-white p-0.5 rounded-tl-md">
-                                                    <ImageIcon className="w-3 h-3"/>
-                                                </div>
-                                            </>
-                                        );
-                                    } else {
-                                        return <span className="text-[10px] text-gray-400 font-bold">ไม่มีภาพ</span>;
-                                    }
-                                })()}
-                            </div>
-                        );
+    // ... (ส่วน ImageBlock คงเดิม) ...
+    const ImageBlock = (
+        <div 
+            className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 border overflow-hidden relative cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all shadow-sm"
+            onClick={(e) => {
+                const images = getItemLatestImages(itemForImage);
+                if (images.length > 0) {
+                    e.stopPropagation();
+                    setViewingAttachments({ attachments: images });
+                }
+            }}
+        >
+            {(() => {
+                const img = getItemLatestImage(itemForImage);
+                const allImages = getItemLatestImages(itemForImage);
+                if (img) {
+                    return (
+                        <>
+                            <img src={getDriveImageUrl(img.url || img.base64)} className="w-full h-full object-cover" onError={(e) => e.target.style.display = 'none'} />
+                            {allImages.length > 1 && <div className="absolute top-0 left-0 bg-black/60 text-white px-1 text-[9px] rounded-br">+{allImages.length - 1}</div>}
+                            <div className="absolute bottom-0 right-0 bg-black/50 text-white p-0.5 rounded-tl-md"><ImageIcon className="w-3 h-3"/></div>
+                        </>
+                    );
+                } else {
+                    return <span className="text-[10px] text-gray-400 font-bold">ไม่มีภาพ</span>;
+                }
+            })()}
+        </div>
+    );
 
-                        // 🟢 กรณี 1: การเบิก (Withdraw) -> ใช้ตารางแยก ในระบบ/นอกระบบ
-                        if (req.type === 'Withdraw') {
-                            const totalInput = (item.useSys || 0) + (item.useNon || 0);
-                            const isMatch = totalInput === item.qty;
-                            return (
-                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex gap-3">
-                                    {/* ⭐ แสดงรูปด้านซ้าย */}
-                                    {ImageBlock}
-
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex justify-between mb-2">
-                                            <div className="flex flex-col">
-    <span className="font-bold text-gray-800">{item.name}</span>
-    
-    {/* ⭐ 2. เพิ่ม: แสดงรหัสวัสดุ (Inventory ID) */}
-    {(() => {
-        // ค้นหารหัสจากคลัง (Inventory) โดยดูจากชื่อและโครงการ
-        const stockItem = inventory.find(i => i.name === item.name && i.project === req.job);
-        // ใช้ getDisplayId เพื่อตัดส่วนเกินออก (เช่น |Project|System)
-        const displayId = stockItem ? getDisplayId(stockItem.id) : null;
+    // 🟢 กรณี 1: Withdraw (เพิ่ม Checkbox & Reject Input)
+    if (req.type === 'Withdraw') {
+        const totalInput = (item.useSys || 0) + (item.useNon || 0);
+        const isMatch = totalInput === item.qty;
         
-        return displayId ? (
-            <span className="text-[10px] text-gray-500 font-mono bg-gray-100 px-1.5 rounded border w-fit mt-0.5">
-                รหัส: {displayId}
-            </span>
-        ) : null;
-    })()}
-</div>
-                                            <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600 whitespace-nowrap ml-2">สั่ง: <b>{item.qty}</b> {item.unit}</span>
-                                        </div>
-                                        <div className="flex gap-3 items-end">
-                                            <div className="flex-1">
-                                                <label className={`text-[10px] font-bold block mb-1 ${item.useSys > item.sysAvailable ? 'text-red-600' : 'text-blue-600'}`}>
-                                                    ในระบบ (มี: {item.sysAvailable})
-                                                </label>
-                                                <input 
-                                                    type="number" 
-                                                    min="0" 
-                                                    max={item.sysAvailable} 
-                                                    className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useSys > item.sysAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`}
-                                                    value={item.useSys.toString()} 
-                                                    onChange={(e) => {
-                                                        let val = parseInt(e.target.value);
-                                                        if (isNaN(val)) val = 0;
-                                                        const newItems = [...disburseItems];
-                                                        newItems[idx].useSys = val;
-                                                        const remainingNeed = item.qty - val;
-                                                        if (remainingNeed >= 0) {
-                                                            newItems[idx].useNon = Math.min(remainingNeed, item.nonAvailable);
-                                                        }
-                                                        setDisburseItems(newItems);
-                                                    }}
-                                                />
-                                            </div>
+        return (
+            <div key={idx} className={`p-3 rounded-lg border shadow-sm flex gap-3 transition-colors ${item.isRejected ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'}`}>
+                {ImageBlock}
 
-                                            <div className="flex-1">
-                                                <label className={`text-[10px] font-bold block mb-1 ${item.useNon > item.nonAvailable ? 'text-red-600' : 'text-orange-600'}`}>
-                                                    นอกระบบ (มี: {item.nonAvailable})
-                                                </label>
-                                                <input 
-                                                    type="number" 
-                                                    min="0" 
-                                                    max={item.nonAvailable}
-                                                    className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useNon > item.nonAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-orange-200 text-gray-800 focus:ring-orange-500'}`}
-                                                    value={item.useNon.toString()}
-                                                    onChange={(e) => {
-                                                        let val = parseInt(e.target.value);
-                                                        if (isNaN(val)) val = 0;
-                                                        const newItems = [...disburseItems];
-                                                        newItems[idx].useNon = val;
-                                                        const remainingNeed = item.qty - val;
-                                                        if (remainingNeed >= 0) {
-                                                            newItems[idx].useSys = Math.min(remainingNeed, item.sysAvailable);
-                                                        }
-                                                        setDisburseItems(newItems);
-                                                    }}
-                                                />
-                                            </div>
-                                        </div>
-                                        <div className={`mt-2 text-xs text-right font-bold ${isMatch ? 'text-green-600' : 'text-red-500'}`}>
-                                            รวมจ่าย: {totalInput} / {item.qty} {!isMatch && '(ยอดไม่ตรง!)'}
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        } 
-                        
-                        // 🔵 กรณี 2: การยืม (Borrow) -> โชว์ข้อมูลทรัพย์สิน (Asset ID / Serial)
-                        else {
-                            return (
-                                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex items-center gap-3">
-                                    {/* ⭐ แสดงรูปด้านซ้าย */}
-                                    {ImageBlock}
+                <div className="flex-1 min-w-0">
+                    <div className="flex justify-between mb-1">
+                        <div className="flex flex-col">
+                            <span className={`font-bold ${item.isRejected ? 'text-red-700 decoration-red-400 line-through' : 'text-gray-800'}`}>{item.name}</span>
+                            {/* Inventory ID Badge */}
+                            {(() => {
+                                const stockItem = inventory.find(i => i.name === item.name && i.project === req.job);
+                                const displayId = stockItem ? getDisplayId(stockItem.id) : null;
+                                return displayId ? <span className="text-[10px] text-gray-500 font-mono bg-gray-100 px-1.5 rounded border w-fit mt-0.5">รหัส: {displayId}</span> : null;
+                            })()}
+                        </div>
+                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600 whitespace-nowrap ml-2 h-fit">ขอ: <b>{item.qty}</b> {item.unit}</span>
+                    </div>
 
-                                    <div className="flex-1 flex justify-between items-center">
-                                        <div>
-                                            <div className="font-bold text-gray-800">{item.name}</div>
-                                            <div className="flex gap-2 mt-1">
-                                                {item.assetId && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-100 font-mono">ID: {item.assetId}</span>}
-                                                {item.serial && <span className="text-[10px] bg-slate-50 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-mono">S/N: {item.serial}</span>}
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <span className="font-bold text-lg text-blue-600">1</span>
-                                            <span className="text-xs text-gray-500 ml-1">{item.unit || 'เครื่อง'}</span>
-                                        </div>
-                                    </div>
+                    {/* ⭐ Checkbox ไม่ให้เบิก */}
+                    <div className="mb-2">
+                        <label className="flex items-center gap-2 cursor-pointer w-fit">
+                            <input 
+                                type="checkbox" 
+                                className="w-4 h-4 rounded text-red-600 focus:ring-red-500"
+                                checked={item.isRejected}
+                                onChange={(e) => {
+                                    const n = [...disburseItems];
+                                    n[idx].isRejected = e.target.checked;
+                                    // ถ้าไม่ให้เบิก ให้เคลียร์ยอดจ่ายเป็น 0
+                                    if(e.target.checked) {
+                                        n[idx].useSys = 0;
+                                        n[idx].useNon = 0;
+                                    }
+                                    setDisburseItems(n);
+                                }}
+                            />
+                            <span className="text-xs font-bold text-red-600">รายการนี้ไม่ถูกต้อง / ไม่ให้เบิก</span>
+                        </label>
+                    </div>
+
+                    {/* ⭐ Input Inputs หรือ Reject Reason */}
+                    {item.isRejected ? (
+                        <div className="animate-in fade-in">
+                            <input 
+                                type="text" 
+                                className="w-full p-2 border border-red-300 rounded text-xs bg-white text-red-700 placeholder-red-300 outline-none focus:ring-2 focus:ring-red-500"
+                                placeholder="ระบุเหตุผลที่ไม่ให้เบิก (จำเป็น)..."
+                                value={item.rejectReason}
+                                onChange={(e) => {
+                                    const n = [...disburseItems];
+                                    n[idx].rejectReason = e.target.value;
+                                    setDisburseItems(n);
+                                }}
+                            />
+                        </div>
+                    ) : (
+                        <>
+                            <div className="flex gap-3 items-end">
+                                <div className="flex-1">
+                                    <label className={`text-[10px] font-bold block mb-1 ${item.useSys > item.sysAvailable ? 'text-red-600' : 'text-blue-600'}`}>ในระบบ (มี: {item.sysAvailable})</label>
+                                    <input type="number" min="0" max={item.sysAvailable} className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useSys > item.sysAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`} value={item.useSys.toString()} onChange={(e) => { let val = parseInt(e.target.value); if (isNaN(val)) val = 0; const newItems = [...disburseItems]; newItems[idx].useSys = val; const remainingNeed = item.qty - val; if (remainingNeed >= 0) { newItems[idx].useNon = Math.min(remainingNeed, item.nonAvailable); } setDisburseItems(newItems); }} />
                                 </div>
-                            );
-                        }
-                    })}
+                                <div className="flex-1">
+                                    <label className={`text-[10px] font-bold block mb-1 ${item.useNon > item.nonAvailable ? 'text-red-600' : 'text-orange-600'}`}>นอกระบบ (มี: {item.nonAvailable})</label>
+                                    <input type="number" min="0" max={item.nonAvailable} className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useNon > item.nonAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-orange-200 text-gray-800 focus:ring-orange-500'}`} value={item.useNon.toString()} onChange={(e) => { let val = parseInt(e.target.value); if (isNaN(val)) val = 0; const newItems = [...disburseItems]; newItems[idx].useNon = val; const remainingNeed = item.qty - val; if (remainingNeed >= 0) { newItems[idx].useSys = Math.min(remainingNeed, item.sysAvailable); } setDisburseItems(newItems); }} />
+                                </div>
+                            </div>
+                            <div className={`mt-2 text-xs text-right font-bold ${isMatch ? 'text-green-600' : 'text-orange-600'}`}>
+                                รวมจ่าย: {totalInput} / {item.qty} {!isMatch && '(จ่ายไม่ครบ/จ่ายบางส่วน)'}
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        );
+    } 
+    
+    // 🔵 กรณี 2: Borrow (เพิ่ม Checkbox & Reject Input)
+    else {
+        return (
+            <div key={idx} className={`p-3 rounded-lg border shadow-sm flex items-center gap-3 transition-colors ${item.isRejected ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'}`}>
+                {ImageBlock}
+
+                <div className="flex-1">
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <div className={`font-bold ${item.isRejected ? 'text-red-700 decoration-red-400 line-through' : 'text-gray-800'}`}>{item.name}</div>
+                            <div className="flex gap-2 mt-1">
+                                {item.assetId && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-100 font-mono">ID: {item.assetId}</span>}
+                                {item.serial && <span className="text-[10px] bg-slate-50 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-mono">S/N: {item.serial}</span>}
+                            </div>
+                        </div>
+                        <div className="text-right">
+                            <span className="font-bold text-lg text-blue-600">1</span>
+                            <span className="text-xs text-gray-500 ml-1">{item.unit || 'เครื่อง'}</span>
+                        </div>
+                    </div>
+
+                    {/* ⭐ Checkbox ไม่ให้ยืม */}
+                    <div className="mt-2 pt-2 border-t border-dashed border-gray-200">
+                        <label className="flex items-center gap-2 cursor-pointer w-fit mb-2">
+                            <input 
+                                type="checkbox" 
+                                className="w-4 h-4 rounded text-red-600 focus:ring-red-500"
+                                checked={item.isRejected}
+                                onChange={(e) => {
+                                    const n = [...disburseItems];
+                                    n[idx].isRejected = e.target.checked;
+                                    setDisburseItems(n);
+                                }}
+                            />
+                            <span className="text-xs font-bold text-red-600">รายการไม่ถูกต้อง / ไม่ให้ยืม</span>
+                        </label>
+
+                        {item.isRejected && (
+                            <input 
+                                type="text" 
+                                className="w-full p-1.5 border border-red-300 rounded text-xs bg-white text-red-700 placeholder-red-300 outline-none focus:ring-2 focus:ring-red-500 animate-in fade-in"
+                                placeholder="ระบุเหตุผล (จำเป็น)..."
+                                value={item.rejectReason}
+                                onChange={(e) => {
+                                    const n = [...disburseItems];
+                                    n[idx].rejectReason = e.target.value;
+                                    setDisburseItems(n);
+                                }}
+                            />
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+})}
                 </div>
 
             </div>
@@ -11927,11 +11937,25 @@ const relatedAssets = sourceAssets.filter(a =>
                             </div>
                         ))}
                         
-                        {/* Upload Button */}
-                        <label className="cursor-pointer flex flex-col items-center justify-center w-full h-16 border-2 border-dashed border-teal-300 bg-teal-50 rounded-lg hover:bg-teal-100 transition-colors text-teal-600">
-                            <Camera className="w-5 h-5"/>
-                            <input type="file" multiple className="hidden" onChange={handleDisburseImageSelect}/>
-                        </label>
+                        {/* Upload Buttons (Album & Camera) */}
+<div className="flex gap-3">
+    {/* 1. ปุ่มเลือกจากอัลบั้ม (สีฟ้า) */}
+    <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-20 border-2 border-dashed border-blue-300 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors text-blue-600 group">
+        <ImageIcon className="w-6 h-6 mb-1 group-hover:scale-110 transition-transform"/>
+        <span className="text-xs font-bold">เลือกจากอัลบั้ม</span>
+        {/* accept="image/*" ปกติจะเปิด Gallery หรือถาม */}
+        <input type="file" multiple accept="image/*" className="hidden" onChange={handleDisburseImageSelect}/>
+    </label>
+
+    {/* 2. ปุ่มถ่ายรูป (สีเขียว - บังคับเปิดกล้อง) */}
+    <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-20 border-2 border-dashed border-teal-300 bg-teal-50 rounded-xl hover:bg-teal-100 transition-colors text-teal-600 group">
+        <Camera className="w-6 h-6 mb-1 group-hover:scale-110 transition-transform"/>
+        <span className="text-xs font-bold">ถ่ายรูปทันที</span>
+        {/* capture="environment" คือคำสั่งบังคับเปิดกล้องหลัง */}
+        <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleDisburseImageSelect}/>
+    </label>
+</div>
+
                     </div>
                 </div>
             </div>
@@ -11995,10 +12019,10 @@ const relatedAssets = sourceAssets.filter(a =>
     
     {/* ส่วนอัปโหลดรูปใหม่ (เหลือแค่นี้) */}
     <div>
-         <label className="text-xs font-bold text-gray-500 mb-1 block">อัปเดตรูปภาพ (แทนที่รูปเดิม)</label>
-         <label className="cursor-pointer flex items-center justify-center gap-2 w-full p-2.5 border border-dashed rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-bold text-sm">
-             <Camera className="w-4 h-4"/> เลือกไฟล์ใหม่
-             <input type="file" multiple className="hidden" onChange={(e) => {
+         <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-bold text-sm group">
+             <ImageIcon className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+             <span className="text-[10px]">อัลบั้ม</span>
+             <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => {
                  if(e.target.files) {
                      const files = Array.from(e.target.files);
                      const promises = files.map(file => new Promise(resolve => { const r = new FileReader(); r.onload = (x) => resolve({ base64: x.target.result, file, name: file.name }); r.readAsDataURL(file); }));
@@ -12006,7 +12030,18 @@ const relatedAssets = sourceAssets.filter(a =>
                  }
              }}/>
          </label>
-         
+         {/* ปุ่มกล้อง */}
+         <label className="flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl bg-teal-50 text-teal-600 hover:bg-teal-100 transition-colors font-bold text-sm group">
+             <Camera className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+             <span className="text-[10px]">ถ่ายรูป</span>
+             <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => {
+                 if(e.target.files) {
+                     const files = Array.from(e.target.files);
+                     const promises = files.map(file => new Promise(resolve => { const r = new FileReader(); r.onload = (x) => resolve({ base64: x.target.result, file, name: file.name }); r.readAsDataURL(file); }));
+                     Promise.all(promises).then(imgs => setEditingStockItem(prev => ({...prev, newImages: [...(prev.newImages || []), ...imgs]})));
+                 }
+             }}/>
+         </label>
          {/* Preview New Images */}
          {editingStockItem.newImages && editingStockItem.newImages.length > 0 && (
              <div className="grid grid-cols-4 gap-2 mt-2">
@@ -12134,16 +12169,27 @@ const relatedAssets = sourceAssets.filter(a =>
                            </div>
                            
                            {/* Image Upload */}
-                           <div>
-                               <label className="text-xs font-bold text-gray-500 mb-1 block">
-                                   อัปเดตรูปภาพ 
-                                   {editingAssetItem.status === 'Damaged' && <span className="text-red-500 ml-1">*จำเป็น</span>}
-                               </label>
-                               <label className={`cursor-pointer flex items-center justify-center gap-2 w-full p-2.5 border border-dashed rounded-xl text-sm font-bold transition-colors ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-400 bg-red-50 text-red-600' : 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'}`}>
-                                   <Camera className="w-4 h-4"/> เลือกไฟล์
-                                   <input type="file" multiple className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
-                               </label>
-                           </div>
+                        {/* Image Upload - Edit Asset */}
+<div>
+   <label className="text-xs font-bold text-gray-500 mb-1 block">
+       อัปเดตรูปภาพ 
+       {editingAssetItem.status === 'Damaged' && <span className="text-red-500 ml-1">*จำเป็น</span>}
+   </label>
+   <div className="flex gap-2">
+       {/* ปุ่มอัลบั้ม */}
+       <label className={`flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl text-sm font-bold transition-colors group ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-300 bg-red-50 text-red-600' : 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'}`}>
+           <ImageIcon className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+           <span className="text-[10px]">อัลบั้ม</span>
+           <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
+       </label>
+       {/* ปุ่มกล้อง */}
+       <label className={`flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl text-sm font-bold transition-colors group ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-400 bg-red-100 text-red-700' : 'border-indigo-300 bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
+           <Camera className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+           <span className="text-[10px]">ถ่ายรูป</span>
+           <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
+       </label>
+   </div>
+</div>
                        </div>
                        
                        {/* ⭐ Note Field */}
@@ -12665,24 +12711,39 @@ const relatedAssets = sourceAssets.filter(a =>
                                       </tr>
                                   </thead>
                                   <tbody>
-                                      {selectedRequest.items.map((item, idx) => (
-                                          <tr key={idx} className="text-base">
-                                              <td className="border border-black py-4 text-center align-top font-bold">
-                                                  {item.qty} {item.unit}
-                                              </td>
-                                              <td className="border border-black py-4 px-4 align-top">
-                                                  <div className="font-bold text-lg">{item.name}</div>
-                                                  <div className="text-sm mt-1 text-gray-600">
-                                                      {item.serial && <span>S/N: {item.serial} </span>}
-                                                      {item.assetId && <span>ID: {item.assetId}</span>}
-                                                  </div>
-                                                  {item.note && <div className="text-sm text-gray-500 italic mt-1">Note: {item.note}</div>}
-                                              </td>
-                                              <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
-                                              <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
-                                          </tr>
-                                      ))}
-                                  </tbody>
+    {selectedRequest.items.map((item, idx) => {
+        // ⭐ ตรวจสอบสถานะ Reject
+        const isRejected = item.isItemRejected;
+        
+        return (
+            <tr key={idx} className="text-base">
+                <td className={`border border-black py-4 text-center align-top font-bold ${isRejected ? 'line-through text-gray-400' : ''}`}>
+                    {item.qty} {item.unit}
+                </td>
+                <td className="border border-black py-4 px-4 align-top">
+                    <div className={`font-bold text-lg ${isRejected ? 'line-through text-red-800' : ''}`}>
+                        {item.name}
+                    </div>
+                    
+                    {/* ⭐ แสดงเหตุผลถ้าไม่ให้ยืม */}
+                    {isRejected && (
+                        <div className="text-red-600 font-bold mt-1 text-sm bg-red-50 px-2 py-1 rounded border border-red-200 inline-block">
+                            ** ไม่อนุมัติให้ยืม: {item.rejectReason}
+                        </div>
+                    )}
+
+                    <div className="text-sm mt-1 text-gray-600">
+                        {item.serial && !isRejected && <span>S/N: {item.serial} </span>}
+                        {item.assetId && !isRejected && <span>ID: {item.assetId}</span>}
+                    </div>
+                    {item.note && <div className="text-sm text-gray-500 italic mt-1">Note: {item.note}</div>}
+                </td>
+                <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
+                <td className="border border-black py-4 text-right px-2 align-top text-gray-400">-</td>
+            </tr>
+        );
+    })}
+</tbody>
                               </table>
 
                               {/* Signatures */}
@@ -12924,63 +12985,82 @@ const relatedAssets = sourceAssets.filter(a =>
                     </tr>
                 </thead>
                
-                <tbody className="divide-y">
-                    {selectedRequest.items.map((item, i) => {
-                        const displayQty = isJobClosed ? (item.receivedTotal || 0) : item.qty;
-                        const received = item.receivedTotal || 0;
-                        const remaining = Math.max(0, item.qty - received);
+            <tbody className="divide-y">
+    {selectedRequest.items.map((item, i) => {
+        // คำนวณตัวเลข
+        const isClosed = ['Completed', 'Returned', 'Rejected'].includes(selectedRequest.status);
+        const requested = item.qty;
+        // ถ้างานจบแล้ว ให้ใช้ยอดที่รับจริง (หรือ 0 ถ้าถูก reject)
+        const paid = isClosed ? (item.receivedTotal || 0) : null;
+        
+        const isRejected = item.isItemRejected;
+        const isPartial = paid !== null && paid < requested && !isRejected;
 
-                        return (
-                            <tr key={i}>
-                                <td className="text-center font-bold border border-black p-2">{i + 1}</td>
-                                <td className="border border-black p-2">
-                                    {(() => {
-                                        const stockItem = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
-                                        const assetItem = !stockItem ? assets.find(a => a.name === item.name && a.project === selectedRequest.job) : null;
-                                        const showId = stockItem ? getDisplayId(stockItem.id) : (assetItem ? assetItem.id : null);
+        return (
+            <tr key={i}>
+                <td className="text-center font-bold border border-black p-2">{i + 1}</td>
+                <td className="border border-black p-2">
+                    {/* รหัสสินค้า (ถ้ามี) */}
+                    {(() => {
+                        const stockItem = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
+                        const displayId = stockItem ? getDisplayId(stockItem.id) : null;
+                        return displayId ? <div className="text-[10px] font-mono font-bold text-slate-600 mb-1 bg-slate-100 px-1 rounded w-fit border border-slate-300">รหัส: {displayId}</div> : null;
+                    })()}
 
-                                        return showId ? (
-                                            <div className="text-[10px] font-mono font-bold text-slate-600 mb-1 bg-slate-100 px-1 rounded w-fit border border-slate-300">
-                                                รหัส: {showId}
-                                            </div>
-                                        ) : null;
-                                    })()}
+                    {/* ชื่อรายการ (ขีดฆ่าถ้า Reject) */}
+                    <div className={`font-bold text-black text-sm ${isRejected ? 'line-through text-red-800' : ''}`}>
+                        {item.name}
+                    </div>
+                    
+                    {/* ⭐ กรณีถูกปฏิเสธ: แสดงเหตุผล */}
+                    {isRejected && (
+                        <div className="mt-1 text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded w-fit">
+                            *** ไม่ให้เบิก: {item.rejectReason}
+                        </div>
+                    )}
 
-                                    <div className="font-bold text-black text-sm">{item.name}</div>
-                                    <div className="mt-1 pl-2 text-xs text-gray-700">
-                                        จำนวน: <span className="font-bold text-base">{displayQty}</span> {item.unit}
-                                    </div>
-                                </td>
-                                <td className="text-center align-middle border border-black p-2">
-                                    {item.subJob || item.matCode ? (
-                                        <div className="flex flex-col gap-1 text-xs font-bold">
-                                            {item.subJob && <span>Sub: {item.subJob}</span>}
-                                            {item.matCode && <span>Mat.: {item.matCode}</span>}
-                                        </div>
-                                    ) : '-'}
-                                </td>
-                                <td className="text-left align-top border border-black p-2">
-                                    <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
-                                        {formatDateTh(selectedRequest.dateRequired)}
-                                    </div>
-                                    {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
-                                    
-                                    {isPartial && !isJobClosed && (
-                                        received > 0 ? (
-                                            <div className="mt-2 text-[10px] bg-yellow-50 p-1 border border-yellow-200 rounded text-yellow-800 font-bold">
-                                                * รับแล้ว: {received} / ค้าง: {remaining}
-                                            </div>
-                                        ) : (
-                                            <div className="mt-2 text-[10px] bg-red-50 p-1 border border-red-200 rounded text-red-700 font-bold">
-                                                * ยังไม่ได้รับ
-                                            </div>
-                                        )
-                                    )}
-                                </td>
-                            </tr>
-                        );
-                    })}
-                </tbody>
+                    {/* ⭐ แสดงยอด: ขอ vs จ่าย */}
+                    <div className="mt-2 text-xs grid grid-cols-2 gap-4 w-fit">
+                        <div>
+                            <span className="text-gray-500">จำนวนขอ:</span> <span className="font-bold text-base">{requested}</span> {item.unit}
+                        </div>
+                        
+                        {/* แสดงยอดจ่ายเฉพาะเมื่อจบงานแล้ว */}
+                        {isClosed && !isRejected && (
+                            <div>
+                                <span className="text-gray-500">จ่ายจริง:</span> 
+                                <span className={`font-bold text-base ml-1 ${isPartial ? 'text-red-600' : 'text-green-700'}`}>
+                                    {paid}
+                                </span> {item.unit}
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* ⭐ กรณีจ่ายไม่ครบ (Partial) */}
+                    {isPartial && (
+                        <div className="mt-1 text-[10px] text-orange-600 font-bold italic">
+                            * จ่ายไม่ครบตามจำนวนขอ (Stock ไม่พอ/ปรับลด)
+                        </div>
+                    )}
+                </td>
+                <td className="text-center align-middle border border-black p-2">
+                    {item.subJob || item.matCode ? (
+                        <div className="flex flex-col gap-1 text-xs font-bold">
+                            {item.subJob && <span>Sub: {item.subJob}</span>}
+                            {item.matCode && <span>Mat.: {item.matCode}</span>}
+                        </div>
+                    ) : '-'}
+                </td>
+                <td className="text-left align-top border border-black p-2">
+                    <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
+                        {formatDateTh(selectedRequest.dateRequired)}
+                    </div>
+                    {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
+                </td>
+            </tr>
+        );
+    })}
+</tbody>
             </table>
 {/* --- SIGNATURES SECTION (REARRANGED - RAW JSX) --- */}
             <div className="mt-8 signature-section break-inside-avoid">
