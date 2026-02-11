@@ -187,7 +187,7 @@ const ROLES = {
 
     const ITEM_UNITS = [
         'EA', // (Each) หน่วยนับมาตรฐาน
-        'ชิ้น', 'อัน', 'ชุด', 
+        'ชิ้น', 'อัน', 'ชุด', 'แพ็ค' , 'กล่อง' ,
         'เส้น', 'เมตร', 'ม้วน', 
         'kg', 'ตัน', 'ลิตร', 'แกลลอน', 'ถุง', 'ปี๊บ', 'กระป๋อง', 'ขวด', 'หลอด', // ของเหลว/วัสดุ
         'ใบ', 'ตัว', 'คู่', 'ข้าง', // เสื้อผ้า/อุปกรณ์เซฟตี้
@@ -1685,7 +1685,8 @@ const handleInvFileImport = (e) => {
     
     reader.onload = (event) => {
         const text = event.target.result;
-        const rows = text.split('\n').map(row => row.split(','));
+        // ✅ แบบใหม่: ใช้ parseCSVLine เพื่อตัด " ออกให้อัตโนมัติ
+        const rows = text.split(/\r?\n/).map(row => parseCSVLine(row));
         
         // Helper: แปลงประเภท (รองรับภาษาไทย)
         const getStockType = (val) => {
@@ -1716,6 +1717,36 @@ const handleInvFileImport = (e) => {
     
     reader.readAsText(file);
 };
+
+
+// --- Helper: ฟังก์ชันแปลง CSV แบบรองรับ Quote (") ---
+    const parseCSVLine = (text) => {
+        const result = [];
+        let current = '';
+        let inQuote = false;
+        
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+            
+            if (char === '"') {
+                // ถ้าเจอ "" ติดกัน ให้ถือว่าเป็นเครื่องหมายฟันหนู 1 ตัว (Escape)
+                if (inQuote && text[i + 1] === '"') {
+                    current += '"';
+                    i++; 
+                } else {
+                    inQuote = !inQuote; // เปิด/ปิด สถานะ Quote
+                }
+            } else if (char === ',' && !inQuote) {
+                // ถ้าเจอ , และไม่ได้อยู่ใน Quote ให้ตัดคำ
+                result.push(current);
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+        result.push(current);
+        return result;
+    };
 
 // --- LOGIC: CONFIRM IMPORT INVENTORY (BATCH + CHUNKING VERSION) ---
 const confirmImportInventory = async () => {
@@ -3122,7 +3153,8 @@ const handleFileImport = (e) => {
     
     reader.onload = (event) => {
         const text = event.target.result;
-        const rows = text.split('\n').map(row => row.split(','));
+        // ✅ แบบใหม่
+        const rows = text.split(/\r?\n/).map(row => parseCSVLine(row));
         
         // --- Helper Functions ---
         // 1. แปลงประเภท (Type)
@@ -3320,6 +3352,174 @@ const confirmImportAssets = async () => {
         showToast("เกิดข้อผิดพลาดในการบันทึก: " + error.message, 'error');
         // หมายเหตุ: กรณี Error กลางคัน รายการก่อนหน้านี้อาจถูกบันทึกไปแล้ว (Partial Success)
     }
+};
+
+
+// --- LOGIC: EXPORT INVENTORY CSV (UPDATED) ---
+const handleExportInventory = () => {
+    let dataToExport = [];
+
+    // 1. ถ้าเลือก Tab "Summary" ให้ดึงข้อมูลดิบมาเรียงใหม่ (ในระบบ -> นอกระบบ)
+    if (invTabMode === 'Summary') {
+        // กรองข้อมูลดิบ (Raw Data) ตามเงื่อนไขการค้นหาปัจจุบัน
+        let baseData = [...inventory];
+
+        // กรอง Global Project
+        if (globalProjectFilter !== 'All') {
+            baseData = baseData.filter(i => i.project === globalProjectFilter);
+        }
+        // กรอง Search
+        if (invSearch) {
+            const lower = invSearch.toLowerCase();
+            baseData = baseData.filter(i => 
+                i.name.toLowerCase().includes(lower) || 
+                i.id.toLowerCase().includes(lower) ||
+                (i.project && i.project.toLowerCase().includes(lower))
+            );
+        }
+        // กรอง Inventory Project Filter (ถ้ามี)
+        if (inventoryProjectFilter !== 'All') {
+            baseData = baseData.filter(i => i.project === inventoryProjectFilter);
+        }
+
+        // แยกประเภท และ เรียงต่อกัน (System -> NonSystem)
+        const systemItems = baseData.filter(i => (i.stockType || 'System') === 'System');
+        const nonSystemItems = baseData.filter(i => i.stockType === 'NonSystem');
+        
+        dataToExport = [...systemItems, ...nonSystemItems];
+
+    } else {
+        // 2. ถ้าเลือก Tab อื่น (System/NonSystem) ให้ใช้ข้อมูลที่กรองมาแล้วได้เลย
+        dataToExport = filteredInventory;
+    }
+
+    if (dataToExport.length === 0) {
+        showToast('ไม่พบข้อมูลสำหรับ Export', 'error');
+        return;
+    }
+
+    // --- สร้าง CSV ---
+    const headers = ["รหัสวัสดุ,ชื่อสินค้า,ประเภท,จำนวน,หน่วย,ขั้นต่ำ,ราคา,หมายเหตุ,โครงการ"];
+
+    const rows = dataToExport.map(item => {
+        const type = item.stockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ';
+        const cleanId = getDisplayId(item.id); 
+        
+        const safe = (str) => `"${(str || '').toString().replace(/"/g, '""')}"`;
+
+        return [
+            safe(cleanId),
+            safe(item.name),
+            safe(type),
+            item.qty,
+            safe(item.unit),
+            item.minStock || 0,
+            item.price || 0,
+            safe(item.note),
+            safe(item.project)
+        ].join(',');
+    });
+
+    const csvContent = "\uFEFF" + headers.concat(rows).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    const dateStr = new Date().toISOString().split('T')[0];
+    const typeLabel = invTabMode === 'Summary' ? 'All_Sorted' : invTabMode;
+    link.setAttribute("download", `Inventory_Export_${typeLabel}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+};
+
+// --- LOGIC: EXPORT ASSETS CSV (UPDATED) ---
+const handleExportAssets = () => {
+    let dataToExport = [];
+
+    // 1. ถ้าเลือก Tab "Summary" ให้ดึงข้อมูลดิบมาเรียงใหม่ (Company -> Rent)
+    if (assetTabMode === 'Summary') {
+        // กรองข้อมูลดิบ (Raw Data)
+        let baseData = [...assets];
+
+        if (globalProjectFilter !== 'All') { 
+            baseData = baseData.filter(a => a.project === globalProjectFilter); 
+        }
+        if (assetSearch) {
+            const lower = assetSearch.toLowerCase();
+            baseData = baseData.filter(a => 
+                a.name.toLowerCase().includes(lower) || 
+                a.id.toLowerCase().includes(lower) || 
+                (a.holder && a.holder.toLowerCase().includes(lower)) || 
+                (a.project && a.project.toLowerCase().includes(lower))
+            );
+        }
+        if (assetProjectFilter !== 'All') { 
+            baseData = baseData.filter(a => a.project === assetProjectFilter); 
+        }
+
+        // แยกประเภท และ เรียงต่อกัน (Company -> Rent)
+        const companyItems = baseData.filter(a => a.ownerType === 'Company');
+        const rentItems = baseData.filter(a => a.ownerType === 'Rent');
+
+        dataToExport = [...companyItems, ...rentItems];
+
+    } else {
+        // 2. ถ้าเลือก Tab อื่น (Company/Rent) ใช้ข้อมูลปัจจุบันได้เลย
+        dataToExport = filteredAssets;
+    }
+
+    if (dataToExport.length === 0) {
+        showToast('ไม่พบข้อมูลสำหรับ Export', 'error');
+        return;
+    }
+
+    // --- สร้าง CSV ---
+    const headers = ["รหัสทรัพย์สิน,ชื่อรายการ,ซีเรียลนัมเบอร์,ประเภท,ราคา,หน่วย,วันเริ่มสัญญา,วันสิ้นสุดสัญญา,สถานะ,ผู้ถือครอง,หมายเหตุ,ชื่อโครงการ"];
+
+    const rows = dataToExport.map(item => {
+        const type = item.ownerType === 'Rent' ? 'เช่า' : 'ซื้อขาด'; // ปรับคำให้ตรงกับความเข้าใจ
+        
+        const statusMap = {
+            'Available': 'ว่าง',
+            'Borrowed': 'ถูกยืม',
+            'Lost': 'สูญหาย',
+            'Damaged': 'ชำรุด'
+        };
+        const statusTh = statusMap[item.status] || item.status;
+        
+        const price = item.ownerType === 'Rent' ? (item.rentalPrice || 0) : (item.price || 0);
+        const unit = item.ownerType === 'Rent' ? (item.rentalUnit || 'Month') : 'บาท';
+
+        const safe = (str) => `"${(str || '').toString().replace(/"/g, '""')}"`;
+
+        return [
+            safe(item.id),
+            safe(item.name),
+            safe(item.serial),
+            safe(type),
+            price,
+            safe(unit),
+            safe(item.rentalStart),
+            safe(item.rentalEnd),
+            safe(statusTh),
+            safe(item.holder),
+            safe(item.note),
+            safe(item.project)
+        ].join(',');
+    });
+
+    const csvContent = "\uFEFF" + headers.concat(rows).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    const dateStr = new Date().toISOString().split('T')[0];
+    const typeLabel = assetTabMode === 'Summary' ? 'All_Sorted' : assetTabMode;
+    link.setAttribute("download", `Assets_Export_${typeLabel}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 };
 
 // คำนวณจำนวนงานที่ค้าง (สำหรับ Sidebar)
@@ -3569,14 +3769,18 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
             return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
         };
 
-        // เรียงลำดับ
-        return data.sort((a, b) => {
-            // 5.1 สถานะเสร็จแล้ว เอาไว้ล่างสุด
+       return data.sort((a, b) => {
+            // 5.1 [NEW] ยกเลิก (Cancelled) ไว้ล่างสุดของที่สุด (ต่ำกว่า Completed)
+            const isCancelledA = a.status === 'Cancelled';
+            const isCancelledB = b.status === 'Cancelled';
+            if (isCancelledA !== isCancelledB) return isCancelledA ? 1 : -1;
+
+            // 5.2 สถานะเสร็จแล้ว (Completed/Rejected/Returned) เอาไว้ล่างรองลงมา
             const isCompletedA = ['Completed', 'Rejected', 'Returned'].includes(a.status);
             const isCompletedB = ['Completed', 'Rejected', 'Returned'].includes(b.status);
             if (isCompletedA !== isCompletedB) return isCompletedA ? 1 : -1;
 
-            // 5.2 เรียงตามวันที่ต้องการ (Date Required) จากน้อยไปมาก (ด่วนกว่าขึ้นก่อน)
+            // 5.3 เรียงตามวันที่ต้องการ (Date Required) จากน้อยไปมาก (ด่วนกว่าขึ้นก่อน)
             const daysA = getDaysDiff(a.dateRequired);
             const daysB = getDaysDiff(b.dateRequired);
             return daysA - daysB;
@@ -6862,12 +7066,13 @@ const PublicAnnouncementPopup = () => (
                                                   return Math.ceil(diff / (1000 * 60 * 60 * 24));
                                               };
                                               const daysLeft = getDaysDiff(req.dateRequired);
-                                              let alertBadge = null;
-                                              if (!['Completed', 'Rejected', 'Returned', 'Draft'].includes(req.status)) {
-                                                  if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse' };
-                                                  else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้!', color: 'bg-red-500 text-white' };
-                                                  else if (daysLeft <= 3) alertBadge = { text: 'ด่วน (3 วัน)', color: 'bg-orange-50 text-orange-600 border-orange-200' };
-                                              }
+let alertBadge = null;
+// [แก้ไข] เพิ่ม 'Cancelled' เข้าไปในรายการยกเว้น
+if (!['Completed', 'Rejected', 'Returned', 'Draft', 'Cancelled'].includes(req.status)) {
+    if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse' };
+    else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้!', color: 'bg-red-500 text-white' };
+    else if (daysLeft <= 3) alertBadge = { text: 'ด่วน (3 วัน)', color: 'bg-orange-50 text-orange-600 border-orange-200' };
+}
                                               return (
                                                   <tr 
                                                       key={req.id} 
@@ -7308,7 +7513,7 @@ const PublicAnnouncementPopup = () => (
             const daysLeft = getDaysDiff(req.dateRequired);
             
             let alertBadge = null;
-            if (!['Completed', 'Rejected', 'Returned'].includes(req.status)) {
+            if (!['Completed', 'Rejected', 'Returned', 'Draft', 'Cancelled'].includes(req.status)) {
               if (daysLeft < 0) alertBadge = { text: `เลยกำหนด ${Math.abs(daysLeft)} วัน`, color: 'bg-red-600 text-white animate-pulse border-red-700' };
               else if (daysLeft <= 1) alertBadge = { text: 'ครบกำหนดวันนี้/พรุ่งนี้!', color: 'bg-red-500 text-white' };
               else if (daysLeft <= 3) alertBadge = { text: 'อีก 3 วัน', color: 'bg-red-100 text-red-700' };
@@ -7689,10 +7894,19 @@ const PublicAnnouncementPopup = () => (
         <button 
             onClick={() => setShowImportInvModal(true)} 
             className="bg-teal-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-teal-700 transition-colors shadow-sm"
-            title="นำเข้าข้อมูลสินค้าจำนวนมากจากไฟล์ CSV (Import)" // ⭐ Tooltip
+            title="นำเข้าข้อมูลสินค้าจำนวนมากจากไฟล์ CSV (Import)"
         >
             <Download className="w-4 h-4 rotate-180"/> Import
-        </button>     
+        </button>
+        
+        {/* ⭐ ปุ่ม Export Inventory */}
+        <button 
+            onClick={handleExportInventory} 
+            className="bg-blue-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-blue-700 transition-colors shadow-sm"
+            title="ส่งออกข้อมูลสินค้าเป็นไฟล์ CSV (Export)"
+        >
+            <Download className="w-4 h-4"/> Export
+        </button>
     </>
 )}
 
@@ -7886,13 +8100,24 @@ const PublicAnnouncementPopup = () => (
 
 {/* ⭐ ปุ่ม Import ทรัพย์สิน (Asset) - สิทธิ์ 23 */}
 {hasPermission(23) && (
-    <button 
-        onClick={() => setShowImportAssetModal(true)} 
-        className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
-        title="นำเข้าข้อมูลทรัพย์สินจากไฟล์ CSV (Import)" // ⭐ Tooltip
-    >
-        <Download className="w-4 h-4 rotate-180"/> Import
-    </button>
+    <>
+        <button 
+            onClick={() => setShowImportAssetModal(true)} 
+            className="bg-green-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-green-700"
+            title="นำเข้าข้อมูลทรัพย์สินจากไฟล์ CSV (Import)"
+        >
+            <Download className="w-4 h-4 rotate-180"/> Import
+        </button>
+
+        {/* ⭐ ปุ่ม Export Assets */}
+        <button 
+            onClick={handleExportAssets} 
+            className="bg-blue-600 text-white text-sm font-medium flex items-center gap-1 px-4 py-1.5 rounded hover:bg-blue-700"
+            title="ส่งออกข้อมูลทรัพย์สินเป็นไฟล์ CSV (Export)"
+        >
+            <Download className="w-4 h-4"/> Export
+        </button>
+    </>
 )}
                  </div>
               </div>
@@ -13265,6 +13490,13 @@ const relatedAssets = sourceAssets.filter(a =>
                     <option key={i} value={`${u.firstName} ${u.lastName}`}>{u.empId}</option>
                 ))}
             </datalist>
+
+            {/* ⭐ เพิ่ม Datalist สำหรับ Assets */}
+<datalist id="import-asset-list">
+    {[...new Set(assets.map(a => a.name))].map((name, i) => (
+        <option key={i} value={name}/>
+    ))}
+</datalist>
                   
                   {/* Header */}
                   <div className="px-6 py-4 border-b flex justify-between items-center bg-white">
@@ -13310,233 +13542,250 @@ const relatedAssets = sourceAssets.filter(a =>
                           </div>
                       </div>
 
-                      {/* ⭐ Preview Table (Editable) - ปรับปรุง Layout & Logic Company */}
                      {/* ⭐ Preview Table (Editable + Expandable) */}
-                      {importData.length > 0 && (
-                          <div 
-                              className={`transition-all duration-200 ${
-                                  isImportAssetTableExpanded 
-                                      ? "fixed inset-0 z-[200] bg-white flex flex-col" // โหมดเต็มจอ
-                                      : "bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm relative" // โหมดปกติ
-                              }`}
-                          >
-                              {/* Table Header */}
-                              <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 text-xs font-bold text-gray-600 flex justify-between items-center shrink-0">
-                                  <div className="flex items-center gap-2">
-                                      <span>ตัวอย่างข้อมูล ({importData.length} รายการ) - แก้ไขได้</span>
-                                      {/* ปุ่มขยาย/ย่อ */}
-                                      <button 
-                                          onClick={() => setIsImportAssetTableExpanded(!isImportAssetTableExpanded)}
-                                          className="flex items-center gap-1 bg-white border border-gray-300 px-2 py-0.5 rounded hover:bg-blue-50 text-blue-600 transition-colors shadow-sm"
-                                          title={isImportAssetTableExpanded ? "ย่อกลับ (Minimize)" : "ขยายเต็มจอ (Maximize)"}
-                                      >
-                                          {isImportAssetTableExpanded ? (
-                                              <>
-                                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                                                  <span>ย่อลง</span>
-                                              </>
-                                          ) : (
-                                              <>
-                                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                                                  <span>ขยาย</span>
-                                              </>
-                                          )}
-                                      </button>
-                                  </div>
-                                  
-                                  <span className="text-orange-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> ตรวจสอบและแก้ไขก่อนยืนยัน</span>
-                              </div>
+    {/* [แก้ไข] ลบเงื่อนไข importData.length > 0 ออก เพื่อให้แสดงตารางตลอด */}
+    <div className="mt-4">
+        <div 
+            className={`transition-all duration-200 ${
+                isImportAssetTableExpanded 
+            ? "fixed inset-0 z-[200] bg-white flex flex-col" // โหมดเต็มจอ
+                : "bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm relative" // โหมดปกติ
+            }`}
+        >
+            {/* Table Header */}
+            <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 text-xs font-bold text-gray-600 flex justify-between items-center shrink-0">
+                <div className="flex items-center gap-2">
+                    <span>ตัวอย่างข้อมูล ({importData.length} รายการ) - แก้ไขได้</span>
+                    {/* ปุ่มขยาย/ย่อ */}
+                    <button 
+                        onClick={() => setIsImportAssetTableExpanded(!isImportAssetTableExpanded)}
+                        className="flex items-center gap-1 bg-white border border-gray-300 px-2 py-0.5 rounded hover:bg-blue-50 text-blue-600 transition-colors shadow-sm"
+                        title={isImportAssetTableExpanded ? "ย่อกลับ (Minimize)" : "ขยายเต็มจอ (Maximize)"}
+                    >
+                        {isImportAssetTableExpanded ? (
+                            <>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                                <span>ย่อลง</span>
+                            </>
+                        ) : (
+                            <>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                                <span>ขยาย</span>
+                            </>
+                        )}
+                    </button>
+                </div>
+                
+                <span className="text-orange-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> ตรวจสอบและแก้ไขก่อนยืนยัน</span>
+            </div>
 
-                              {/* Table Content */}
-                              <div className={`overflow-x-auto ${isImportAssetTableExpanded ? 'flex-1 p-4 bg-slate-50' : 'max-h-[450px]'}`}>
-                                  <table className={`w-full text-xs text-left whitespace-nowrap ${isImportAssetTableExpanded ? 'shadow-md rounded-lg overflow-hidden' : ''}`}>
-                                      <thead className="bg-gray-50 text-gray-700 sticky top-0 shadow-sm z-10 font-bold uppercase">
-    <tr>
-        <th className="px-3 py-2 w-8 text-center bg-gray-50">#</th>
-        <th className="px-3 py-2 min-w-[100px] bg-gray-50">รหัสทรัพย์สิน</th> {/* ID */}
-        <th className="px-3 py-2 min-w-[180px] bg-gray-50">โครงการ</th>      {/* Project */}
-        <th className="px-3 py-2 min-w-[200px] bg-gray-50">ชื่อรายการ</th>    {/* Name */}
-        <th className="px-3 py-2 min-w-[100px] bg-gray-50">S/N</th>
-        <th className="px-3 py-2 min-w-[120px] bg-gray-50">ประเภท</th>      {/* Type */}
-        <th className="px-3 py-2 text-right min-w-[120px] bg-gray-50">ราคา</th> {/* Price */}
-        <th className="px-3 py-2 min-w-[100px] bg-gray-50">หน่วย</th>       {/* Unit */}
-        <th className="px-3 py-2 min-w-[140px] bg-gray-50">เริ่มสัญญา</th>    {/* Start */}
-        <th className="px-3 py-2 min-w-[140px] bg-gray-50">สิ้นสุด</th>       {/* End */}
-        <th className="px-3 py-2 min-w-[140px] bg-gray-50">สถานะ</th>       {/* Status */}
-        <th className="px-3 py-2 min-w-[180px] bg-gray-50">ผู้ถือครอง</th>     {/* Holder */}
-        <th className="px-3 py-2 min-w-[200px] bg-gray-50">หมายเหตุ</th>     {/* Note */}
-        <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
-    </tr>
-</thead>
-                                      <tbody className="divide-y divide-gray-100 bg-white">
-                                          {importData.map((row, idx) => (
-                                              <tr key={idx} className="hover:bg-blue-50 transition-colors group">
-                                                  <td className="px-2 py-2 text-gray-400 text-center">{idx + 1}</td>
-                                                  
-                                                  {/* ID */}
-                                                  <td className="px-2 py-1">
-                                                      <input 
-                                                          type="text" className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-mono text-blue-600 ${row.id && assets.some(a => a.id === row.id) ? 'text-red-600 font-bold' : ''}`}
-                                                          value={row.id} 
-                                                          placeholder="Auto"
-                                                          onChange={e => {
-                                                              const newData = [...importData]; newData[idx].id = e.target.value; setImportData(newData);
-                                                          }}
-                                                      />
-                                                      {row.id && assets.some(a => a.id === row.id) && <span className="text-[9px] text-red-500 block">ซ้ำ!</span>}
-                                                  </td>
+            {/* Table Content */}
+            <div className={`overflow-x-auto ${isImportAssetTableExpanded ? 'flex-1 p-4 bg-slate-50' : 'max-h-[450px]'}`}>
+                <table className={`w-full text-xs text-left whitespace-nowrap ${isImportAssetTableExpanded ? 'shadow-md rounded-lg overflow-hidden' : ''}`}>
+                    <thead className="bg-gray-50 text-gray-700 sticky top-0 shadow-sm z-10 font-bold uppercase">
+                        <tr>
+                            <th className="px-3 py-2 w-8 text-center bg-gray-50">#</th>
+                            <th className="px-3 py-2 min-w-[100px] bg-gray-50">รหัสทรัพย์สิน</th>
+                            <th className="px-3 py-2 min-w-[180px] bg-gray-50">โครงการ</th>
+                            <th className="px-3 py-2 min-w-[200px] bg-gray-50">ชื่อรายการ</th>
+                            <th className="px-3 py-2 min-w-[100px] bg-gray-50">S/N</th>
+                            <th className="px-3 py-2 min-w-[120px] bg-gray-50">ประเภท</th>
+                            <th className="px-3 py-2 text-right min-w-[120px] bg-gray-50">ราคา</th>
+                            <th className="px-3 py-2 min-w-[100px] bg-gray-50">หน่วย</th>
+                            <th className="px-3 py-2 min-w-[140px] bg-gray-50">เริ่มสัญญา</th>
+                            <th className="px-3 py-2 min-w-[140px] bg-gray-50">สิ้นสุด</th>
+                            <th className="px-3 py-2 min-w-[140px] bg-gray-50">สถานะ</th>
+                            <th className="px-3 py-2 min-w-[180px] bg-gray-50">ผู้ถือครอง</th>
+                            <th className="px-3 py-2 min-w-[200px] bg-gray-50">หมายเหตุ</th>
+                            <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                        {/* [เพิ่ม] แสดงข้อความเมื่อไม่มีข้อมูล */}
+                        {importData.length === 0 && (
+                            <tr>
+                                <td colSpan="14" className="text-center py-10 text-gray-400 bg-slate-50">
+                                    <div className="flex flex-col items-center gap-2">
+                                        <div className="p-3 bg-white rounded-full shadow-sm"><Plus className="w-6 h-6 text-blue-300"/></div>
+                                        <span>ยังไม่มีรายการ กดปุ่ม "เพิ่มแถวใหม่" ด้านล่าง หรือเลือกไฟล์ CSV</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        )}
 
-                                                  {/* Project */}
-                                                  <td className="px-2 py-1">
-                                                       <select 
-                                                          className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!projects.some(p => p.name === row.project) ? 'text-red-600 font-bold' : 'text-indigo-600'}`}
-                                                          value={row.project}
-                                                          onChange={e => { const newData = [...importData]; newData[idx].project = e.target.value; setImportData(newData); }}
-                                                      >
-                                                          <option value="">เลือก...</option>
-                                                          {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-                                                       </select>
-                                                  </td>
+                        {importData.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-blue-50 transition-colors group">
+                                <td className="px-2 py-2 text-gray-400 text-center">{idx + 1}</td>
+                                
+                                {/* ID */}
+                                <td className="px-2 py-1">
+                                    <input 
+                                        type="text" className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-mono text-blue-600 ${row.id && assets.some(a => a.id === row.id) ? 'text-red-600 font-bold' : ''}`}
+                                        value={row.id} 
+                                        placeholder="Auto"
+                                        onChange={e => {
+                                            const newData = [...importData]; newData[idx].id = e.target.value; setImportData(newData);
+                                        }}
+                                    />
+                                    {row.id && assets.some(a => a.id === row.id) && <span className="text-[9px] text-red-500 block">ซ้ำ!</span>}
+                                </td>
 
-                                                  {/* Name */}
-                                                  <td className="px-2 py-1"><input type="text" className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!row.name ? 'bg-red-50' : ''}`} value={row.name} onChange={e => { const newData = [...importData]; newData[idx].name = e.target.value; setImportData(newData); }}/></td>
-                                                  
-                                                  {/* Serial */}
-                                                  <td className="px-2 py-1"><input type="text" className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!row.serial ? 'bg-red-50' : ''}`} value={row.serial} onChange={e => { const newData = [...importData]; newData[idx].serial = e.target.value; setImportData(newData); }}/></td>
-                                                  
-                                                  {/* Type */}
-                                                  <td className="px-2 py-1">
-    <select className="w-full bg-transparent outline-none font-bold text-gray-700" 
-            value={row.ownerType} 
-            onChange={e => { 
-                const newData = [...importData];
-                newData[idx].ownerType = e.target.value; 
-                setImportData(newData);
-            }}>
-        <option value="Company">บริษัท (Company)</option>
-        <option value="Rent">เช่า (Rent)</option>
-    </select>
-</td>
+                                {/* Project */}
+                                <td className="px-2 py-1">
+                                    <select 
+                                        className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!projects.some(p => p.name === row.project) ? 'text-red-600 font-bold' : 'text-indigo-600'}`}
+                                        value={row.project}
+                                        onChange={e => { const newData = [...importData]; newData[idx].project = e.target.value; setImportData(newData); }}
+                                    >
+                                        <option value="">เลือก...</option>
+                                        {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                                        </select>
+                                </td>
 
-                                                  {/* Price */}
-                                                  <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const newData = [...importData]; newData[idx].price = parseFloat(e.target.value) || 0; setImportData(newData); }}/></td>
-                                                  
-                                                  {/* Unit */}
+                                {/* Name */}
 <td className="px-2 py-1">
-    {row.ownerType === 'Company' ? (
-        // กรณีบริษัท: แสดงคำว่า "บาท"
-        <input type="text" className="w-full bg-gray-50 text-gray-500 text-center cursor-not-allowed border-none text-xs" value="บาท" disabled />
-    ) : (
-        // กรณีเช่า: เลือกหน่วยเวลา (แสดงภาษาไทย แต่ value เป็นภาษาอังกฤษ)
-        <select className="w-full bg-transparent outline-none" 
-                value={row.rentalUnit} 
-                onChange={e => { 
-                    const newData = [...importData]; 
-                    newData[idx].rentalUnit = e.target.value; 
-                    setImportData(newData); 
-                }}>
-            <option value="Month">เดือน</option>
-            <option value="Day">วัน</option>
-            <option value="Year">ปี</option>
-        </select>
-    )}
-</td>
-
-                                                  {/* Start */}
-                                                  <td className="px-2 py-1"><input type="text" placeholder="YYYY-MM-DD" className={`w-full border-b border-transparent outline-none ${row.ownerType === 'Company' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-transparent text-gray-600 focus:border-blue-500'}`} value={row.rentalStart || ''} onChange={e => { const newData = [...importData]; newData[idx].rentalStart = e.target.value; setImportData(newData); }} disabled={row.ownerType === 'Company'}/></td>
-                                                  
-                                                  {/* End */}
-                                                  <td className="px-2 py-1"><input type="text" placeholder="YYYY-MM-DD" className={`w-full border-b border-transparent outline-none ${row.ownerType === 'Company' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-transparent text-gray-600 focus:border-blue-500'}`} value={row.rentalEnd || ''} onChange={e => { const newData = [...importData]; newData[idx].rentalEnd = e.target.value; setImportData(newData); }} disabled={row.ownerType === 'Company'}/></td>
-
-                                                 {/* Status Dropdown */}
-<td className="px-2 py-1">
-    <select className={`w-full bg-transparent outline-none font-bold ${row.status === 'Available' ? 'text-green-700' : 'text-blue-700'}`} 
-            value={row.status} 
-            onChange={e => { 
-                const newData = [...importData];
-                newData[idx].status = e.target.value;
-                setImportData(newData); 
-            }}>
-        <option value="Available">ว่าง (Available)</option>
-        <option value="Borrowed">ถูกยืม (Borrowed)</option>
-        <option value="Lost">สูญหาย (Lost)</option>
-        <option value="Damaged">ชำรุด (Damaged)</option>
-    </select>
-</td>
-
-                                                  {/* Holder */}
-                                                  <td className="px-2 py-1">
     <input 
         type="text" 
-        list="import-user-list"  // ⭐ แก้ตรงนี้: ให้ตรงกับ ID ของ datalist ด้านบน
-        disabled={row.status !== 'Borrowed'} 
-        className={`w-full border-b outline-none transition-colors ${row.status === 'Borrowed' ?
-            (!row.holder || row.holder === '-' ? 'bg-red-50 border-red-300 text-red-600 focus:border-blue-500' : 'bg-transparent border-transparent focus:border-blue-500') : 'bg-gray-100 text-gray-400 border-transparent cursor-not-allowed'}`} 
-        value={row.status === 'Borrowed' ? row.holder : ''} 
-        placeholder={row.status === 'Borrowed' ? "ระบุชื่อหรือเลือก..." : "-"} 
-        onChange={e => { 
-            const newData = [...importData]; 
-            newData[idx].holder = e.target.value;
-            setImportData(newData); 
-        }}
+        list="import-asset-list" // ⭐ เชื่อมกับ Datalist
+        className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!row.name ? 'bg-red-50' : ''}`} 
+        value={row.name} 
+        onChange={e => { const newData = [...importData]; newData[idx].name = e.target.value; setImportData(newData); }}
     />
 </td>
+                                {/* Serial */}
+                                <td className="px-2 py-1"><input type="text" className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${!row.serial ? 'bg-red-50' : ''}`} value={row.serial} onChange={e => { const newData = [...importData]; newData[idx].serial = e.target.value; setImportData(newData); }}/></td>
+                                
+                                {/* Type */}
+                                <td className="px-2 py-1">
+                                    <select className="w-full bg-transparent outline-none font-bold text-gray-700" 
+                                            value={row.ownerType} 
+                                            onChange={e => { 
+                                                const newData = [...importData];
+                                                newData[idx].ownerType = e.target.value; 
+                                                setImportData(newData); 
+                                            }}>
+                                        <option value="Company">บริษัท (Company)</option>
+                                        <option value="Rent">เช่า (Rent)</option>
+                                    </select>
+                                </td>
 
-                                                  {/* Note */}
-                                                  <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const newData = [...importData]; newData[idx].note = e.target.value; setImportData(newData); }}/></td>
-                                                  
-                                                  {/* Delete */}
-                                                  <td className="px-2 py-1 text-center">
-                                                      <button 
-                                                          type="button"
-                                                          onClick={() => { 
-                                                              const newData = importData.filter((_, i) => i !== idx); 
-                                                              setImportData(newData); 
-                                                          }} 
-                                                          className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                                                          title="ลบรายการนี้"
-                                                      >
-                                                          {/* ⭐ ใช้ SVG แทน Component Trash2 */}
-                                                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                              <path d="M3 6h18"/>
-                                                              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-                                                              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-                                                              <line x1="10" x2="10" y1="11" y2="17"/>
-                                                              <line x1="14" x2="14" y1="11" y2="17"/>
-                                                          </svg>
-                                                      </button>
-                                                  </td>
-                                              </tr>
-                                          ))}
-                                      </tbody>
-                                  </table>
-                              </div>
+                                {/* Price */}
+                                <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const newData = [...importData]; newData[idx].price = parseFloat(e.target.value) || 0; setImportData(newData); }}/></td>
+                                
+                                {/* Unit */}
+                                <td className="px-2 py-1">
+                                    {row.ownerType === 'Company' ? (
+                                        <input type="text" className="w-full bg-gray-50 text-gray-500 text-center cursor-not-allowed border-none text-xs" value="บาท" disabled />
+                                    ) : (
+                                        <select className="w-full bg-transparent outline-none" 
+                                            value={row.rentalUnit} 
+                                            onChange={e => { 
+                                                const newData = [...importData]; 
+                                                newData[idx].rentalUnit = e.target.value; 
+                                                setImportData(newData); 
+                                            }}>
+                                            <option value="Month">เดือน</option>
+                                            <option value="Day">วัน</option>
+                                            <option value="Year">ปี</option>
+                                        </select>
+                                    )}
+                                </td>
 
-                              <button
-                                  onClick={() => {
-                                      const newRow = {
-                                          id: '',           // Auto
-                                          project: '',      // ให้เลือกเอง
-                                          name: '',
-                                          serial: '',
-                                          ownerType: 'Company', // Default
-                                          price: 0,
-                                          rentalUnit: 'baht',   // Default for Company
-                                          rentalStart: '',
-                                          rentalEnd: '',
-                                          status: 'Available',  // Default
-                                          holder: '',
-                                          note: ''
-                                      };
-                                      setImportData(prev => [...prev, newRow]);
-                                  }}
-                                  className="w-full py-3 bg-gray-50 hover:bg-blue-50 text-blue-600 font-bold text-xs border-t border-gray-200 flex items-center justify-center gap-2 transition-colors"
-                              >
-                                  <Plus className="w-4 h-4"/> เพิ่มแถวใหม่ (Add Row)
-                              </button>
+                                {/* Start */}
+                                <td className="px-2 py-1"><input type="text" placeholder="YYYY-MM-DD" className={`w-full border-b border-transparent outline-none ${row.ownerType === 'Company' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-transparent text-gray-600 focus:border-blue-500'}`} value={row.rentalStart || ''} onChange={e => { const newData = [...importData]; newData[idx].rentalStart = e.target.value; setImportData(newData); }} disabled={row.ownerType === 'Company'}/></td>
+                                
+                                {/* End */}
+                                <td className="px-2 py-1"><input type="text" placeholder="YYYY-MM-DD" className={`w-full border-b border-transparent outline-none ${row.ownerType === 'Company' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-transparent text-gray-600 focus:border-blue-500'}`} value={row.rentalEnd || ''} onChange={e => { const newData = [...importData]; newData[idx].rentalEnd = e.target.value; setImportData(newData); }} disabled={row.ownerType === 'Company'}/></td>
 
-                          </div>
-                      )}
+                                {/* Status Dropdown */}
+                                <td className="px-2 py-1">
+                                    <select className={`w-full bg-transparent outline-none font-bold ${row.status === 'Available' ? 'text-green-700' : 'text-blue-700'}`} 
+                                            value={row.status} 
+                                            onChange={e => { 
+                                                const newData = [...importData];
+                                                newData[idx].status = e.target.value;
+                                                setImportData(newData); 
+                                            }}>
+                                        <option value="Available">ว่าง (Available)</option>
+                                        <option value="Borrowed">ถูกยืม (Borrowed)</option>
+                                        <option value="Lost">สูญหาย (Lost)</option>
+                                        <option value="Damaged">ชำรุด (Damaged)</option>
+                                    </select>
+                                </td>
+
+                                {/* Holder */}
+                                <td className="px-2 py-1">
+                                    <input 
+                                        type="text" 
+                                        list="import-user-list"
+                                        disabled={row.status !== 'Borrowed'} 
+                                        className={`w-full border-b outline-none transition-colors ${row.status === 'Borrowed' ?
+                                            (!row.holder || row.holder === '-' ? 'bg-red-50 border-red-300 text-red-600 focus:border-blue-500' : 'bg-transparent border-transparent focus:border-blue-500') : 'bg-gray-100 text-gray-400 border-transparent cursor-not-allowed'}`} 
+                                        value={row.status === 'Borrowed' ? row.holder : ''} 
+                                        placeholder={row.status === 'Borrowed' ? "ระบุชื่อหรือเลือก..." : "-"} 
+                                        onChange={e => { 
+                                            const newData = [...importData]; 
+                                            newData[idx].holder = e.target.value;
+                                            setImportData(newData); 
+                                        }}
+                                    />
+                                </td>
+
+                                {/* Note */}
+                                <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const newData = [...importData]; newData[idx].note = e.target.value; setImportData(newData); }}/></td>
+                                
+                                {/* Delete */}
+                                <td className="px-2 py-1 text-center">
+                                    <button 
+                                        type="button"
+                                        onClick={() => { 
+                                            const newData = importData.filter((_, i) => i !== idx); 
+                                            setImportData(newData); 
+                                        }} 
+                                        className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                                        title="ลบรายการนี้"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M3 6h18"/>
+                                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                                            <line x1="10" x2="10" y1="11" y2="17"/>
+                                            <line x1="14" x2="14" y1="11" y2="17"/>
+                                        </svg>
+                                    </button>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+
+            {/* ปุ่มเพิ่มแถวใหม่ (แสดงตลอด) */}
+            <button
+                onClick={() => {
+                    const newRow = {
+                        id: '',         // Auto
+                        project: '',      // ให้เลือกเอง
+                        name: '',
+                        serial: '',
+                        ownerType: 'Company', // Default
+                        price: 0,
+                        rentalUnit: 'baht',   // Default for Company
+                        rentalStart: '',
+                        rentalEnd: '',
+                        status: 'Available',  // Default
+                        holder: '',
+                        note: ''
+                    };
+                    setImportData(prev => [...prev, newRow]);
+                }}
+                className="w-full py-3 bg-gray-50 hover:bg-blue-50 text-blue-600 font-bold text-xs border-t border-gray-200 flex items-center justify-center gap-2 transition-colors"
+            >
+                <Plus className="w-4 h-4"/> เพิ่มแถวใหม่ (Add Row)
+            </button>
+
+        </div>
+    </div>
                          
                   </div>
 
@@ -13647,6 +13896,13 @@ const relatedAssets = sourceAssets.filter(a =>
       {showImportInvModal && (
           <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-[100] p-4 backdrop-blur-sm animate-in fade-in">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
+
+              {/* ⭐ เพิ่ม Datalist สำหรับ Inventory */}
+<datalist id="import-inventory-list">
+    {[...new Set(inventory.map(i => i.name))].map((name, i) => (
+        <option key={i} value={name}/>
+    ))}
+</datalist>
                   
                   {/* Header */}
                   <div className="px-6 py-4 border-b flex justify-between items-center bg-white">
@@ -13691,12 +13947,15 @@ const relatedAssets = sourceAssets.filter(a =>
     </div>
 
     {/* Table Preview */}
-    {importInvData.length > 0 && (
+  {/* Table Preview */}
+    {/* [แก้ไข] ลบเงื่อนไข importInvData.length > 0 ออก เพื่อให้แสดงตารางตลอด */}
+    <div className="mt-4">
         <div className={`transition-all duration-200 ${isImportInvTableExpanded ? "fixed inset-0 z-[200] bg-white flex flex-col" : "bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm relative"}`}>
+            
             {/* Header Table */}
             <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 text-xs font-bold text-gray-600 flex justify-between items-center shrink-0">
                 <div className="flex items-center gap-2">
-                    <span>ตัวอย่างข้อมูล ({importInvData.length} รายการ) - แก้ไขได้</span>
+                     <span>รายการข้อมูล ({importInvData.length} รายการ)</span>
                     <button onClick={() => setIsImportInvTableExpanded(!isImportInvTableExpanded)} className="flex items-center gap-1 bg-white border border-gray-300 px-2 py-0.5 rounded hover:bg-blue-50 text-blue-600 transition-colors shadow-sm">
                         {isImportInvTableExpanded ? <span>ย่อลง</span> : <span>ขยาย</span>}
                     </button>
@@ -13723,12 +13982,22 @@ const relatedAssets = sourceAssets.filter(a =>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 bg-white">
+                        {/* [เพิ่ม] แสดงข้อความเมื่อไม่มีข้อมูล */}
+                        {importInvData.length === 0 && (
+                            <tr>
+                                <td colSpan="11" className="text-center py-10 text-gray-400 bg-slate-50">
+                                    <div className="flex flex-col items-center gap-2">
+                                        <div className="p-3 bg-white rounded-full shadow-sm"><Plus className="w-6 h-6 text-blue-300"/></div>
+                                        <span>ยังไม่มีรายการ กดปุ่ม "เพิ่มแถวใหม่" ด้านล่าง หรือเลือกไฟล์ CSV</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        )}
+
                         {importInvData.map((row, idx) => {
                             // เช็คว่ามีของเดิมหรือไม่
                             const existing = inventory.find(i => i.name === row.name && i.project === row.project);
                             const isDuplicate = !!existing;
-                            
-                            // เช็คว่ารหัสตรงกันหรือไม่ (ถ้ามีของเดิม และใน CSV ใส่รหัสมา)
                             const isIdMismatch = isDuplicate && row.id && row.id !== existing.id;
 
                             return (
@@ -13738,35 +14007,35 @@ const relatedAssets = sourceAssets.filter(a =>
                                     {/* ID (รหัสวัสดุ) */}
                                     <td className="px-2 py-1 relative">
                                         <input 
-    type="text" 
-    // ... class ...
-    // ⭐ Value: แสดงแค่รหัสสั้น
-    value={getDisplayId(row.id)} 
-    placeholder={existing ? getDisplayId(existing.id) : "Auto"}
-    onChange={e => { const n = [...importInvData]; n[idx].id = e.target.value; setImportInvData(n); }}
-/>
+                                            type="text" 
+                                            className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-mono text-blue-600 ${isIdMismatch ? 'text-red-600 font-bold' : ''}`}
+                                            value={getDisplayId(row.id)} 
+                                            placeholder={existing ? getDisplayId(existing.id) : "Auto"}
+                                            onChange={e => { const n = [...importInvData]; n[idx].id = e.target.value; setImportInvData(n); }}
+                                        />
                                         
-                                        
-                                        
-                                        {/* ปุ่มดึงรหัสเดิม (ถ้าไม่ตรง หรือ ว่างอยู่) */}
-{isDuplicate && row.id !== getDisplayId(existing.id) && (
-    <button 
-        onClick={() => { 
-        const n = [...importInvData]; 
-        // ⭐ ใช้ getDisplayId ดึงแค่รหัสสั้นมาใส่
-        n[idx].id = getDisplayId(existing.id); 
-        setImportInvData(n); 
-    }}
-        className="absolute right-0 top-1 text-[9px] bg-green-100 text-green-700 px-1 rounded border border-green-200 hover:bg-green-200"
-        title="คลิกเพื่อใช้รหัสเดิมในระบบ"
-    >
-        ใช้รหัสเดิม
-    </button>
-)}
+                                        {/* ปุ่มดึงรหัสเดิม */}
+                                        {isDuplicate && row.id !== getDisplayId(existing.id) && (
+                                            <button 
+                                                onClick={() => { const n = [...importInvData]; n[idx].id = getDisplayId(existing.id); setImportInvData(n); }}
+                                                className="absolute right-0 top-1 text-[9px] bg-green-100 text-green-700 px-1 rounded border border-green-200 hover:bg-green-200"
+                                                title="คลิกเพื่อใช้รหัสเดิมในระบบ"
+                                            >
+                                                ใช้รหัสเดิม
+                                            </button>
+                                        )}
                                     </td>
 
                                     {/* Name */}
-                                    <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-bold text-gray-800" value={row.name} onChange={e => { const n = [...importInvData]; n[idx].name = e.target.value; setImportInvData(n); }}/></td>
+<td className="px-2 py-1">
+    <input 
+        type="text" 
+        list="import-inventory-list" // ⭐ เชื่อมกับ Datalist
+        className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none font-bold text-gray-800" 
+        value={row.name} 
+        onChange={e => { const n = [...importInvData]; n[idx].name = e.target.value; setImportInvData(n); }}
+    />
+</td>
 
                                     {/* Project */}
                                     <td className="px-2 py-1">
@@ -13815,6 +14084,7 @@ const relatedAssets = sourceAssets.filter(a =>
                 </table>
             </div>
 
+            {/* ปุ่มเพิ่มแถวใหม่ (แสดงตลอด) */}
             <button
                 onClick={() => {
                     const newRow = {
@@ -13832,10 +14102,10 @@ const relatedAssets = sourceAssets.filter(a =>
                 }}
                 className="w-full py-3 bg-gray-50 hover:bg-blue-50 text-blue-600 font-bold text-xs border-t border-gray-200 flex items-center justify-center gap-2 transition-colors"
             >
-                <Plus className="w-4 h-4"/> เพิ่มแถวใหม่
+                <Plus className="w-4 h-4"/> เพิ่มแถวใหม่ (Add Row)
             </button>
         </div>
-    )}
+    </div>
 </div>
 
                   {/* Footer */}
