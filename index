@@ -10063,18 +10063,98 @@ const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostR
                                 </td>
                             )}
 
-                            {/* 5. Column หมายเหตุ */}
-<td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
-    {item.note || '-'}
-    
-    {/* ⭐ เพิ่ม: แจ้งเตือนถ้ารับของไม่ครบในสถานะจบงาน/รับบางส่วน */}
-    {['Completed', 'Partially Received'].includes(selectedRequest.status) && (item.receivedTotal || 0) < item.qty && (
-        <div className="mt-1 text-[10px] text-orange-700 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded w-fit font-bold">
-            * รับไม่ครบ (คิดยอดจริง)
-        </div>
-    )}
+{/* 5. Column หมายเหตุ */}
+                            <td className="p-3 text-xs text-gray-500 align-top break-words whitespace-pre-wrap max-w-[200px]">
+                                {item.note || '-'}
+                                
+                                {/* ⭐ [แก้ไข] แสดงยอดคงเหลือแบบ Real-time (หักรายการที่ถูกจองแล้ว) */}
+                                {['Local', 'HO'].includes(selectedRequest.type) && (() => {
+                                    // --- 1. คำนวณวัสดุ (Inventory) ---
+                                    const stockItem = inventory.find(inv => inv.name === item.name && inv.project === selectedRequest.job);
+                                    let invDisplay = null;
+                                    
+                                    if (stockItem) {
+                                        // คำนวณยอดที่ถูกจอง (Reserved) จากใบเบิกอื่นที่ยังไม่จบงาน
+                                        const reservedQty = requests
+                                            .filter(r => 
+                                                r.type === 'Withdraw' && 
+                                                r.job === selectedRequest.job && 
+                                                !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
+                                                r.id !== selectedRequest.id // ไม่นับใบตัวเอง (เผื่อกรณีแก้ไข)
+                                            )
+                                            .reduce((sum, req) => {
+                                                const match = req.items.find(i => i.name === item.name);
+                                                return sum + (match ? (match.qty || 0) : 0);
+                                            }, 0);
+                                        
+                                        // ยอดพร้อมเบิก = ยอดในคลัง - ยอดจอง
+                                        const available = Math.max(0, stockItem.qty - reservedQty);
+                                        invDisplay = { available, unit: stockItem.unit, reserved: reservedQty };
+                                    }
 
-    {item.images && item.images.length > 0 && (
+                                    // --- 2. คำนวณทรัพย์สิน (Assets) ---
+                                    // นับทรัพย์สินที่สถานะ "ว่าง" (Available)
+                                    const availableAssetsCount = assets.filter(a => 
+                                        a.name === item.name && 
+                                        a.project === selectedRequest.job && 
+                                        a.status === 'Available'
+                                    ).length;
+                                    
+                                    // นับทรัพย์สินที่กำลัง "รออนุมัติยืม" (แต่สถานะยังเป็น Available อยู่)
+                                    const pendingBorrowCount = requests
+                                        .filter(r => 
+                                            r.type === 'Borrow' && 
+                                            r.job === selectedRequest.job && 
+                                            !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
+                                            r.id !== selectedRequest.id
+                                        )
+                                        .reduce((sum, req) => {
+                                            const count = req.items.filter(i => i.name === item.name).length;
+                                            return sum + count;
+                                        }, 0);
+
+                                    // ยอดว่างจริง = ว่างทั้งหมด - รออนุมัติ
+                                    const netAvailableAssets = Math.max(0, availableAssetsCount - pendingBorrowCount);
+
+                                    // --- แสดงผล ---
+                                    if (invDisplay || netAvailableAssets > 0 || pendingBorrowCount > 0) {
+                                        return (
+                                            <div className="flex flex-col gap-1 mt-1">
+                                                {invDisplay && (
+                                                    <div className="text-[10px] text-teal-600 bg-teal-50 border border-teal-200 px-1.5 py-0.5 rounded w-fit font-bold flex flex-wrap items-center gap-1" 
+                                                         title={`มีทั้งหมด: ${stockItem.qty}, จองแล้ว: ${invDisplay.reserved}`}>
+                                                        <Box size={10}/> 
+                                                        <span>ในคลัง: {invDisplay.available} {invDisplay.unit}</span>
+                                                        {invDisplay.reserved > 0 && (
+                                                            <span className="text-orange-500 text-[9px]">(จอง {invDisplay.reserved})</span>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                
+                                                {(netAvailableAssets > 0 || pendingBorrowCount > 0) && (
+                                                    <div className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded w-fit font-bold flex flex-wrap items-center gap-1"
+                                                         title={`สถานะว่าง: ${availableAssetsCount}, รออนุมัติ: ${pendingBorrowCount}`}>
+                                                        <Monitor size={10}/> 
+                                                        <span>ว่าง: {netAvailableAssets}</span>
+                                                        {pendingBorrowCount > 0 && (
+                                                            <span className="text-orange-500 text-[9px]">(รอคิว {pendingBorrowCount})</span>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    }
+                                    return null;
+                                })()}
+
+                                {/* แจ้งเตือนรับของไม่ครบ (เหมือนเดิม) */}
+                                {['Completed', 'Partially Received'].includes(selectedRequest.status) && (item.receivedTotal || 0) < item.qty && (
+                                    <div className="mt-1 text-[10px] text-orange-700 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded w-fit font-bold">
+                                        * รับไม่ครบ (คิดยอดจริง)
+                                    </div>
+                                )}
+
+                                {item.images && item.images.length > 0 && (
                                     <div className="mt-1">
                                         <button onClick={(e) => { e.stopPropagation(); setViewingAttachments({ attachments: item.images }); }} className="text-[10px] text-blue-600 flex items-center gap-1 hover:underline">
                                             <ImageIcon className="w-3 h-3"/> รูปภาพ ({item.images.length})
