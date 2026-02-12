@@ -318,22 +318,19 @@ function findApproverEmails(projectName, permId) {
       return false;
     }
 
-    // Super Admin ได้ทุกโครงการ
-    if (u.isSuperAdmin) {
-      console.log(`[FindApprover] ✅ Found SuperAdmin: ${u.username} (${u.email})`);
-      return true;
-    }
+
 
     // เช็คสิทธิ์ในโครงการ
     if (u.permissions && u.permissions[projectName]) {
       const userPerms = u.permissions[projectName].map(Number); 
       const targetPerm = Number(permId);
+
+
       
-      // มีสิทธิ์ Admin (2) หรือสิทธิ์เฉพาะที่ต้องการ
-      const hasRight = userPerms.includes(2) || userPerms.includes(targetPerm);
+const hasRight = userPerms.includes(targetPerm); // ✅ เช็คแค่สิทธิ์ที่ระบุ
       
       if (hasRight) {
-        console.log(`[FindApprover] ✅ Found User: ${u.username} (${u.email}) | Permissions: [${userPerms.join(', ')}]`);
+        console.log(`[FindApprover] ✅ Found User: ${u.username} (${u.email})`);
       }
       return hasRight;
     }
@@ -509,9 +506,11 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
     return;
   }
 
-  // โหลดข้อมูล Inventory และ Assets เพื่อเช็คสต็อก
+  // ⭐ โหลดข้อมูลให้ครบ (Requests, Inventory, Assets)
+  const allRequests = getSheetData('Requests'); // โหลดมาเพื่อคำนวณยอดจอง
   const inventory = getSheetData('Inventory');
   const assets = getSheetData('Assets');
+  
   const scriptUrl = ScriptApp.getService().getUrl();
   const approverName = targetEmail; 
 
@@ -519,12 +518,12 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
   const rejectLink = `${scriptUrl}?action=reject&id=${req.id}&role=${targetRole}&approver=${approverName}`;
   
   let grandTotal = 0;
-  // แปลงหน่วยเวลาเช่าเป็นภาษาไทย
+  
   const getRentalUnitTh = (unit) => {
       if(unit === 'Day') return 'วัน';
       if(unit === 'Month') return 'เดือน';
       if(unit === 'Year') return 'ปี';
-      return unit || 'เดือน'; // Default
+      return unit || 'เดือน';
   };
 
   const itemsHtml = req.items.map((item, idx) => {
@@ -534,32 +533,24 @@ function sendApprovalEmail(req, targetEmail, targetRole) {
     const total = item.qty * (item.unitPrice || 0) * duration;
     grandTotal += total;
 
-    // --- คำนวณสต็อกคงเหลือ (Logic เดียวกับ Web App) ---
-    let stockInfo = '';
-    const matchingStocks = inventory.filter(inv => inv.name === item.name && inv.project === req.job);
-    const totalStockQty = matchingStocks.reduce((sum, inv) => sum + inv.qty, 0);
-    const availableAssets = assets.filter(a => a.name === item.name && a.project === req.job && a.status === 'Available').length;
-
-    if (totalStockQty > 0) {
-        stockInfo += `<div style="font-size:10px; color:#00796b; background-color:#e0f2f1; padding:2px 4px; border-radius:3px; display:inline-block; margin-top:2px;">มีในคลัง: ${totalStockQty}</div> `;
-    }
-    if (availableAssets > 0) {
-        stockInfo += `<div style="font-size:10px; color:#283593; background-color:#e8eaf6; padding:2px 4px; border-radius:3px; display:inline-block; margin-top:2px;">ว่าง: ${availableAssets}</div>`;
-    }
-    // ---------------------------------------------
+    // ⭐ เรียกใช้ฟังก์ชันคำนวณสต็อก (พร้อมหักยอดจอง)
+    let stockInfo = getStockInfoHtml(item.name, req.job, req.id, allRequests, inventory, assets);
     
-    // Mobile-friendly table row with NOTE column
+    // ⭐ ดึง Note ของสินค้ามาแสดง
+    const itemNote = item.note ? `<div style="font-size:11px; color:#555; font-style:italic; margin-bottom:2px;">** ${item.note}</div>` : '';
+
     return `
       <tr style="border-bottom: 1px solid #eee;">
         <td style="padding: 12px 5px; vertical-align: top; width: 30px;">${idx + 1}</td>
         <td style="padding: 12px 5px; vertical-align: top;">
           <div style="font-weight: bold; color: #333; font-size: 14px;">${item.name}</div>
-          <div style="font-size: 12px; color: #666; margin-top: 4px;">
-            ${item.subJob ? `<span style="background:#e3f2fd; color:#1565c0; padding:2px 4px; border-radius:3px;">Sub: ${item.subJob}</span>` : ''} 
-            ${item.MatCode ? `<span style="background:#f3e5f5; color:#7b1fa2; padding:2px 4px; border-radius:3px;">EP: ${item.MatCode}</span>` : ''}
+          <div style="font-size: 12px; color: #666; margin-top: 2px;">
+            ${item.subJob ? `<span style="background:#e3f2fd; color:#1565c0; padding:1px 3px; border-radius:2px;">Sub: ${item.subJob}</span>` : ''} 
+            ${item.MatCode ? `<span style="background:#f3e5f5; color:#7b1fa2; padding:1px 3px; border-radius:2px;">Mat: ${item.MatCode}</span>` : ''}
           </div>
-          <div style="margin-top: 5px; font-size: 12px; color: #555;">
-             ${item.note ? `${item.note}<br/>` : ''}
+          
+          <div style="margin-top: 4px;">
+             ${itemNote}
              ${stockInfo}
           </div>
         </td>
@@ -2443,23 +2434,21 @@ function setupDailySummaryTrigger() {
 function sendDailyPendingSummary() {
   console.log("[DailySummary] Starting...");
   
+  // ⭐ โหลดข้อมูลทั้งหมดมารอไว้ครั้งเดียว (Performance Optimization)
   const requests = getSheetData('Requests');
   const users = getSheetData('Users');
+  const inventory = getSheetData('Inventory'); // เพิ่ม
+  const assets = getSheetData('Assets');       // เพิ่ม
   
-  // 1. กรองเฉพาะ User ที่ Active และมีสิทธิ์อนุมัติ (Level 1=8, Level 2=9) 
-  // ⭐ แก้ไข: ตัด p.includes(2) ออก เพื่อไม่ให้ดึง Admin เข้ามาในลิสต์
   const approvers = users.filter(u => 
     u.status === 'Activated' && u.email && u.email.includes('@') &&
-    (u.isSuperAdmin || (u.permissions && Object.values(u.permissions).some(p => p.includes(8) || p.includes(9))))
+    (u.permissions && Object.values(u.permissions).some(p => p.includes(8) || p.includes(9)))
   );
 
   if (approvers.length === 0) return;
 
-  // 2. วนลูปหา User แต่ละคนว่ามีงานค้างอะไรบ้าง
   approvers.forEach(user => {
     let pendingList = [];
-
-    // กรอง Request ที่สถานะเป็น Pending Head หรือ Pending PM
     const activeReqs = requests.filter(r => r.status === 'Pending Head' || r.status === 'Pending PM');
 
     activeReqs.forEach(req => {
@@ -2468,7 +2457,7 @@ function sendDailyPendingSummary() {
       let roleForAction = '';
 
       // เช็ค Project Permission ของ User นี้
-      const userPerms = user.isSuperAdmin ? [2, 8, 9] : (user.permissions?.[req.job] || []);
+      const userPerms = user.permissions?.[req.job] || [];
       
       // ⭐ แก้ไข: ตัด userPerms.includes(2) ออกจากการตรวจสอบสิทธิ์ L1/L2
       const isL1 = userPerms.includes(8); 
@@ -2500,10 +2489,10 @@ function sendDailyPendingSummary() {
       }
     });
 
-    // 3. ถ้ามีรายการค้าง ให้ส่งเมล
-    if (pendingList.length > 0) {
+if (pendingList.length > 0) {
       try {
-        sendSummaryEmailToUser(user, pendingList);
+        // ⭐ ส่ง requests, inventory, assets ไปด้วย
+        sendSummaryEmailToUser(user, pendingList, requests, inventory, assets);
         console.log(`[DailySummary] Sent to ${user.email} (${pendingList.length} items)`);
       } catch (e) {
         console.error(`[DailySummary] Failed to send to ${user.email}: ${e}`);
@@ -2513,12 +2502,9 @@ function sendDailyPendingSummary() {
   console.log("[DailySummary] Finished.");
 }
 
-
-function sendSummaryEmailToUser(user, items) {
+function sendSummaryEmailToUser(user, items, allRequests, allInventory, allAssets) {
   const scriptUrl = ScriptApp.getService().getUrl();
   const approverEmail = user.email;
-  
-  // รวบรวม ID ทั้งหมดสำหรับปุ่ม Bulk
   const allIds = items.map(i => i.id).join(',');
   
   const bulkApproveLink = `${scriptUrl}?action=bulk_approve&ids=${allIds}&approver=${approverEmail}&role=Batch`;
@@ -2526,24 +2512,21 @@ function sendSummaryEmailToUser(user, items) {
 
   let tableRows = '';
   
-  // ⭐ [เพิ่ม Helper] แปลงหน่วยเวลาเช่าเป็นภาษาไทย
   const getRentalUnitTh = (unit) => {
       if(unit === 'Day') return 'วัน';
       if(unit === 'Month') return 'เดือน';
       if(unit === 'Year') return 'ปี';
-      return unit || 'เดือน'; // Default
+      return unit || 'เดือน';
   };
   
   items.forEach((req, idx) => {
-    // ลิงก์รายตัว
     const approveLink = `${scriptUrl}?action=approve&id=${req.id}&role=${req.roleForAction}&approver=${approverEmail}`;
     const rejectLink = `${scriptUrl}?action=reject&id=${req.id}&role=${req.roleForAction}&approver=${approverEmail}`;
     
-    // --- ส่วนสร้างตารางรายการสินค้า (Inner Table) ---
     let itemsDetailHtml = `
       <table style="width: 100%; border-collapse: collapse; font-size: 12px; background-color: #ffffff; border: 1px solid #eee; margin-top: 5px;">
         <tr style="background-color: #f9f9f9; color: #666; border-bottom: 1px solid #eee;">
-          <th style="padding: 4px; text-align: left;">รายการ</th>
+          <th style="padding: 4px; text-align: left;">รายการ / หมายเหตุ</th>
           <th style="padding: 4px; text-align: center; width: 50px;">จำนวน</th>
           <th style="padding: 4px; text-align: right; width: 70px;">ราคา/หน่วย</th>
           <th style="padding: 4px; text-align: right; width: 70px;">รวม</th>
@@ -2553,33 +2536,39 @@ function sendSummaryEmailToUser(user, items) {
     let reqGrandTotal = 0;
 
     req.items.forEach(item => {
-        // ⭐ เช็คประเภทว่าเป็นเช่าหรือไม่
         const isRent = req.type === 'HO' && req.purchaseType === 'Rent';
         const duration = isRent ? (item.duration || 1) : 1;
-        // คำนวณราคารวม
         const lineTotal = (item.qty || 0) * (item.unitPrice || 0) * duration;
         reqGrandTotal += lineTotal;
-        
-        // แปลงหน่วยนับเวลา
         const rentalUnitTh = getRentalUnitTh(item.rentalUnit);
+
+        // ⭐ คำนวณสต็อกคงเหลือ (หักยอดจอง)
+        let stockInfo = getStockInfoHtml(item.name, req.job, req.id, allRequests, allInventory, allAssets);
+        
+        // ⭐ แสดง Note
+        const itemNote = item.note ? `<div style="color:#555; font-style:italic; margin-bottom:2px;">** ${item.note}</div>` : '';
 
         itemsDetailHtml += `
           <tr style="border-bottom: 1px dashed #eee;">
-            <td style="padding: 4px; color: #333;">
-               ${item.name}
-               ${item.subJob ? `<br/><span style="font-size:10px; color:#1565c0; background:#e3f2fd; padding:1px 3px; border-radius:2px;">Sub: ${item.subJob}</span>` : ''}
-               ${item.matCode ? `<br/><span style="font-size:10px; color:#7b1fa2; background:#f3e5f5; padding:1px 3px; border-radius:2px;">Mat: ${item.matCode}</span>` : ''}
+            <td style="padding: 6px 4px; color: #333;">
+               <div style="font-weight:bold;">${item.name}</div>
+               <div style="font-size:10px; margin-top:2px;">
+                   ${item.subJob ? `<span style="color:#1565c0; background:#e3f2fd; padding:1px 3px; border-radius:2px; margin-right:2px;">Sub: ${item.subJob}</span>` : ''}
+                   ${item.matCode ? `<span style="color:#7b1fa2; background:#f3e5f5; padding:1px 3px; border-radius:2px;">Mat: ${item.matCode}</span>` : ''}
+               </div>
+               <div style="font-size:10px; margin-top:3px;">
+                   ${itemNote}
+                   ${stockInfo}
+               </div>
             </td>
-            <td style="padding: 4px; text-align: center; white-space: nowrap;">
+            <td style="padding: 6px 4px; text-align: center; white-space: nowrap; vertical-align: top;">
                 ${item.qty} ${item.unit}
-                ${/* ⭐ แสดงระยะเวลาเช่า */ ''}
                 ${isRent ? `<div style="font-size:10px; color:blue;">x ${duration} ${rentalUnitTh}</div>` : ''}
             </td>
-            <td style="padding: 4px; text-align: right;">
-                ${/* ⭐ แสดงราคา/หน่วยเวลา */ ''}
+            <td style="padding: 6px 4px; text-align: right; vertical-align: top;">
                 ${(item.unitPrice || 0).toLocaleString()} ${isRent ? '/' + rentalUnitTh : ''}
             </td>
-            <td style="padding: 4px; text-align: right; font-weight: bold;">${lineTotal.toLocaleString()}</td>
+            <td style="padding: 6px 4px; text-align: right; font-weight: bold; vertical-align: top;">${lineTotal.toLocaleString()}</td>
           </tr>
         `;
     });
@@ -2960,3 +2949,72 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
     lock.releaseLock();
   }
 }
+
+
+// --- HELPER: คำนวณยอดคงเหลือ Real-time สำหรับอีเมล (Logic เดียวกับ Frontend) ---
+function getStockInfoHtml(itemName, project, currentReqId, allRequests, allInventory, allAssets) {
+  let html = '';
+
+  // 1. คำนวณวัสดุ (Inventory)
+  // หาสินค้าทั้งหมดที่มีชื่อตรงกันในโครงการ
+  const stockItems = allInventory.filter(i => i.name === itemName && i.project === project);
+  
+  if (stockItems.length > 0) {
+    // รวมยอดสต็อกจริง
+    const totalStock = stockItems.reduce((sum, i) => sum + i.qty, 0);
+    const unitLabel = stockItems[0].unit;
+
+    // คำนวณยอดจอง (Reserved) จากใบเบิกอื่น (Withdraw) ที่ยังไม่จบ
+    const reservedQty = allRequests.filter(r => 
+      r.job === project && 
+      r.type === 'Withdraw' &&
+      !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
+      r.id !== currentReqId
+    ).reduce((sum, req) => {
+      if (!req.items) return sum;
+      const match = req.items.find(i => i.name === itemName);
+      return sum + (match ? (match.qty || 0) : 0);
+    }, 0);
+
+    // ยอดพร้อมเบิก
+    const available = Math.max(0, totalStock - reservedQty);
+
+    html += `<span style="font-size:10px; color:#00796b; background-color:#e0f2f1; padding:2px 5px; border-radius:4px; display:inline-block; margin-right:4px; border:1px solid #b2dfdb;">
+               ในคลัง: <b>${available}</b> ${unitLabel}
+               ${reservedQty > 0 ? `<span style="color:#ef6c00;">(จอง ${reservedQty})</span>` : ''}
+             </span>`;
+  }
+
+  // 2. คำนวณทรัพย์สิน (Assets)
+  // นับทรัพย์สินที่สถานะ "ว่าง"
+  const availableAssetsCount = allAssets.filter(a => 
+    a.name === itemName && 
+    a.project === project && 
+    a.status === 'Available'
+  ).length;
+
+  // นับทรัพย์สินที่กำลัง "รออนุมัติยืม" (Borrow Pending)
+  const pendingBorrowCount = allRequests.filter(r => 
+    r.job === project && 
+    r.type === 'Borrow' && 
+    !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
+    r.id !== currentReqId
+  ).reduce((sum, req) => {
+    if (!req.items) return sum;
+    const count = req.items.filter(i => i.name === itemName).length;
+    return sum + count;
+  }, 0);
+
+  // ยอดว่างจริง
+  const netAvailableAssets = Math.max(0, availableAssetsCount - pendingBorrowCount);
+
+  if (netAvailableAssets > 0 || pendingBorrowCount > 0) {
+    html += `<span style="font-size:10px; color:#283593; background-color:#e8eaf6; padding:2px 5px; border-radius:4px; display:inline-block; border:1px solid #c5cae9;">
+               ว่าง: <b>${netAvailableAssets}</b>
+               ${pendingBorrowCount > 0 ? `<span style="color:#ef6c00;">(รอคิว ${pendingBorrowCount})</span>` : ''}
+             </span>`;
+  }
+
+  return html;
+}
+
