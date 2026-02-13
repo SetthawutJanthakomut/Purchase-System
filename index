@@ -397,7 +397,149 @@ const [rollbackTarget, setRollbackTarget] = useState('');
 const [rollbackReason, setRollbackReason] = useState('');
   
 
+// ... (inside App component)
 
+// --- LOGIC: EXPORT ITEM HISTORY CSV ---
+const handleExportItemHistory = () => {
+    if (!viewingItem || !viewingItem.id) return;
+
+    setIsLoading(true);
+    // เรียก Backend เพื่อดึงประวัติทั้งหมด
+    google.script.run.withSuccessHandler((allLogs) => {
+        setIsLoading(false);
+        
+        if (!allLogs || allLogs.length === 0) {
+            showToast('ไม่พบประวัติการทำรายการในระบบ', 'error');
+            return;
+        }
+
+        let csvContent = "\uFEFF"; // BOM for Thai support
+        const isAsset = viewingItem.serial !== undefined;
+        let rows = [];
+        let filename = "";
+
+        if (!isAsset) {
+            // 🟢 กรณี 1: Inventory (วัสดุ)
+            const targetActions = ['Stock In', 'Stock In (Merge)', 'Stock In (New)', 'Withdraw', 'Adjust Stock', 'Audit Adjust', 'Return', 'Import Merge', 'Import New', 'Delete Inventory'];
+            
+            // ⭐ แก้ไข Header: เพิ่ม "ผู้เบิก (Requester)" ต่อจาก ร้านค้า
+            csvContent += "วันที่,การกระทำ,รหัสวัสดุ,ชื่อสินค้า,ประเภท,จำนวนที่เปลี่ยนแปลง (Change),หน่วย,ราคาต่อหน่วย (ปัจจุบัน),ร้านค้า (Supplier),ผู้เบิก (Requester),หมายเหตุ,ผู้ทำรายการ\n";
+            
+            // Filter Data
+            const filteredLogs = allLogs.filter(log => {
+                return targetActions.some(act => log.action.includes(act)) || (log.change && (log.change.includes('+') || log.change.includes('-') || log.change.includes('Start:')));
+            });
+
+            rows = filteredLogs.map(log => {
+                const cleanName = (viewingItem.name || '').replace(/,/g, ' ');
+                const cleanNote = (log.note || '').replace(/[\r\n]+/g, ' ').replace(/,/g, ' ');
+                const type = viewingItem.stockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ';
+                const supplier = log.supplier || '-';
+                
+                // ตัดคำว่า Start: ออก
+                let changeQty = log.change || '-';
+                if (changeQty.toString().includes('Start:')) {
+                    changeQty = changeQty.replace('Start:', '').trim();
+                }
+
+                // ⭐⭐ Logic ดึงชื่อผู้เบิกจาก Order ⭐⭐
+                let requesterName = '-';
+                if (log.relatedRequestId) {
+                    // ค้นหาใน state requests ที่โหลดมาแล้ว
+                    const relatedReq = requests.find(r => r.id === log.relatedRequestId || r.docNumber === log.relatedRequestId);
+                    if (relatedReq) {
+                        requesterName = relatedReq.requester;
+                    }
+                }
+
+                return [
+                    `"${log.date}"`,
+                    `"${log.action}"`,
+                    `"${getDisplayId(viewingItem.id)}"`,
+                    `"${cleanName}"`,
+                    `"${type}"`,
+                    `"${changeQty}"`, 
+                    `"${viewingItem.unit}"`,
+                    `"${viewingItem.price || 0}"`,
+                    `"${supplier}"`, 
+                    `"${requesterName}"`, // ✅ เพิ่มคอลัมน์ผู้เบิกตรงนี้
+                    `"${cleanNote}"`,
+                    `"${log.by}"`
+                ].join(",");
+            });
+            
+            filename = `History_Inventory_${getDisplayId(viewingItem.id)}.csv`;
+
+ } else {
+            // 🔵 กรณี 2: Asset (ทรัพย์สิน)
+            // ⭐ แก้ไข: ไม่ต้องกำหนด targetActions แล้ว เพราะจะเอาทั้งหมด
+            
+            // Header (คงเดิม: มีร้านค้า, ผู้ถือครอง)
+            csvContent += "วันที่,การกระทำ (Action),รหัสทรัพย์สิน,ชื่อรายการ,ซีเรียลนัมเบอร์,ประเภท,ราคา,หน่วย,วันเริ่มสัญญา,วันสิ้นสุดสัญญา,สถานะ (ขณะทำรายการ),ผู้ถือครอง (Holder),ร้านค้า (Supplier),หมายเหตุ,ผู้ทำรายการ\n";
+
+            // ⭐ แก้ไขจุดนี้: ใช้ allLogs ทั้งหมดเลย ไม่ต้อง filter
+            const filteredLogs = allLogs;
+
+            rows = filteredLogs.map(log => {
+                const cleanName = (viewingItem.name || '').replace(/,/g, ' ');
+                const cleanNote = (log.note || '').replace(/[\r\n]+/g, ' ').replace(/,/g, ' ');
+                const type = viewingItem.ownerType === 'Rent' ? 'เช่า' : 'บริษัท';
+                
+                // ดึง Supplier
+                const supplier = log.supplier || '-';
+                
+                // หาผู้ถือครอง (Logic เดิม)
+                let holder = viewingItem.holder; 
+                if (log.action === 'Borrow' && log.note.includes('ยืมโดย')) {
+                    holder = log.note.split('ยืมโดย')[1]?.trim() || '-';
+                } else if (log.action === 'Return') {
+                    holder = '-'; 
+                }
+
+                const price = viewingItem.ownerType === 'Rent' ? viewingItem.rentalPrice : viewingItem.price;
+                const unit = viewingItem.ownerType === 'Rent' ? viewingItem.rentalUnit : 'บาท';
+
+                return [
+                    `"${log.date}"`,
+                    `"${log.action}"`,
+                    `"${viewingItem.id}"`,
+                    `"${cleanName}"`,
+                    `"${viewingItem.serial || '-'}"`,
+                    `"${type}"`,
+                    `"${price || 0}"`,
+                    `"${unit}"`,
+                    `"${viewingItem.rentalStart || '-'}"`,
+                    `"${viewingItem.rentalEnd || '-'}"`,
+                    `"${log.change || viewingItem.status}"`,
+                    `"${holder}"`,
+                    `"${supplier}"`,
+                    `"${cleanNote}"`,
+                    `"${log.by}"`
+                ].join(",");
+            });
+
+            filename = `History_Asset_${viewingItem.id}.csv`;
+        }
+
+        if (rows.length === 0) {
+            showToast('ไม่มีข้อมูลประวัติที่ตรงกับเงื่อนไข', 'info');
+            return;
+        }
+
+        // Generate Download
+        csvContent += rows.join("\n");
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showToast('ดาวน์โหลดประวัติเรียบร้อย');
+
+    }).getAllLogsForItem(viewingItem.id);
+};
 // --- STATE: Go to Top Button ---
 const [showGoTop, setShowGoTop] = useState(false);
 
@@ -1698,18 +1840,19 @@ const handleInvFileImport = (e) => {
 
         // CSV Columns (9 columns): 
         // 0: ID, 1: Name, 2: Type, 3: Qty, 4: Unit, 5: Min, 6: Price, 7: Note, 8: Project
-        const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== '').map((row, index) => {
+const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== '').map((row, index) => {
             return {
                 tempId: index,
-                id: row[0]?.trim() || '',           // ⭐ Col 0: รหัสวัสดุ (Material Code)
-                name: row[1]?.trim() || '',         // Col 1: ชื่อสินค้า
-                stockType: getStockType(row[2]),    // Col 2: ประเภท
-                qty: parseInt(row[3]?.trim()) || 0, // Col 3: จำนวน
-                unit: row[4]?.trim() || 'ชิ้น',      // Col 4: หน่วย
-                minStock: parseInt(row[5]?.trim()) || 0, // Col 5: Min Stock
-                price: parseFloat(row[6]?.trim()) || 0,  // Col 6: ราคา
-                note: row[7]?.trim() || '',          // Col 7: หมายเหตุ
-                project: row[8]?.trim() || ''        // Col 8: โครงการ
+                id: row[0]?.trim() || '',
+                name: row[1]?.trim() || '',
+                stockType: getStockType(row[2]),
+                qty: parseInt(row[3]?.trim()) || 0,
+                unit: row[4]?.trim() || 'ชิ้น',
+                minStock: parseInt(row[5]?.trim()) || 0,
+                price: parseFloat(row[6]?.trim()) || 0,
+                note: row[7]?.trim() || '',
+                project: row[8]?.trim() || '',
+                supplier: row[9]?.trim() || '' // ⭐ เพิ่ม: อ่านค่า Supplier
             };
         });
         setImportInvData(data);
@@ -1782,6 +1925,7 @@ const confirmImportInventory = async () => {
             inv.project === item.project &&
             (inv.stockType === currentType || (!inv.stockType && currentType === 'System'))
         );
+const logNote = (item.note || '') + (item.supplier ? ` | ร้านค้า: ${item.supplier}` : '');
 
         if (existingIndex !== -1) {
             // ✅ MERGE (อัปเดตของเดิม)
@@ -1791,8 +1935,9 @@ const confirmImportInventory = async () => {
                 id: existingItem.id, 
                 qty: existingItem.qty + item.qty,
                 price: item.price > 0 ? item.price : existingItem.price,
-                note: item.note ? (existingItem.note ? `${existingItem.note} | ${item.note}` : item.note) : existingItem.note,
-                lastUpdated: date
+                note: logNote,
+                lastUpdated: date,
+                supplier: item.supplier || existingItem.supplier
             };
             
             // อัปเดตใน List หน้าบ้าน (เพื่อรอแสดงผลเมื่อจบงาน)
@@ -1801,6 +1946,11 @@ const confirmImportInventory = async () => {
             // ใส่ตะกร้าสินค้าที่จะบันทึก
             const { images, ...itemForServer } = updatedItem;
             batchItems.push(itemForServer);
+
+            const supplierTxt = item.supplier ? ` | ร้านค้า: ${item.supplier}` : '';
+            // ถ้ามี Note จาก CSV ให้ใช้ Note นั้น ถ้าไม่มีให้ใช้ "CSV Import" แล้วต่อด้วยร้านค้า
+            const baseNote = item.note || 'CSV Import'; 
+            const logNote = `${baseNote}${supplierTxt}`;
             
             // สร้าง Log ใส่ตะกร้า
             batchLogs.push({
@@ -1808,11 +1958,12 @@ const confirmImportInventory = async () => {
                 action: 'Import Merge',
                 item: updatedItem.name,
                 change: `+${item.qty}`,
-                note: `โครงการ: ${item.project} (${currentType}) | CSV Import`,
+                note: logNote,
                 images: [],
                 requestId: null,
                 assetId: updatedItem.id,
-                by: `${user.empId} ${user.firstName}`
+                by: `${user.empId} ${user.firstName}`,
+                supplier: item.supplier
             });
             
         } else {
@@ -1846,6 +1997,7 @@ const confirmImportInventory = async () => {
                 image: null,
                 images: [],
                 note: item.note,
+                supplier: item.supplier || '',
                 project: item.project
             };
             
@@ -1855,16 +2007,19 @@ const confirmImportInventory = async () => {
             batchItems.push(itemForServer);
 
             const typeLabel = currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
+            const supplierTxt = item.supplier ? ` | ร้านค้า: ${item.supplier}` : '';
+            const logNote = `โครงการ: ${item.project} [${typeLabel}] | CSV New Item${supplierTxt}`;
             batchLogs.push({
                 date: date, 
                 action: 'Import New',
                 item: newItem.name,
                 change: `Start: ${newItem.qty}`,
-                note: `โครงการ: ${item.project} ${typeLabel} | CSV New Item`,
+                note: logNote,
                 images: [],
                 requestId: null,
                 assetId: finalId,
-                by: `${user.empId} ${user.firstName}`
+                by: `${user.empId} ${user.firstName}`,
+                supplier: item.supplier
             });
         }
     }
@@ -3221,7 +3376,8 @@ const handleFileImport = (e) => {
                 status: status, 
                 holder: row[9]?.trim() || '-',      
                 note: row[10]?.trim() || '',
-                project: row[11]?.trim() || '' 
+                project: row[11]?.trim() || '',
+                supplier: row[12]?.trim() || ''
             };
         });
         
@@ -3293,20 +3449,22 @@ const confirmImportAssets = async () => {
             lastUpdated: date,
             image: null,
             note: item.note,
+            supplier: item.supplier || '',
             project: item.project 
         };
 
         newAssets.push(newAsset);
         
-        const logNote = item.note ? `(Note: ${item.note})` : '';
+        const logNote = (item.note || '') + (item.supplier ? ` | ร้านค้า: ${item.supplier}` : '');
         batchLogs.push({
             date: date,
             action: 'Import Assets',
             item: newAsset.name,
             change: 'New',
-            note: `นำเข้าข้อมูล CSV เข้าโครงการ ${item.project} ${logNote}`,
+            note: logNote,
             images: [],
             requestId: null,
+            supplier: item.supplier,
             assetId: newAsset.id,
             by: `${user.empId} ${user.firstName}`
         });
@@ -3655,8 +3813,8 @@ const filteredLogs = useMemo(() => {
 
  // --- LOGIC: HISTORY & LOGS (UPDATED WITH REFERENCE) ---
 
-// ⭐ เพิ่ม async
-const addInvLog = async (action, item, change, note = '', images = [], relatedRequestId = null, assetId = null) => {
+
+const addInvLog = async (action, item, change, note = '', images = [], relatedRequestId = null, assetId = null, extraData = {}) => {
   const log = {
     date: new Date().toLocaleString('th-TH'),
     action,
@@ -3666,11 +3824,11 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
     note,
     images,
     relatedRequestId,
-    assetId
+    assetId,
+    ...extraData // ⭐ เพิ่มข้อมูลพิเศษ เช่น supplier
   };
   setInvLogs(prev => [log, ...prev]);
   
-  // ⭐ สั่งบันทึกและ return promise กลับไป (เพื่อให้ฟังก์ชันอื่นรอได้)
   try {
       await saveLogToSheet(log);
   } catch (err) {
@@ -4575,16 +4733,17 @@ const handleAddNewProduct = async () => {
         const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].name : (existingInv ? existingInv.image : null);
         const date = new Date().toLocaleString('th-TH');
         // ... (จบส่วน Image) ...
-
+const supplierTxt = newStockItem.supplier ? ` | ร้านค้า: ${newStockItem.supplier}` : '';
         if (existingInv) {
             // ✅ MERGE (ของเดิม)
-            const updatedItem = {
+const updatedItem = {
                 ...existingInv,
-                qty: existingInv.qty + newStockItem.qty, // บวกยอด
+                qty: existingInv.qty + newStockItem.qty,
                 price: newStockItem.price > 0 ? newStockItem.price : existingInv.price,
                 note: newStockItem.note ? (existingInv.note ? `${existingInv.note} | ${newStockItem.note}` : newStockItem.note) : existingInv.note,
                 lastUpdated: date,
-                image: mainImageName
+                image: mainImageName,
+                supplier: newStockItem.supplier || existingInv.supplier // ⭐ เพิ่ม: อัปเดต Supplier
             };
             setInventory(prev => prev.map(i => i.id === existingInv.id ? updatedItem : i));
             
@@ -4592,19 +4751,18 @@ const handleAddNewProduct = async () => {
             await saveInventoryToSheet(updatedItem);
             
             const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-            await addInvLog('Add Stock (Merge)', updatedItem.name, `+${newStockItem.qty}`, `โครงการ: ${updatedItem.project} (${currentType})`, logAttachments, null, finalId);
+            await addInvLog('Add Stock (Merge)', updatedItem.name, `+${newStockItem.qty}`, `โครงการ: ${updatedItem.project} (${currentType})${supplierTxt}`, logAttachments, null, finalId, { supplier: newStockItem.supplier });
+            
             showToast(`เพิ่มยอดสินค้าเดิมเรียบร้อย (${updatedItem.qty})`);
             
         } else {
-            // ✅ NEW (ของใหม่)
+            // ✅ NEW
             const newItem = {
-                id: finalId, // ID มี Suffix
+                id: finalInvId,
                 ...newStockItem,
+                supplier: newStockItem.supplier || '', // ⭐ เพิ่ม: บันทึก Supplier
                 stockType: currentType,
-                lastUpdated: date,
-                image: mainImageName,
-                images: [],
-                id: finalId // ยืนยัน ID อีกที
+                // ...
             };
             const { images, isAutoId, ...itemForServer } = newItem;
             
@@ -4613,7 +4771,7 @@ const handleAddNewProduct = async () => {
             
             const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
             const typeLabel = currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
-            await addInvLog('Add New Item', newItem.name, `Start: ${newItem.qty}`, `โครงการ: ${newItem.project} | ${typeLabel}`, logAttachments, null, finalId);
+            await addInvLog('Add New Item', newItem.name, `Start: ${newItem.qty}`, `โครงการ: ${newItem.project} | ${typeLabel}${supplierTxt}`, logAttachments, null, finalId, { supplier: newItem.supplier });
             showToast('บันทึกสินค้าใหม่เรียบร้อย');
         }
 
@@ -4687,13 +4845,14 @@ const handleAddAsset = async () => {
               // ⭐ กำหนดค่า Holder: ถ้า Borrowed ใช้ค่าที่กรอก, ถ้าไม่ใช้ ให้เป็น '-'
               const finalHolder = newAssetItem.status === 'Borrowed' ? newAssetItem.holder : '-';
 
-              const newAsset = { 
+const newAsset = { 
                   currentRequestId: null, 
                   lastUpdated: date,
                   ...newAssetItem, 
-                  holder: finalHolder, // Override ค่า holder ให้ถูกต้อง
+                  holder: finalHolder,
                   id: finalId,     
                   image: mainImageName,
+                  supplier: newAssetItem.supplier || '', // ⭐ เพิ่ม: บันทึก Supplier
                   images: [] 
               };
               
@@ -4707,8 +4866,10 @@ const handleAddAsset = async () => {
               // สร้างข้อความ Log
               let logAction = `รับเข้าโครงการ ${newAssetItem.project || 'ไม่ระบุ'} - เพิ่มทรัพย์สินใหม่ ${finalId} (${newAssetItem.status})`;
               if (newAssetItem.status === 'Borrowed') logAction += ` ผู้ยืม: ${finalHolder}`;
+              if (newAssetItem.supplier) logAction += ` | ร้านค้า: ${newAssetItem.supplier}`;
 
-              addInvLog('Add Asset', newAssetItem.name, 'New', logAction, logAttachments);
+              addInvLog('Add Asset', newAssetItem.name, 'New', logAction, logAttachments, null, null, { supplier: newAssetItem.supplier });
+
               
               setIsLoading(false);
               setShowAssetModal(false);
@@ -5352,7 +5513,7 @@ const existingInv = inventory.find(inv => inv.name === item.name && inv.project 
           const defaultAuto = false;
 
 
-          return { 
+    return { 
               ...item,
               originalName: item.name, 
               targetType: defaultTarget, 
@@ -5363,10 +5524,9 @@ const existingInv = inventory.find(inv => inv.name === item.name && inv.project 
               actualPrice: item.unitPrice, 
               orderedQty: item.qty,
               receivedSoFar: receivedSoFar,
-              
-              // ⭐ state ใหม่สำหรับหน้าจอรับของ
               inventoryId: defaultInvId,
-              isInvAutoId: defaultAuto
+              isInvAutoId: defaultAuto,
+              supplier: '' // ⭐ เพิ่มบรรทัดนี้: ค่าเริ่มต้นร้านค้า
           };
       });
 
@@ -5393,7 +5553,13 @@ const handleConfirmReceive = async () => {
         let currentAssetCount = assets.length;
 
         for (const item of receiveItems) {
-            // ⭐⭐⭐ [แก้ไขจุดที่เกิด Error] ย้ายมาประกาศตรงนี้เพื่อให้ใช้ได้ทั้ง Inventory และ Asset
+            // ⭐ [เพิ่มใหม่] ตรวจสอบว่าต้องระบุร้านค้า
+            if (item.receivedQty > 0 && !item.supplier) {
+                alert(`กรุณาระบุ "ร้านค้า" สำหรับรายการ: ${item.name}`);
+                setIsLoading(false);
+                return;
+            }
+            
             const qtyToReceive = item.receivedQty;
 
             if (item.targetType === 'Inventory') {
@@ -5436,7 +5602,19 @@ const handleConfirmReceive = async () => {
                     // อัปเดต List ชั่วคราว และบันทึก
                     currentInvList[existingIndex] = updatedInv;
                     await saveInventoryToSheet(updatedInv);
-                    await addInvLog('Stock In (Merge)', item.name, `+${qtyToReceive}`, `รับเข้าโครงการ ${project} (System)`, logImages, selectedRequest.id, existing.id);
+                    
+                    const fullNote = `รับเข้าโครงการ ${project} (System) | ร้านค้า: ${item.supplier}`;
+
+    await addInvLog(
+        'Stock In (Merge)', 
+        item.name, 
+        `+${qtyToReceive}`, 
+        fullNote, // ใช้ Note ใหม่ที่รวมชื่อร้าน
+        logImages, 
+        selectedRequest.id, 
+        existing.id,
+        { supplier: item.supplier } // เพิ่ม parameter นี้
+    );
 
                 } else {
                     // ✅ NEW ITEM (สร้างใหม่ ต้อง Gen ID)
@@ -5470,7 +5648,20 @@ const handleConfirmReceive = async () => {
                     
                     currentInvList.push(newInv); // เพิ่มเข้า List
                     await saveInventoryToSheet(newInv);
-                    await addInvLog('Stock In (New)', item.name, `Start: ${qtyToReceive}`, `โครงการ ${project} (System)`, logImages, selectedRequest.id, finalInvId);
+
+
+                    const fullNote = `โครงการ ${project} (System) | ร้านค้า: ${item.supplier}`;
+
+    await addInvLog(
+        'Stock In (New)', 
+        item.name, 
+        `Start: ${qtyToReceive}`, 
+        fullNote, // ใช้ Note ใหม่
+        logImages, 
+        selectedRequest.id, 
+        finalInvId,
+        { supplier: item.supplier } // เพิ่ม parameter นี้
+    );
                 }
             }
              else {
@@ -5520,7 +5711,20 @@ const handleConfirmReceive = async () => {
                     };
                     setAssets(prev => [...prev, newAsset]);
                     saveAssetToSheet(newAsset);
-                    addInvLog('Register Asset', newAsset.name, 'New', `ลงทะเบียนเข้าโครงการ ${project}`, assetLogImages, selectedRequest.id, assetId);
+
+
+                    const logAction = `ลงทะเบียนเข้าโครงการ ${project} | ร้านค้า: ${item.supplier}`;
+
+        addInvLog(
+            'Register Asset', 
+            newAsset.name, 
+            'New', 
+            logAction, // ใช้ Action note ใหม่
+            assetLogImages, 
+            selectedRequest.id, 
+            assetId,
+            { supplier: item.supplier } // เพิ่ม parameter นี้
+        );
                 }
             }
         } 
@@ -10698,6 +10902,12 @@ const relatedAssets = sourceAssets.filter(a =>
       <datalist id="inventory-list">{inventory.map((inv, i) => <option key={i} value={inv.name} />)}</datalist>
       <datalist id="asset-list">{[...new Set(assets.map(a => a.name))].map((name, i) => <option key={i} value={name} />)}</datalist>
 
+      <datalist id="supplier-list-options">
+          {[...new Set(invLogs.map(l => l.supplier).filter(s => s))].map((s, i) => (
+              <option key={i} value={s} />
+          ))}
+      </datalist>
+
       {/* HEADER */}
       <div className="px-6 py-4 border-b flex justify-between items-center bg-white">
           <div>
@@ -10847,7 +11057,24 @@ const relatedAssets = sourceAssets.filter(a =>
                       ) : (
                           <div className="w-full md:w-1/3"></div>
                       )}
-                      
+
+
+
+                      <div className="w-full md:w-1/3">
+                          <label className="text-xs text-gray-500 font-bold mb-1 block">ร้านค้า (Supplier) <span className="text-red-500">*</span></label>
+                          <input 
+                              type="text" 
+                              list="supplier-list-options" // เชื่อมกับ Datalist
+                              className="w-full p-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-teal-500 outline-none"
+                              placeholder="ระบุชื่อร้านค้า..."
+                              value={item.supplier}
+                              onChange={(e) => {
+                                  const n = [...receiveItems];
+                                  n[idx].supplier = e.target.value;
+                                  setReceiveItems(n);
+                              }}
+                          />
+                      </div>
                       <div className="w-full md:w-2/3">
                           <label className="text-xs text-gray-500 font-bold mb-1 block">จัดเก็บเข้า (Target Storage)</label>
                           <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
@@ -11083,6 +11310,12 @@ const relatedAssets = sourceAssets.filter(a =>
                     <option key={i} value={name}/>
                 ))}
             </datalist>
+
+            <datalist id="supplier-list-options-add-inv">
+                {[...new Set(invLogs.map(l => l.supplier).filter(s => s))].map((s, i) => (
+                    <option key={i} value={s} />
+                ))}
+            </datalist>
                 
                 {/* Header */}
                 <div className="px-6 py-4 border-b bg-green-50 flex justify-between items-center sticky top-0 z-10">
@@ -11194,6 +11427,18 @@ const relatedAssets = sourceAssets.filter(a =>
                             <label className="block text-sm font-bold text-gray-700 mb-1.5">จำนวนเริ่มต้น</label>
                             <input type="number" min="0" className="w-full p-2.5 border rounded-xl text-sm" value={newStockItem.qty} onChange={e => setNewStockItem({...newStockItem, qty: parseInt(e.target.value)||0})}/>
                         </div>
+
+                      <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-1.5">ร้านค้า (Supplier)</label>
+                        <input 
+                type="text" 
+                list="supplier-list-options-add-inv" // ⭐ ต้องตรงกับ ID ข้างบน
+                className="w-full p-2.5 border rounded-xl text-sm" 
+                placeholder="ระบุร้านค้า (ถ้ามี)..."
+                value={newStockItem.supplier || ''} 
+                onChange={e => setNewStockItem({...newStockItem, supplier: e.target.value})}
+            />
+                    </div>
                         <div>
                             <label className="block text-sm font-bold text-gray-700 mb-1.5">หน่วยนับ</label>
                             <select className="w-full p-2.5 border rounded-xl text-sm bg-white" value={newStockItem.unit} onChange={e => setNewStockItem({...newStockItem, unit: e.target.value})}>
@@ -11306,6 +11551,12 @@ const relatedAssets = sourceAssets.filter(a =>
                     ))}
                 </datalist>
 
+                <datalist id="supplier-list-options-add-asset">
+                {[...new Set(invLogs.map(l => l.supplier).filter(s => s))].map((s, i) => (
+                    <option key={i} value={s} />
+                ))}
+            </datalist>
+
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-white sticky top-0 z-10">
                     <h3 className="font-bold text-lg text-indigo-800 flex items-center gap-2"><Plus className="w-5 h-5"/> เพิ่มทรัพย์สินใหม่</h3>
@@ -11351,6 +11602,18 @@ const relatedAssets = sourceAssets.filter(a =>
                         <div><label className="block text-sm font-bold text-gray-700 mb-1.5">ชื่อรายการ (Name)</label><input type="text" list="existing-assets" className="w-full p-2.5 border rounded-xl text-sm" placeholder="ระบุชื่อทรัพย์สิน..." value={newAssetItem.name} onChange={e => setNewAssetItem({...newAssetItem, name: e.target.value})}/></div>
                         <div><label className="block text-sm font-bold text-gray-700 mb-1.5">Serial Number (S/N)</label><input type="text" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.serial} onChange={e => setNewAssetItem({...newAssetItem, serial: e.target.value})}/></div>
                     </div>
+
+                    <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-1.5">ร้านค้า (Supplier)</label>
+                            <input 
+                type="text" 
+                list="supplier-list-options-add-asset" // ⭐ เชื่อมกับ ID ข้างบน
+                className="w-full p-2.5 border rounded-xl text-sm" 
+                placeholder="ระบุร้านค้า (ถ้ามี)..."
+                value={newAssetItem.supplier || ''} 
+                onChange={e => setNewAssetItem({...newAssetItem, supplier: e.target.value})}
+            />
+                        </div>
 
                     {/* Price & Rent Details */}
                     <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
@@ -11487,17 +11750,32 @@ const relatedAssets = sourceAssets.filter(a =>
                         </h3>
                     </div>
                     
-                    {/* ⭐ ปุ่มปิดหน้าต่าง (Close Button) */}
-                    <button 
-                        onClick={() => setShowItemDetailModal(false)} 
-                        className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors"
-                        title="ปิดหน้าต่าง"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                    </button>
+                   
+
+<div className="flex items-center gap-2">
+    {/* ⭐ ปุ่ม Export CSV เพิ่มใหม่ตรงนี้ */}
+    {viewingItem && (
+        <button 
+            onClick={handleExportItemHistory}
+            className="flex items-center gap-1 bg-green-50 text-green-700 border border-green-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-green-100 transition-colors mr-2"
+            title="ดาวน์โหลดประวัติทั้งหมดเป็น CSV"
+        >
+            <Download className="w-4 h-4"/> Export History
+        </button>
+    )}
+
+    {/* ปุ่มปิดเดิม */}
+    <button 
+        onClick={() => setShowItemDetailModal(false)} 
+        className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors"
+        title="ปิดหน้าต่าง"
+    >
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+    </button>
+</div>
                 </div>
                 
                 <div id="history-modal-scroll" className="flex-1 overflow-y-auto bg-slate-50 scroll-smooth">
@@ -13577,6 +13855,12 @@ const relatedAssets = sourceAssets.filter(a =>
         <option key={i} value={name}/>
     ))}
 </datalist>
+
+<datalist id="supplier-list-options">
+                {[...new Set(invLogs.map(l => l.supplier).filter(s => s))].map((s, i) => (
+                    <option key={i} value={s} />
+                ))}
+            </datalist>
                   
                   {/* Header */}
                   <div className="px-6 py-4 border-b flex justify-between items-center bg-white">
@@ -13593,10 +13877,10 @@ const relatedAssets = sourceAssets.filter(a =>
                       
                      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
     <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV</h4>
-    <p className="mb-2">เรียงคอลัมน์ดังนี้ (12 ช่อง):</p>
-    <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
-        รหัสทรัพย์สิน, ชื่อรายการ, ซีเรียลนัมเบอร์, ประเภท, ราคา, หน่วย, วันเริ่มสัญญา, วันสิ้นสุดสัญญา, สถานะ, ผู้ถือครอง, หมายเหตุ, ชื่อโครงการ
-    </div>
+  <p className="mb-2">เรียงคอลัมน์ดังนี้ (13 ช่อง):</p>
+        <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
+            รหัสทรัพย์สิน, ชื่อรายการ, ซีเรียลนัมเบอร์, ประเภท, ราคา, หน่วย, วันเริ่มสัญญา, วันสิ้นสุดสัญญา, สถานะ, ผู้ถือครอง, หมายเหตุ, ชื่อโครงการ, ร้านค้า
+        </div>
     <div className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-1 text-xs text-blue-700 list-disc pl-4">
         <li><b>รหัสทรัพย์สิน:</b> ว่างไว้ = Auto Gen (ห้ามซ้ำ)</li>
         <li><b>ชื่อรายการ:</b> ห้ามว่าง</li>
@@ -13677,6 +13961,7 @@ const relatedAssets = sourceAssets.filter(a =>
                             <th className="px-3 py-2 min-w-[140px] bg-gray-50">สถานะ</th>
                             <th className="px-3 py-2 min-w-[180px] bg-gray-50">ผู้ถือครอง</th>
                             <th className="px-3 py-2 min-w-[200px] bg-gray-50">หมายเหตุ</th>
+                            <th className="px-3 py-2 min-w-[120px] bg-gray-50">ร้านค้า</th>
                             <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
                         </tr>
                     </thead>
@@ -13812,7 +14097,32 @@ const relatedAssets = sourceAssets.filter(a =>
                                 </td>
 
                                 {/* Note */}
-                                <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const newData = [...importData]; newData[idx].note = e.target.value; setImportData(newData); }}/></td>
+                                <td className="px-2 py-1">
+    <input 
+        type="text" 
+        className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" 
+        value={row.note} 
+        onChange={e => { 
+            const n = [...importData]; 
+            n[idx].note = e.target.value; 
+            setImportData(n); // ✅ แก้จาก newData เป็น n
+        }}
+    />
+</td>
+
+                                <td className="px-2 py-1">
+    <input 
+        type="text" 
+        list="supplier-list-options"
+        className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-600" 
+        value={row.supplier} 
+        onChange={e => { 
+            const n = [...importData]; 
+            n[idx].supplier = e.target.value; 
+            setImportData(n); // ✅ แก้จาก newData เป็น n
+        }}
+    />
+</td>
                                 
                                 {/* Delete */}
                                 <td className="px-2 py-1 text-center">
@@ -13983,6 +14293,12 @@ const relatedAssets = sourceAssets.filter(a =>
         <option key={i} value={name}/>
     ))}
 </datalist>
+
+<datalist id="supplier-list-options">
+                  {[...new Set(invLogs.map(l => l.supplier).filter(s => s))].map((s, i) => (
+                      <option key={i} value={s} />
+                  ))}
+              </datalist>
                   
                   {/* Header */}
                   <div className="px-6 py-4 border-b flex justify-between items-center bg-white">
@@ -13999,9 +14315,9 @@ const relatedAssets = sourceAssets.filter(a =>
     
     <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm text-blue-800">
         <h4 className="font-bold mb-2 flex items-center gap-2"><Info className="w-4 h-4"/> รูปแบบไฟล์ CSV (ภาษาไทยรองรับ)</h4>
-        <p className="mb-2">เรียงคอลัมน์ดังนี้ (9 ช่อง):</p>
+<p className="mb-2">เรียงคอลัมน์ดังนี้ (10 ช่อง):</p>
         <div className="bg-white border border-blue-100 p-3 rounded font-mono text-xs overflow-x-auto whitespace-nowrap mb-2 text-slate-600">
-            รหัสวัสดุ, ชื่อสินค้า, ประเภท, จำนวน, หน่วย, ขั้นต่ำ, ราคา, หมายเหตุ, โครงการ
+            รหัสวัสดุ, ชื่อสินค้า, ประเภท, จำนวน, หน่วย, ขั้นต่ำ, ราคา, หมายเหตุ, โครงการ, ร้านค้า
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-xs text-blue-700 list-disc pl-4">
             <li><b>รหัสวัสดุ:</b> ว่างไว้ = ระบบสร้างให้อัตโนมัติ (INV-xxx)</li>
@@ -14058,6 +14374,7 @@ const relatedAssets = sourceAssets.filter(a =>
                             <th className="px-3 py-2 w-20 text-center bg-gray-50">ขั้นต่ำ</th>
                             <th className="px-3 py-2 w-24 text-right bg-gray-50">ราคา</th>
                             <th className="px-3 py-2 min-w-[150px] bg-gray-50">หมายเหตุ</th>
+                            <th className="px-3 py-2 min-w-[120px] bg-gray-50">ร้านค้า</th>
                             <th className="px-3 py-2 w-10 text-center bg-gray-50">ลบ</th>
                         </tr>
                     </thead>
@@ -14150,6 +14467,16 @@ const relatedAssets = sourceAssets.filter(a =>
                                     
                                     {/* Note */}
                                     <td className="px-2 py-1"><input type="text" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-500" value={row.note} onChange={e => { const n = [...importInvData]; n[idx].note = e.target.value; setImportInvData(n); }}/></td>
+
+                                    <td className="px-2 py-1">
+                                        <input 
+                                            type="text" 
+                                            list="supplier-list-options" 
+                                            className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-gray-600" 
+                                            value={row.supplier} 
+                                            onChange={e => { const n = [...importInvData]; n[idx].supplier = e.target.value; setImportInvData(n); }}
+                                        />
+                                    </td>
 
                                     {/* Delete */}
                                     <td className="px-2 py-1 text-center">
@@ -15921,4 +16248,4 @@ const relatedAssets = sourceAssets.filter(a =>
     root.render(<App />);
   </script>
 </body>
-</html>
+</htm
