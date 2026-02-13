@@ -996,7 +996,7 @@ function getRecentLogs(limit = 200) {
   
   // ใช้ id.desc ไปก่อนเพื่อความชัวร์ (เพราะ id คุณ gen จาก date string) 
   // แต่เพิ่ม limit ให้เยอะขึ้นเพื่อโอกาสเจอข้อมูลล่าสุดจริง
-  const params = `?select=payload&order=id.desc&limit=${limit}`;
+  const params = `?select=payload&order=created_at.desc&limit=${limit}`;
   
   const jsonResponse = callSupabase('logs', 'get', null, params);
   
@@ -3016,5 +3016,25 @@ function getStockInfoHtml(itemName, project, currentReqId, allRequests, allInven
   }
 
   return html;
+}
+
+
+function getAllLogsForItem(assetId) {
+  // ⭐ แก้ไข: เปลี่ยน ->> เป็น -%3E%3E (URL Encoded)
+  const params = `?select=payload&payload-%3E%3EassetId=eq.${encodeURIComponent(assetId)}&order=created_at.desc`;
+  
+  const jsonResponse = callSupabase('logs', 'get', null, params);
+  
+  try {
+    const data = JSON.parse(jsonResponse);
+    if (Array.isArray(data)) {
+      return data.map(row => row.payload);
+    } else {
+      return [];
+    }
+  } catch (e) {
+    console.error("Error getting all logs: " + e.toString());
+    return [];
+  }
 }
 
