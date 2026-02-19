@@ -3195,13 +3195,28 @@ const handleSaveAnnouncement = () => {
           }).clearSystemAnnouncement();
       };
 
-// --- LOGIC: COST EDITING (UPDATED FOR ASSETS) ---
-      const handleStartCostEdit = () => {
+const handleStartCostEdit = () => {
           const clone = JSON.parse(JSON.stringify(selectedRequest));
-          // ⭐ Snapshot Assets related to this request (ดึงทรัพย์สินที่เกี่ยวข้องมาเก็บไว้แก้ไข)
-          const relatedAssets = assets.filter(a => a.currentRequestId === selectedRequest.id);
-          clone.tempAssets = JSON.parse(JSON.stringify(relatedAssets));
           
+          // 1. ดึง Asset ทั้งหมดของ Request นี้มาเตรียมไว้
+          const reqAssets = assets.filter(a => a.currentRequestId === selectedRequest.id);
+          const tempAssets = JSON.parse(JSON.stringify(reqAssets));
+
+          // 2. วนลูปจับคู่ Item กับ Asset และฝัง _tempItemId เพื่อล็อกคู่กันไว้
+          clone.items = clone.items.map((item, idx) => {
+              // หา Asset ที่ตรงกับ Item นี้ (โดยใช้ Logic เดิมคือ ชื่อ+ราคา)
+              tempAssets.forEach(a => {
+                  if (a.name === item.name &&
+                     (a.price === item.unitPrice || a.rentalPrice === item.unitPrice) &&
+                     a._tempItemId === undefined // จับคู่เฉพาะตัวที่ยังไม่มีเจ้าของ
+                  ) {
+                      a._tempItemId = idx; // ⭐ ฝัง index ของ item ลงไปใน asset
+                  }
+              });
+              return item; 
+          });
+          
+          clone.tempAssets = tempAssets; // เก็บ Asset ที่ฝัง ID แล้วลงไปในตัวแปร
           setTempCostRequest(clone);
           setIsCostEditMode(true);
       };
@@ -5732,14 +5747,29 @@ const handleConfirmReceive = async () => {
             }
         } 
 
-// Update Request Status (คงเดิม)
-        const updatedItems = selectedRequest.items.map(originalItem => {
-            const receivingItem = receiveItems.find(ri => ri.originalName === originalItem.name);
-            if (receivingItem && receivingItem.receivedQty > 0) {
-                 return { ...originalItem, receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty };
-            }
-            return originalItem;
-        });
+const updatedItems = selectedRequest.items.map(originalItem => {
+    const receivingItem = receiveItems.find(ri => ri.originalName === originalItem.name);
+    if (receivingItem && receivingItem.receivedQty > 0) {
+            
+            // 1. สร้าง Object ประวัติย่อย
+            const newLog = {
+                date: new Date().toLocaleString('th-TH'),
+                qty: receivingItem.receivedQty,
+                price: receivingItem.actualPrice,
+                duration: receivingItem.duration || 1
+            };
+
+            // 2. ดึงประวัติเดิมมาต่อท้าย
+            const prevLogs = originalItem.receivedLog || [];
+
+            return { 
+                ...originalItem, 
+                receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty,
+                receivedLog: [...prevLogs, newLog] // ✅ เพิ่มบรรทัดนี้เพื่อบันทึก Log ลง Item
+            };
+    }
+    return originalItem;
+});
 
         const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
         let newStatus = 'Completed';
@@ -6319,7 +6349,8 @@ const handleSubmitContract = async () => {
 
    // --- LOGIC: Dashboard Stats (รวมทุกประเภท) ---
 const dashboardStats = useMemo(() => {
-    let activeRequests = requests.filter(r => r.status !== 'Draft');
+    // ⭐ เพิ่ม && r.status !== 'Cancelled' เพื่อไม่ให้นับรวมรายการยกเลิก
+    let activeRequests = requests.filter(r => r.status !== 'Draft' && r.status !== 'Cancelled'); 
     
     // กรองตาม Project ที่เลือก
     if (globalProjectFilter !== 'All') {
@@ -6338,7 +6369,7 @@ const dashboardStats = useMemo(() => {
 
     // --- LOGIC: Dashboard Requests List (รวมทุกประเภท) ---
 const dashboardRequests = useMemo(() => {
-    let data = requests.filter(r => r.status !== 'Draft');
+    let data = requests.filter(r => r.status !== 'Draft' && r.status !== 'Cancelled');
 
     // 1. กรอง Project (Global)
     if (globalProjectFilter !== 'All') {
@@ -9395,12 +9426,10 @@ if (isOwner && canRecall) return (
                       )}
                       
 
-                      {newOrderMeta.type !== 'Borrow' && (
-                        <div>
-                            <label className="text-xs font-bold text-gray-500 mb-1 block">หมายเหตุ</label>
-                            <input type="text" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" placeholder="รายละเอียดเพิ่มเติม..." value={tempItem.note} onChange={e => setTempItem({...tempItem, note: e.target.value})} />
-                        </div>
-                      )}
+                      <div> {/* 🟢 ลบ {newOrderMeta.type !== 'Borrow' && ( ออก */}
+    <label className="text-xs font-bold text-gray-500 mb-1 block">หมายเหตุ</label>
+    <input type="text" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" placeholder="รายละเอียดเพิ่มเติม..." value={tempItem.note} onChange={e => setTempItem({...tempItem, note: e.target.value})} />
+</div> {/* 🟢 ลบ )} ปิดท้ายออก */}
 
                       {/* Image Upload: แสดงเฉพาะ Local และ HO (Updated: Multi-Image UI) */}
                       {(newOrderMeta.type === 'Local' || newOrderMeta.type === 'HO') && (
@@ -9457,6 +9486,7 @@ if (isOwner && canRecall) return (
                                         <th className="p-3 font-bold">Asset ID</th>
                                         <th className="p-3 font-bold">Serial No.</th>
                                         <th className="p-3 font-bold text-center">รูป</th>
+                                        <th className="p-3 font-bold">หมายเหตุ</th>
                                     </>
                                 ) : (
                                     <><th className="p-3 font-bold">SubJob/Mat</th><th className="p-3 font-bold">หมายเหตุ</th></>
@@ -9474,15 +9504,16 @@ if (isOwner && canRecall) return (
                                 <td className="p-3 text-gray-800 font-bold">{itm.name}</td>
                                 
                                 {newOrderMeta.type === 'Borrow' ? (
-                                    <>
-                                        <td className="p-3 text-xs text-gray-500 font-mono">{itm.assetId || '-'}</td>
-                                        <td className="p-3 text-xs text-gray-500 font-mono">{itm.serial || '-'}</td>
-                                        <td className="p-3 text-center">
-                                             {itm.images && itm.images.length > 0 ? (
-                                                 <button type="button" onClick={() => setViewingAttachments({ attachments: itm.images })} className="text-blue-600 hover:text-blue-800"><ImageIcon className="w-4 h-4 mx-auto"/></button>
-                                             ) : '-'}
-                                        </td>
-                                   </>
+                                   <>
+    <td className="p-3 text-xs text-gray-500 font-mono">{itm.assetId || '-'}</td>
+    <td className="p-3 text-xs text-gray-500 font-mono">{itm.serial || '-'}</td>
+    <td className="p-3 text-center">
+        {itm.images && itm.images.length > 0 ? (
+            <button type="button" onClick={() => setViewingAttachments({ attachments: itm.images })} className="text-blue-600 hover:text-blue-800"><ImageIcon className="w-4 h-4 mx-auto"/></button>
+        ) : '-'}
+    </td>
+    <td className="p-3 text-xs text-gray-500 break-words whitespace-pre-wrap max-w-[200px]">{itm.note || '-'}</td> {/* ⭐ เพิ่ม Cell หมายเหตุ */}
+</>
                                 ) : (
                                     <>
                                         <td className="p-3 text-xs text-gray-500">
@@ -10051,11 +10082,18 @@ if (isOwner && canRecall) return (
 const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
     
     // 🟢 แทนที่ด้วยโค้ดชุดนี้:
-    const relatedAssets = sourceAssets.filter(a => 
+const relatedAssets = sourceAssets.filter(a => 
         a.currentRequestId === selectedRequest.id && // 1. เช็คเลขที่ใบคำขอ
-        a.name === item.name && // 2. เช็คชื่อสินค้า
-        // 3. ⭐ เช็คราคา (เพื่อแยกรายการที่ชื่อซ้ำแต่คนละราคา)
-        (a.price === item.unitPrice || a.rentalPrice === item.unitPrice) 
+        (
+            // ⭐ 2. ถ้าอยู่โหมดแก้ไข: ให้เช็คจาก _tempItemId ที่เราฝังไว้ (แม่นยำ 100% แม้ราคาเปลี่ยน)
+            (isCostEditMode && a._tempItemId !== undefined)
+                ? a._tempItemId === idx 
+                : ( 
+                    // ถ้าโหมดปกติ: ใช้ Logic เดิม (ชื่อ + ราคา)
+                    a.name === item.name && 
+                    (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+                  )
+        )
     );
 
     const receivedLogs = item.receivedLog || [];
@@ -10608,11 +10646,17 @@ const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostR
                         const sourceAssets = (isCostEditMode && tempCostRequest?.tempAssets) ? tempCostRequest.tempAssets : assets;
                         // ✅ แก้ไข: เพิ่มเงื่อนไขเช็คราคา เพื่อให้ยอดตรงกับตารางด้านบน
 const relatedAssets = sourceAssets.filter(a => 
-    a.currentRequestId === selectedRequest.id && 
-    a.name === item.name &&
-    (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
-);
-                        const receivedLogs = item.receivedLog || [];
+        a.currentRequestId === selectedRequest.id && // 1. เช็คเลขที่ใบคำขอ
+        a.name === item.name && // 2. เช็คชื่อสินค้า
+        // 3. ⭐ [แก้ไข] เช็คราคา (รองรับโหมดแก้ไข: ถ้ามี _originalPrice ให้ใช้ตัวนั้นเทียบแทน)
+        (
+            (isCostEditMode && a._originalPrice !== undefined)
+                ? (a._originalPrice === item.unitPrice) 
+                : (a.price === item.unitPrice || a.rentalPrice === item.unitPrice)
+        )
+    );
+
+    const receivedLogs = item.receivedLog || [];
                         
                         let itemTotal = 0;
                         let receivedCount = 0;
@@ -13585,20 +13629,32 @@ const relatedAssets = sourceAssets.filter(a =>
                     </tr>
                 </thead>
                
-            <tbody className="divide-y">
+<tbody className="divide-y">
     {selectedRequest.items.map((item, i) => {
-        // คำนวณตัวเลข
-        const isClosed = ['Completed', 'Returned', 'Rejected'].includes(selectedRequest.status);
-        const requested = item.qty;
-        // ถ้างานจบแล้ว ให้ใช้ยอดที่รับจริง (หรือ 0 ถ้าถูก reject)
-        const paid = isClosed ? (item.receivedTotal || 0) : null;
+        // --- 1. ตัวแปรแยกประเภท ---
+        const isWithdraw = selectedRequest.type === 'Withdraw';
+        const isOrder = ['HO', 'Local'].includes(selectedRequest.type);
         
-        const isRejected = item.isItemRejected;
-        const isPartial = paid !== null && paid < requested && !isRejected;
+        // --- 2. ตัวแปรคำนวณตัวเลข ---
+        const requested = item.qty;
+        const paid = item.receivedTotal || 0; // ยอดรับ/จ่ายจริง
+        const remaining = requested - paid;   // ยอดค้างรับ
+        const isRejected = item.isItemRejected; // ถูกปฏิเสธ/ยกเลิก
+        
+        // สถานะจบงาน (Withdraw ต้องจบงานก่อนถึงจะรู้ว่าจ่ายไม่ครบ)
+        const isClosed = ['Completed', 'Returned', 'Rejected', 'Partially Received'].includes(selectedRequest.status);
+
+        // --- 3. Logic การแสดงผล ---
+        
+        // เงื่อนไข Partial สำหรับ Withdraw เท่านั้น!! (ต้องจบงาน + ไม่ถูก Reject + ได้น้อยกว่าขอ)
+        const showWithdrawWarning = isWithdraw && isClosed && !isRejected && (paid < requested);
 
         return (
             <tr key={i}>
+                {/* Col 1: ลำดับ */}
                 <td className="text-center font-bold border border-black p-2">{i + 1}</td>
+                
+                {/* Col 2: รายละเอียดสินค้า */}
                 <td className="border border-black p-2">
                     {/* รหัสสินค้า (ถ้ามี) */}
                     {(() => {
@@ -13612,37 +13668,39 @@ const relatedAssets = sourceAssets.filter(a =>
                         {item.name}
                     </div>
                     
-                    {/* ⭐ กรณีถูกปฏิเสธ: แสดงเหตุผล */}
+                    {/* เหตุผลการ Reject (แสดงทุกประเภท) */}
                     {isRejected && (
                         <div className="mt-1 text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded w-fit">
-                            *** ไม่ให้เบิก: {item.rejectReason}
+                            *** ไม่ให้เบิก/ยกเลิก: {item.rejectReason}
                         </div>
                     )}
 
-                    {/* ⭐ แสดงยอด: ขอ vs จ่าย */}
+                    {/* แสดงยอด (แยกตามประเภท) */}
                     <div className="mt-2 text-xs grid grid-cols-2 gap-4 w-fit">
                         <div>
                             <span className="text-gray-500">จำนวนขอ:</span> <span className="font-bold text-base">{requested}</span> {item.unit}
                         </div>
                         
-                        {/* แสดงยอดจ่ายเฉพาะเมื่อจบงานแล้ว */}
-                        {isClosed && !isRejected && (
+                        {/* Withdraw: โชว์ยอดจ่ายจริงตรงนี้ (เมื่อจบงาน) */}
+                        {isWithdraw && isClosed && !isRejected && (
                             <div>
                                 <span className="text-gray-500">จ่ายจริง:</span> 
-                                <span className={`font-bold text-base ml-1 ${isPartial ? 'text-red-600' : 'text-green-700'}`}>
+                                <span className={`font-bold text-base ml-1 ${showWithdrawWarning ? 'text-red-600' : 'text-green-700'}`}>
                                     {paid}
                                 </span> {item.unit}
                             </div>
                         )}
                     </div>
                     
-                    {/* ⭐ กรณีจ่ายไม่ครบ (Partial) */}
-                    {isPartial && (
+                    {/* ⭐⭐ แก้ไข: แสดงคำเตือนเฉพาะ Withdraw เท่านั้น ⭐⭐ */}
+                    {showWithdrawWarning && (
                         <div className="mt-1 text-[10px] text-orange-600 font-bold italic">
                             * จ่ายไม่ครบตามจำนวนขอ (Stock ไม่พอ/ปรับลด)
                         </div>
                     )}
                 </td>
+
+                {/* Col 3: SubJob/Mat */}
                 <td className="text-center align-middle border border-black p-2">
                     {item.subJob || item.matCode ? (
                         <div className="flex flex-col gap-1 text-xs font-bold">
@@ -13651,10 +13709,33 @@ const relatedAssets = sourceAssets.filter(a =>
                         </div>
                     ) : '-'}
                 </td>
+
+                {/* Col 4: วันที่ / หมายเหตุ */}
                 <td className="text-left align-top border border-black p-2">
                     <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
                         {formatDateTh(selectedRequest.dateRequired)}
                     </div>
+                    
+                    {/* ⭐⭐ HO/Local: โชว์ยอดรับ/ค้างรับ ตรงนี้แทน ⭐⭐ */}
+                    {isOrder && !isRejected && (paid > 0 || remaining > 0) && (
+                         <div className="mt-1 pt-1 border-t border-dotted border-gray-400 text-[11px] leading-tight">
+                            {paid > 0 && (
+                                <div className="text-green-700 font-bold">
+                                    รับแล้ว: {paid} {item.unit}
+                                </div>
+                            )}
+                            {remaining > 0 ? (
+                                <div className="text-red-600 font-bold">
+                                    ค้างรับ: {remaining} {item.unit}
+                                </div>
+                            ) : (
+                                <div className="text-gray-500 font-bold italic">
+                                    (ครบแล้ว)
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {item.note && <div className="text-xs text-gray-600 border-t border-dotted border-gray-300 pt-1 mt-1 leading-snug">{item.note}</div>}
                 </td>
             </tr>
