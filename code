@@ -2359,8 +2359,19 @@ function createRequestSecurely(reqData) {
     
     // 2. ดึงข้อมูล Requests ล่าสุดจาก Database (Refresh ข้อมูลจริง)
     var allRequests = getSheetData('Requests');
+
+    // =========================================================
+    // 🟢 2.5 [เพิ่มใหม่] เช็คสต็อก/สถานะจอง ก่อนทำต่อ
+    // ส่ง allRequests ไปด้วยเพื่อช่วยเช็คว่ามีใครจองค้างอยู่ไหม
+    var errorMsg = checkAvailability(reqData, allRequests);
     
-    // 3. คำนวณหา ID ถัดไป (REQ-xxx) จากข้อมูลล่าสุด
+    if (errorMsg) {
+       // ถ้าไม่ว่าง/ไม่พอ ให้หยุดและส่งค่า false กลับไปทันที
+       return { success: false, message: errorMsg };
+    }
+    // =========================================================
+    
+    // 3. คำนวณหา ID ถัดไป (REQ-xxx)
     var existingIds = allRequests
         .map(function(r) { return r.id; })
         .filter(function(id) { return id && typeof id === 'string' && id.startsWith('REQ-'); });
@@ -2381,26 +2392,99 @@ function createRequestSecurely(reqData) {
     // 5. บันทึกลง Database
     saveDataToSheet('Requests', nextId, reqData);
     
-    // 6. ส่งอีเมลแจ้งเตือน (ถ้าสถานะไม่ใช่ Draft)
-    // (ใช้ try-catch เพื่อไม่ให้ Error เรื่องเมลทำให้การบันทึกล้มเหลว)
+    // 6. ส่งอีเมลแจ้งเตือน
     if (reqData.status !== 'Draft') {
         try {
-            triggerEmails(reqData);        // ส่งปุ่มอนุมัติ
-            handleStatusNotification(reqData); // ส่งแจ้งเตือนผู้ขอ
+            triggerEmails(reqData);        
+            handleStatusNotification(reqData); 
         } catch (emailErr) {
             console.error("Email Error: " + emailErr);
         }
     }
     
-    // ส่งข้อมูลที่บันทึกสำเร็จ (พร้อม ID ใหม่) กลับไปให้ Frontend
     return { success: true, request: reqData };
     
   } catch (e) {
-    return { success: false, message: 'Create Request Error: ' + e.toString() };
+    return { success: false, message: 'บันทึกไม่สำเร็จ: ' + e.toString() };
   } finally {
     // 7. ปลดล็อกเสมอ
     lock.releaseLock();
   }
+}
+
+function checkAvailability(newReq, allRequests) {
+  // ดึงข้อมูลคลังและทรัพย์สินล่าสุดเดี๋ยวนี้
+  var inventory = getSheetData('Inventory'); 
+  var assets = getSheetData('Assets');
+
+  // วนลูปเช็คสินค้าทุกตัวในคำขอใหม่
+  for (var i = 0; i < newReq.items.length; i++) {
+    var item = newReq.items[i];
+
+    // --- กรณี 1: เบิกวัสดุ (Withdraw) ---
+    if (newReq.type === 'Withdraw') {
+      // 1. หาของใน Inventory
+      var stockItem = inventory.find(function(inv) { 
+        return inv.name === item.name; // หรือเช็คด้วย ID ถ้ามี
+      });
+
+      if (!stockItem) return 'ไม่พบสินค้า "' + item.name + '" ในระบบคลังสินค้า';
+
+      // 2. คำนวณยอดที่ "ถูกจองแล้วแต่ยังไม่ได้รับของ" (Pending Requests)
+      // เลือกเฉพาะคำขอประเภท Withdraw ที่สถานะยังไม่จบ (ไม่ใช่ Completed/Rejected)
+      var pendingQty = allRequests.filter(function(r) {
+        return r.type === 'Withdraw' && 
+               r.status !== 'Completed' && 
+               r.status !== 'Rejected' && 
+               r.status !== 'Draft' &&
+               r.status !== 'Cancelled';
+      }).reduce(function(sum, r) {
+        // หาว่าในคำขอนั้น มีสินค้าตัวเดียวกับเราไหม
+        var matchItem = r.items ? r.items.find(function(it) { return it.name === item.name; }) : null;
+        return sum + (matchItem ? Number(matchItem.qty) : 0);
+      }, 0);
+
+      // 3. เช็คยอดคงเหลือจริง (สต็อกจริง - ยอดจองรออนุมัติ - ยอดที่กำลังจะขอ)
+      var currentStock = Number(stockItem.qty || 0); // สมมติว่าใน Inventory คอลัมน์ชื่อ qty
+      var realAvailable = currentStock - pendingQty;
+
+      if (Number(item.qty) > realAvailable) {
+        return 'สินค้า "' + item.name + '" มีไม่พอ (คงเหลือ: ' + currentStock + ', ติดจอง: ' + pendingQty + ', ว่าง: ' + realAvailable + ')';
+      }
+    }
+
+    // --- กรณี 2: ยืมทรัพย์สิน (Borrow) ---
+    else if (newReq.type === 'Borrow') {
+      // 1. เช็คสถานะจาก Master Data (Assets)
+      // ต้องแน่ใจว่า item ส่ง assetId หรือ code มาด้วย
+      if (item.assetId) { 
+        var assetObj = assets.find(function(a) { return a.id === item.assetId; }); // แก้ id เป็นชื่อคอลัมน์จริงของคุณ
+        
+        if (!assetObj) return 'ไม่พบรหัสทรัพย์สิน ' + item.assetId;
+        
+        if (assetObj.status !== 'Available') {
+           return 'ทรัพย์สิน "' + item.name + '" ไม่ว่าง (สถานะปัจจุบัน: ' + assetObj.status + ')';
+        }
+
+        // 2. เช็คว่ามีใครจองตัดหน้าไปแล้วหรือยัง (อยู่ใน List Requests แต่ยังไม่อนุมัติ)
+        var isBookedByOther = allRequests.some(function(r) {
+           return r.type === 'Borrow' &&
+                  r.status !== 'Completed' && 
+                  r.status !== 'Rejected' && 
+                  r.status !== 'Returned' && 
+                  r.status !== 'Cancelled' &&
+                  r.status !== 'Draft' &&
+                  r.items && r.items.some(function(it) { return it.assetId === item.assetId; });
+        });
+
+        if (isBookedByOther) {
+           return 'ทรัพย์สิน "' + item.name + '" กำลังติดการจองโดยผู้อื่นอยู่';
+        }
+      }
+    }
+  }
+
+  return null; // ถ้าผ่านทุกอย่าง ส่งค่า null (ไม่มี Error)
 }
 
 function forceAuth() {
