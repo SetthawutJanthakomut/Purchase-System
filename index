@@ -2418,17 +2418,13 @@ const handleCreateOrder = async (e, isDraft = false) => {
         const targetProject = newOrderMeta.job;
         
         for (const item of orderItems) {
-            
             // --- Check 1: SubJob และ Mat. Code ---
-            // กรณีซื้อ (Local, HO) -> ต้องระบุทั้งคู่
             if (['Local', 'HO'].includes(newOrderMeta.type)) {
                 if (!item.subJob || !item.matCode) { 
                     showToast(`รายการ "${item.name}" ต้องระบุทั้ง SubJob และ Mat. Code`, 'error');
                     return; 
                 }
-            }
-            // กรณีเบิก (Withdraw) -> ต้องระบุอย่างใดอย่างหนึ่ง
-            else if (newOrderMeta.type === 'Withdraw') {
+            } else if (newOrderMeta.type === 'Withdraw') {
                 if (!item.subJob && !item.matCode) { 
                     showToast(`รายการ "${item.name}" ต้องระบุ SubJob หรือ Mat. Code อย่างใดอย่างหนึ่ง`, 'error');
                     return; 
@@ -2444,7 +2440,8 @@ const handleCreateOrder = async (e, isDraft = false) => {
                 }
             }
 
-            // --- Check 3: เช็คสต็อกสำหรับเบิก (Withdraw) ---
+            // --- Check 3 & 4: เช็คสต็อกเบื้องต้นหน้าบ้าน (Frontend Check) ---
+            // (คงไว้เพื่อกรอง Error ง่ายๆ ก่อนส่งไป Backend)
             if (newOrderMeta.type === 'Withdraw') {
                 const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
                 if (!stockItem) {
@@ -2455,10 +2452,8 @@ const handleCreateOrder = async (e, isDraft = false) => {
                     showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
                     return; 
                 }
-            } 
-            // --- Check 4: เช็คสถานะสำหรับยืม (Borrow) ---
-            else if (newOrderMeta.type === 'Borrow') {
-                if (item.assetId) {
+            } else if (newOrderMeta.type === 'Borrow') {
+                 if (item.assetId) {
                     const assetItem = assets.find(a => a.id === item.assetId);
                     if (!assetItem) {
                         showToast(`ผิดพลาด: ไม่พบทรัพย์สินรหัส ${item.assetId}`, 'error');
@@ -2474,7 +2469,7 @@ const handleCreateOrder = async (e, isDraft = false) => {
     }
 
     // =================================================================
-    // 2. Prepare Data & Upload Files (เตรียมข้อมูลและอัปโหลดไฟล์)
+    // 2. Prepare Data & Upload Files (เหมือนเดิม)
     // =================================================================
     setIsLoading(true);
     
@@ -2482,7 +2477,7 @@ const handleCreateOrder = async (e, isDraft = false) => {
     let quotationData = newOrderMeta.quotation;
     
     try {
-        // 2.1 อัปโหลดไฟล์แนบหลัก (Email / Quotation)
+        // 2.1 อัปโหลดไฟล์แนบหลัก
         if (uploadFiles.email) {
             const base64 = await fileToBase64(uploadFiles.email);
             const result = await new Promise((resolve, reject) => {
@@ -2501,12 +2496,11 @@ const handleCreateOrder = async (e, isDraft = false) => {
             quotationData = result;
         }
 
-        // 2.2 อัปโหลดรูปภาพรายสินค้า (Item Images)
+        // 2.2 อัปโหลดรูปภาพรายสินค้า
         const processedItems = await Promise.all(orderItems.map(async (item) => {
             let processedImages = [];
             if (item.images && item.images.length > 0) {
                 const itemImagePromises = item.images.map(imgObj => {
-                    // ถ้าเป็นรูปใหม่ (มี Base64) ให้อัปโหลด
                     if (imgObj.base64) {
                             return new Promise((resolve, reject) => {
                             google.script.run
@@ -2515,7 +2509,7 @@ const handleCreateOrder = async (e, isDraft = false) => {
                                 .uploadAssetImage(imgObj.base64, imgObj.name); 
                         });
                     }
-                    return Promise.resolve(imgObj); // รูปเก่าคืนค่าเดิม
+                    return Promise.resolve(imgObj);
                 });
 
                 const uploadedResults = await Promise.all(itemImagePromises);
@@ -2525,10 +2519,9 @@ const handleCreateOrder = async (e, isDraft = false) => {
         }));
 
         // =================================================================
-        // 3. Construct Payload & Save (สร้างข้อมูลและบันทึก)
+        // 3. Construct Payload & Save
         // =================================================================
         
-        // กำหนดสถานะ (Next Status)
         let nextStatus = 'Draft';
         let isFullFlow = false;
         const existingReq = editingId ? requests.find(r => r.id === editingId) : null;
@@ -2539,19 +2532,14 @@ const handleCreateOrder = async (e, isDraft = false) => {
                 nextStatus = 'Pending Check'; 
             } else if (newOrderMeta.type === 'HO') {
                 nextStatus = isFullFlow ? 'Pending Head' : 'Pending Check';
-            } 
-            // ⭐ [แก้ไข] สำหรับ Local: ถ้าเป็นการส่งงานแก้ไข (Revise) ให้ข้ามไป Pending Check เลย
-            else if (newOrderMeta.type === 'Local' && existingReq?.status === 'Revise Needed') {
+            } else if (newOrderMeta.type === 'Local' && existingReq?.status === 'Revise Needed') {
                 nextStatus = 'Pending Check';
-            }
-            else {
+            } else {
                 nextStatus = 'Pending Head';
             }
         }
 
-        // เตรียม Object ข้อมูล (ยังไม่ใส่ ID ถ้าเป็นรายการใหม่)
         const orderPayload = {
-            // id: ... (จะใส่ด้านล่างตามเงื่อนไข)
             requester: `${user.firstName} ${user.lastName}`,
             status: nextStatus,
             created: existingReq ? existingReq.created : new Date().toISOString().split('T')[0],
@@ -2573,13 +2561,18 @@ const handleCreateOrder = async (e, isDraft = false) => {
             comments: existingReq?.comments || []
         };
 
-        // --- ⭐ ส่วนสำคัญ: แยกกรณี แก้ไข (Edit) vs สร้างใหม่ (New) ---
+        // --- ⭐ แก้ไข: ส่วนบันทึกข้อมูล ---
 
         if (editingId) {
-            // ✅ กรณีแก้ไข (Edit): ใช้ ID เดิมและบันทึกแบบปกติ
+            // ✅ กรณีแก้ไข (Edit):
             orderPayload.id = editingId;
             
-            await saveRequestToSheet(orderPayload);
+            await new Promise((resolve, reject) => {
+                 google.script.run
+                    .withSuccessHandler(resolve)
+                    .withFailureHandler(reject)
+                    .saveRequestToSheet(orderPayload);
+            });
             
             // อัปเดต State หน้าจอ
             setRequests(prev => prev.map(r => r.id === editingId ? orderPayload : r));
@@ -2588,34 +2581,30 @@ const handleCreateOrder = async (e, isDraft = false) => {
             }
 
         } else {
-            // ✅ กรณีสร้างใหม่ (New): เรียก Backend ให้รันเลขและบันทึก
-            // (ใช้ createRequestSecurely ที่เพิ่มใน Code.gs)
+            // ✅ กรณีสร้างใหม่ (New): เรียก Backend พร้อมเช็คสต็อก
             const result = await new Promise((resolve, reject) => {
                 google.script.run
-                    .withSuccessHandler(resolve)
+                    .withSuccessHandler(resolve) 
                     .withFailureHandler(reject)
-                    .createRequestSecurely(orderPayload); // 👈 เรียกฟังก์ชันใหม่ที่ Backend
+                    .createRequestSecurely(orderPayload); // 👈 เรียกฟังก์ชันใหม่
             });
 
-            if (result.success) {
-                const newRequest = result.request; // ได้ข้อมูลพร้อม ID (REQ-xxx) ที่ถูกต้อง
-                
-                // อัปเดต State หน้าจอ (แทรกรายการใหม่ไว้บนสุด)
-                setRequests(prev => [newRequest, ...prev]);
-                
-                // ถ้าเปิดหน้า Detail ค้างไว้ให้แสดงรายการใหม่เลย
-                if (selectedRequest) setSelectedRequest(newRequest);
-            } else {
-                throw new Error(result.message);
+            // 🛑 เช็ค Result จาก Backend
+            if (!result.success) {
+                throw new Error(result.message); // โยน Error ไปที่ catch ด้านล่าง
             }
+
+            // ถ้าสำเร็จ
+            const newRequest = result.request; 
+            setRequests(prev => [newRequest, ...prev]);
+            if (selectedRequest) setSelectedRequest(newRequest);
         }
 
         // =================================================================
-        // 4. Finalize (อัปเดตหน้าจอหลังบันทึกสำเร็จ)
+        // 4. Finalize
         // =================================================================
 
-        // อัปเดตหน้าตรวจสอบเอกสาร (Verification Modal) ถ้าเปิดอยู่
-        const targetId = editingId || (requests[0] ? requests[0].id : null); // หรือใช้ result ID
+        const targetId = editingId || (requests[0] ? requests[0].id : null);
         if (showVerificationModal && verificationData.requestId === targetId) {
              const hasQuotation = !!orderPayload.quotation; 
              const hasEmail = !!orderPayload.attachment;    
@@ -2629,17 +2618,23 @@ const handleCreateOrder = async (e, isDraft = false) => {
         setIsLoading(false);
         showToast(isDraft ? 'บันทึกแบบร่างแล้ว' : (editingId ? 'บันทึกการแก้ไขเรียบร้อย' : 'ส่งคำขอเรียบร้อย'));
         
-        // เคลียร์ค่าและปิดหน้าต่าง
         setUploadFiles({ email: null, quotation: null });
         handleCloseCreateModal();
 
     } catch (err) {
         console.error("Create Order Error:", err);
         showToast("เกิดข้อผิดพลาด: " + err.message, 'error');
+        
+        // ⭐ เพิ่ม: เช็ค Error ถ้าเป็นเรื่องสต็อก ให้รีเฟรชหน้าจอทันที
+        const msg = err.message || "";
+        if (msg.includes('มีไม่พอ') || msg.includes('ไม่ว่าง') || msg.includes('ติดการจอง') || msg.includes('ไม่พบสินค้า')) {
+            console.log("Stock mismatch detected. Refreshing data...");
+            handleRefresh(); // เรียกฟังก์ชันรีเฟรชที่มีอยู่แล้ว
+        }
+        
         setIsLoading(false);
     }
 };
-
 // --- ฟังก์ชัน Refresh ข้อมูล (อัปเดตใหม่: ดึงประวัติ Logs กลับมาด้วย) ---
 const handleRefresh = () => {
     setIsLoading(true);
@@ -3226,94 +3221,104 @@ const handleStartCostEdit = () => {
           setIsCostEditMode(false);
       };
 
-      const handleSaveCostEdit = async () => {
-          if (!tempCostRequest) return;
-          setIsLoading(true);
-          try {
-              const changes = [];
-              const oldReq = selectedRequest;
-              const newReq = tempCostRequest;
-              const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
+const handleSaveCostEdit = async () => {
+    if (!tempCostRequest) return;
+    setIsLoading(true);
+    try {
+        const changes = [];
+        const oldReq = selectedRequest;
+        const newReq = tempCostRequest;
+        const userSignature = `${user.empId} ${user.firstName} ${user.lastName}`;
 
-              // 1. ตรวจสอบการเปลี่ยนแปลงของ Request (SubJob, MatCode, Inventory Logs)
-              newReq.items.forEach((newItem, idx) => {
-                  const oldItem = oldReq.items[idx];
-                  if (newItem.subJob !== oldItem.subJob) changes.push(`${newItem.name}: SubJob (${oldItem.subJob || '-'} -> ${newItem.subJob})`);
-                  if (newItem.matCode !== oldItem.matCode) changes.push(`${newItem.name}: Mat. (${oldItem.matCode || '-'} -> ${newItem.matCode})`);
+        // 1. ตรวจสอบการเปลี่ยนแปลงของ Request (SubJob, MatCode, Unit, Qty, Inventory Logs)
+        newReq.items.forEach((newItem, idx) => {
+            const oldItem = oldReq.items[idx];
+            
+            if (newItem.subJob !== oldItem.subJob) changes.push(`${newItem.name}: SubJob (${oldItem.subJob || '-'} -> ${newItem.subJob})`);
+            if (newItem.matCode !== oldItem.matCode) changes.push(`${newItem.name}: Mat. (${oldItem.matCode || '-'} -> ${newItem.matCode})`);
+            if (newItem.unit !== oldItem.unit) changes.push(`${newItem.name}: Unit (${oldItem.unit} -> ${newItem.unit})`);
 
-                  if (newItem.unit !== oldItem.unit) changes.push(`${newItem.name}: Unit (${oldItem.unit} -> ${newItem.unit})`);
+            // ⭐ [เพิ่มใหม่] ตรวจสอบการเปลี่ยนจำนวน (Qty)
+            if (newItem.qty !== oldItem.qty) {
+                const receivedCount = oldItem.receivedTotal || 0;
+                // Validation: ตรวจสอบว่าจำนวนที่แก้ ต้องไม่น้อยกว่าจำนวนที่รับของไปแล้ว
+                if (newItem.qty < receivedCount) {
+                    throw new Error(`รายการ "${newItem.name}" รับของไปแล้ว ${receivedCount} ชิ้น ไม่สามารถลดจำนวนสั่งซื้อต่ำกว่านี้ได้`);
+                }
+                changes.push(`${newItem.name}: Qty (${oldItem.qty} -> ${newItem.qty})`);
+            }
 
-                  // Check Inventory Logs
-                  if (newItem.receivedLog && newItem.receivedLog.length > 0) {
-                      newItem.receivedLog.forEach((newLog, logIdx) => {
-                          const oldLog = oldItem.receivedLog?.[logIdx];
-                          if (oldLog && newLog.price !== oldLog.price) {
-                              changes.push(`${newItem.name} (Lot ${logIdx + 1}): Price (${oldLog.price.toLocaleString()} -> ${newLog.price.toLocaleString()})`);
-                          }
-                      });
-                  }
-              });
+            // Check Inventory Logs (ราคาคละ Lot)
+            if (newItem.receivedLog && newItem.receivedLog.length > 0) {
+                newItem.receivedLog.forEach((newLog, logIdx) => {
+                    const oldLog = oldItem.receivedLog?.[logIdx];
+                    if (oldLog && newLog.price !== oldLog.price) {
+                        changes.push(`${newItem.name} (Lot ${logIdx + 1}): Price (${oldLog.price.toLocaleString()} -> ${newLog.price.toLocaleString()})`);
+                    }
+                });
+            }
+        });
 
-              // 2. ⭐ ตรวจสอบการเปลี่ยนแปลงของ Assets (เพิ่มใหม่)
-              if (newReq.tempAssets && newReq.tempAssets.length > 0) {
-                  for (const newAsset of newReq.tempAssets) {
-                      const oldAsset = assets.find(a => a.id === newAsset.id);
-                      if (!oldAsset) continue;
+        // 2. ⭐ ตรวจสอบการเปลี่ยนแปลงของ Assets (เพิ่มใหม่)
+        if (newReq.tempAssets && newReq.tempAssets.length > 0) {
+            for (const newAsset of newReq.tempAssets) {
+                const oldAsset = assets.find(a => a.id === newAsset.id);
+                if (!oldAsset) continue;
 
-                      let assetChanged = false;
-                      let assetChanges = [];
+                let assetChanged = false;
+                let assetChanges = [];
 
-                      // Check Price (Buy/Rent)
-                      if (newAsset.price !== oldAsset.price) { assetChanges.push(`Price: ${oldAsset.price} -> ${newAsset.price}`); assetChanged = true; }
-                      if (newAsset.rentalPrice !== oldAsset.rentalPrice) { assetChanges.push(`Rent Price: ${oldAsset.rentalPrice} -> ${newAsset.rentalPrice}`); assetChanged = true; }
-                      // Check Duration & Unit
-                      if (newAsset.duration !== oldAsset.duration) { assetChanges.push(`Duration: ${oldAsset.duration} -> ${newAsset.duration}`); assetChanged = true; }
-                      if (newAsset.rentalUnit !== oldAsset.rentalUnit) { assetChanges.push(`Unit: ${oldAsset.rentalUnit} -> ${newAsset.rentalUnit}`); assetChanged = true; }
+                // Check Price (Buy/Rent)
+                if (newAsset.price !== oldAsset.price) { assetChanges.push(`Price: ${oldAsset.price} -> ${newAsset.price}`); assetChanged = true; }
+                if (newAsset.rentalPrice !== oldAsset.rentalPrice) { assetChanges.push(`Rent Price: ${oldAsset.rentalPrice} -> ${newAsset.rentalPrice}`); assetChanged = true; }
+                // Check Duration & Unit
+                if (newAsset.duration !== oldAsset.duration) { assetChanges.push(`Duration: ${oldAsset.duration} -> ${newAsset.duration}`); assetChanged = true; }
+                if (newAsset.rentalUnit !== oldAsset.rentalUnit) { assetChanges.push(`Unit: ${oldAsset.rentalUnit} -> ${newAsset.rentalUnit}`); assetChanged = true; }
 
-                      if (assetChanged) {
-                          // Sync Asset to Server
-                          await saveAssetToSheet(newAsset); 
-                          // Update Global State
-                          setAssets(prev => prev.map(a => a.id === newAsset.id ? newAsset : a));
-                          
-                          changes.push(`${newAsset.id}: ${assetChanges.join(', ')}`);
-                          // Log for Asset
-                          await addInvLog('Edit Asset Cost', newAsset.name, 'Edit', `แก้ไข Cost/Term: ${assetChanges.join(', ')}`, [], selectedRequest.id, newAsset.id);
-                      }
-                  }
-              }
+                if (assetChanged) {
+                    // Sync Asset to Server
+                    await saveAssetToSheet(newAsset); 
+                    // Update Global State
+                    setAssets(prev => prev.map(a => a.id === newAsset.id ? newAsset : a));
+                    
+                    changes.push(`${newAsset.id}: ${assetChanges.join(', ')}`);
+                    // Log for Asset
+                    await addInvLog('Edit Asset Cost', newAsset.name, 'Edit', `แก้ไข Cost/Term: ${assetChanges.join(', ')}`, [], selectedRequest.id, newAsset.id);
+                }
+            }
+        }
 
-              if (changes.length === 0) {
-                  showToast('ไม่มีข้อมูลเปลี่ยนแปลง', 'info');
-                  setIsCostEditMode(false);
-                  setIsLoading(false);
-                  return;
-              }
+        if (changes.length === 0) {
+            showToast('ไม่มีข้อมูลเปลี่ยนแปลง', 'info');
+            setIsCostEditMode(false);
+            setIsLoading(false);
+            return;
+        }
 
-              // 3. บันทึกข้อมูล Request และประวัติ
-              const logNote = `แก้ไขข้อมูล Cost/Code/Assets:\n- ${changes.join('\n- ')}`;
-              const { tempAssets, ...reqToSave } = newReq; // เอา tempAssets ออกก่อนบันทึก Request
-              
-              const updatedReq = {
-                  ...reqToSave,
-                  history: [...newReq.history, createLog('Edit Cost', userSignature, logNote)]
-              };
-              
-              saveRequestToSheet(updatedReq); // Sync Request
-              setRequests(prev => prev.map(r => r.id === updatedReq.id ? updatedReq : r));
-              setSelectedRequest(updatedReq);
-              
-              setIsCostEditMode(false);
-              setTempCostRequest(null);
-              showToast('บันทึกการแก้ไขเรียบร้อย');
+        // 3. บันทึกข้อมูล Request และประวัติ
+        const logNote = `แก้ไขข้อมูล Cost/Qty/Code/Assets:\n- ${changes.join('\n- ')}`;
+        const { tempAssets, ...reqToSave } = newReq; // เอา tempAssets ออกก่อนบันทึก Request
+        
+        const updatedReq = {
+            ...reqToSave,
+            history: [...newReq.history, createLog('Edit Cost/Qty', userSignature, logNote)]
+        };
+        
+        saveRequestToSheet(updatedReq); // Sync Request
+        setRequests(prev => prev.map(r => r.id === updatedReq.id ? updatedReq : r));
+        setSelectedRequest(updatedReq);
+        
+        setIsCostEditMode(false);
+        setTempCostRequest(null);
+        showToast('บันทึกการแก้ไขเรียบร้อย');
 
-          } catch (err) {
-              console.error(err);
-              showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
-          } finally {
-              setIsLoading(false);
-          }
-      };
+    } catch (err) {
+        console.error(err);
+        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
 // --- LOGIC: IMPORT ASSETS (CSV) - SMART PARSER ---
 const handleFileImport = (e) => {
@@ -4225,13 +4230,14 @@ const selectSuggestion = (item) => {
 
 // --- LOGIC: ADD ITEM TO ORDER (UPDATED VALIDATION) ---
 const handleAddItem = () => {
+    // Validation พื้นฐาน
     if (!tempItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
     
     const currentType = newOrderMeta.type;
 
-    // 🟢 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw) -> เช็คแบบรวมยอด
+    // 🟢 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
     if (currentType === 'Withdraw') {
-        // หาของทั้งหมดที่มีชื่อนี้ในโครงการนี้
+        // หาของทั้งหมดที่มีชื่อนี้ในโครงการนี้ (รวม System + NonSystem)
         const stockItems = inventory.filter(i => i.name === tempItem.name && i.project === newOrderMeta.job);
         
         if (stockItems.length === 0) {
@@ -4239,47 +4245,75 @@ const handleAddItem = () => {
             return;
         }
 
-        // คำนวณสต็อกรวมที่มีจริง (Total Physical Stock)
+        // 1.1 คำนวณสต็อกรวมที่มีจริงในคลัง (Total Physical Stock)
         const totalStock = stockItems.reduce((sum, i) => sum + i.qty, 0);
 
-        // คำนวณยอดที่ถูกจองในใบอื่น (Active Requests)
+        // 1.2 คำนวณยอดที่ถูกจองในใบอื่น (Active Requests)
+        // ⭐ เพิ่ม Cancelled เข้าไปในรายการยกเว้น เพื่อให้คืนยอดจอง
         const activeRequests = requests.filter(r => 
-            r.id !== editingId &&
-            !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
+            r.id !== editingId && // ไม่นับใบตัวเอง
+            !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
             r.job === newOrderMeta.job && 
             r.type === 'Withdraw'
         );
+        
         const reservedQty = activeRequests.reduce((sum, req) => {
             const sameItem = req.items.find(i => i.name === tempItem.name);
             return sum + (sameItem ? (sameItem.qty || 0) : 0);
         }, 0);
 
-        // คำนวณยอดคงเหลือที่เบิกได้
+        // 1.3 คำนวณยอดคงเหลือที่เบิกได้จริง
         const realAvailable = totalStock - reservedQty;
 
         if (tempItem.qty > realAvailable) {
-            showToast(`จำนวนในคลังไม่พอ (มีรวม: ${totalStock}, จองแล้ว: ${reservedQty}, คงเหลือเบิกได้: ${realAvailable})`, 'error');
+            showToast(`จำนวนในคลังไม่พอ (มีรวม: ${totalStock}, ติดจอง: ${reservedQty}, คงเหลือเบิกได้: ${realAvailable})`, 'error');
             return;
         }
     }
 
-    // 🔵 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow) - Logic เดิม
+    // 🔵 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow)
     if (currentType === 'Borrow') {
         if (!tempItem.assetId) {
             showToast(`กรุณาเลือกทรัพย์สินจากรายการ`, 'error');
             return;
         }
+        
+        // 2.1 เช็คว่าเลือกซ้ำในตะกร้าตัวเองหรือยัง
         if (orderItems.some(item => item.assetId === tempItem.assetId)) {
             showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error');
             return;
         }
-        // ... (Logic เช็ค Asset Pending เหมือนเดิม) ...
-        // ...
+
+        // 2.2 ⭐⭐ เช็คว่า "ติดจอง" โดยคนอื่นหรือไม่ (Double Check) ⭐⭐
+        const isBookedByOther = requests.some(r => 
+            r.id !== editingId && // ไม่นับใบตัวเอง
+            !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
+            r.type === 'Borrow' && // เช็คเฉพาะบิลยืม
+            r.items.some(i => i.assetId === tempItem.assetId)
+        );
+
+        if (isBookedByOther) {
+            showToast(`ไม่สามารถเพิ่มรายการได้: ทรัพย์สินนี้กำลัง "รออนุมัติให้ผู้อื่น" อยู่`, 'error');
+            return;
+        }
+        
+        // 2.3 เช็คสถานะ Master Data (เผื่อมีการยืมตัดหน้าไปแล้วและ Approve เสร็จแล้ว)
+        const currentAsset = assets.find(a => a.id === tempItem.assetId);
+        if (currentAsset && currentAsset.status !== 'Available') {
+             showToast(`ทรัพย์สินนี้ไม่ว่าง (สถานะ: ${currentAsset.status})`, 'error');
+             return;
+        }
     }
 
-    // ผ่านทุกเงื่อนไข -> เพิ่มรายการ
+    // ✅ ผ่านทุกเงื่อนไข -> เพิ่มรายการลงตะกร้า
     setOrderItems([...orderItems, { ...tempItem }]);
-    setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', matCode: '', note: '', images: [], assetId: '', serial: '' });
+    
+    // เคลียร์ค่าในฟอร์มเพื่อเตรียมเพิ่มรายการต่อไป
+    setTempItem({ 
+        name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', 
+        subJob: '', matCode: '', note: '', images: [], 
+        assetId: '', serial: '' 
+    });
     setStockSuggestion(null); 
 };
 
@@ -4341,7 +4375,7 @@ const getItemLatestImages = (item) => {
 
 
 
-// --- LOGIC: Filter Selection Items (Updated Search Logic) ---
+// --- LOGIC: Filter Selection Items (Updated: Filter Booked Assets & Correct Inventory Reserve) ---
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
     const targetProject = newOrderMeta.job;
@@ -4350,15 +4384,18 @@ const getSelectionItems = () => {
 
     let items = [];
 
-    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> รวมยอด System + NonSystem
+    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> รวมยอด System + NonSystem และหักยอดจอง
     if (type === 'Withdraw') {
+        // 1. หาเอกสารที่ "กำลังจองของอยู่" (Active Requests)
+        // ต้องไม่รวมสถานะที่จบไปแล้ว หรือ ยกเลิก (Cancelled)
         const activeRequests = requests.filter(r => 
-            r.id !== editingId &&
-            !['Draft', 'Completed', 'Rejected', 'Returned'].includes(r.status) &&
+            r.id !== editingId && // ไม่นับใบที่กำลังแก้อยู่ (เดี๋ยวจะหักซ้ำ)
+            !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) && 
             r.job === targetProject &&
             r.type === 'Withdraw'
         );
 
+        // 2. คำนวณยอดจองรวมของสินค้าแต่ละตัว
         const reservesByName = {};
         activeRequests.forEach(req => {
             req.items.forEach(item => {
@@ -4366,6 +4403,7 @@ const getSelectionItems = () => {
             });
         });
 
+        // 3. รวมสต็อก (System + NonSystem)
         const groupedMap = {};
         inventory
             .filter(i => i.project === targetProject)
@@ -4376,7 +4414,7 @@ const getSelectionItems = () => {
                         qty: 0, 
                         sysStock: 0,
                         nonStock: 0,
-                        totalRaw: 0,
+                        totalRaw: 0, // ยอดที่มีจริงในคลัง (ยังไม่หักจอง)
                         isGrouped: true 
                     };
                 }
@@ -4389,15 +4427,16 @@ const getSelectionItems = () => {
                 }
             });
 
+        // 4. คำนวณยอดคงเหลือจริง (ยอดในคลัง - ยอดจอง)
         items = Object.values(groupedMap).map(item => {
-            const reserved = reservesByName[item.name] || 0;
-            const realAvailable = Math.max(0, item.totalRaw - reserved);
+            const reserved = reservesByName[item.name] || 0; // ยอดที่ติดจอง
+            const realAvailable = Math.max(0, item.totalRaw - reserved); // ยอดที่เบิกได้จริง
             return {
                 ...item,
-                qty: realAvailable, 
+                qty: realAvailable, // โชว์เฉพาะยอดที่ว่าง
                 reserved: reserved
             };
-        }).filter(i => i.qty > 0);
+        }).filter(i => i.qty > 0); // ซ่อนรายการที่หมดแล้ว (หรือติดจองจนหมด)
     } 
     // 🔵 กรณี 2: ยืม (Borrow) หรือ ซื้อ (Local/HO)
     else {
@@ -4406,14 +4445,32 @@ const getSelectionItems = () => {
         
         const projectInventory = inventory.filter(i => i.project === targetProject && i.qty > 0);
         
+        // ⭐⭐ [ส่วนที่เพิ่มใหม่] หา ID ทรัพย์สินที่ "ติดจอง" ในใบคำขออื่นที่ยังไม่จบงาน ⭐⭐
+        const pendingAssetIds = requests
+            .filter(r => 
+                r.id !== editingId &&
+                !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
+                r.type === 'Borrow' // เฉพาะคำขอ "ยืม" เท่านั้นที่ล็อก Asset ID
+            )
+            .flatMap(r => r.items.map(i => i.assetId)) // ดึง ID ทรัพย์สินทั้งหมดออกมา
+            .filter(id => id); // กรองค่า null/undefined ทิ้ง
+
         const projectAssets = assets.filter(a => {
+            // กรองตามโครงการ
             if (a.project !== targetProject) return false;
-            if (a.status !== 'Available') return false;
+            
+            // กรองสถานะ Master Data (ต้อง Available เท่านั้น)
+            if (a.status !== 'Available') return false; 
+            
+            // ⭐ กรองทรัพย์สินที่ติดจอง (Pending Request) ออก
+            if (pendingAssetIds.includes(a.id)) return false;
+
+            // เช็ควันหมดอายุสัญญาเช่า (ถ้ามี)
             if (a.ownerType === 'Rent' && a.rentalEnd) {
                 const endDate = new Date(a.rentalEnd);
                 if (!isNaN(endDate.getTime())) {
-                    endDate.setHours(0, 0, 0, 0);
-                    if (endDate < today) return false;
+                   endDate.setHours(0, 0, 0, 0);
+                   if (endDate < today) return false;
                 }
             }
             return true;
@@ -4421,10 +4478,10 @@ const getSelectionItems = () => {
 
         if (type === 'Local') items = projectInventory;
         else if (type === 'HO') items = [...projectInventory, ...projectAssets];
-        else if (type === 'Borrow') items = projectAssets;
+        else if (type === 'Borrow') items = projectAssets; // ใช้รายการที่กรอง Pending ออกแล้ว
     }
 
-    // ⭐ Logic Search: ค้นหาจากชื่อ หรือ รหัส (รองรับทั้ง Grouped และ Individual)
+    // Logic Search: ค้นหาจากชื่อ หรือ รหัส
     if (selectionSearch) {
         const lower = selectionSearch.toLowerCase();
         items = items.filter(i => 
@@ -10281,37 +10338,50 @@ const relatedAssets = sourceAssets.filter(a =>
                                 </td>
                             )}
 
-                            {/* 3. Column จำนวน */}
-                            <td className="p-3 text-center align-top">
-                                {isCostEditMode ? (
-                                    // ⭐ [เพิ่มใหม่] โหมดแก้ไข: แสดง Dropdown เลือกหน่วย
-                                    <div className="flex flex-col items-center gap-1">
-                                        <span className="font-bold text-gray-800">{item.qty}</span>
-                                        <select 
-                                            className="border border-indigo-300 rounded px-1 py-0.5 text-xs bg-indigo-50 text-indigo-700 outline-none w-20 text-center cursor-pointer hover:bg-indigo-100"
-                                            value={item.unit}
-                                            onChange={(e) => {
-                                                const newData = {...tempCostRequest};
-                                                newData.items[idx].unit = e.target.value;
-                                                setTempCostRequest(newData);
-                                            }}
-                                            onClick={(e) => e.stopPropagation()}
-                                        >
-                                            {ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                                        </select>
-                                    </div>
-                                ) : (
-                                    <div className="font-bold text-blue-700 text-base">
-                                        {item.qty} <span className="text-xs text-gray-500 font-normal">{item.unit}</span>
-                                    </div>
-                                )}
-                                
-                                {isRent && isBuy && (
-                                    <div className="text-[10px] mt-0.5 text-indigo-600 font-bold">
-                                        x {item.duration || 1} {item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}
-                                    </div>
-                                )}
-                            </td>
+{/* 3. Column จำนวน */}
+<td className="p-3 text-center align-top">
+    {isCostEditMode ? (
+        // ⭐ [เพิ่มใหม่] โหมดแก้ไข: แสดง Input เพื่อแก้จำนวน (Qty) และ Dropdown หน่วย
+        <div className="flex flex-col items-center gap-1">
+            <input 
+                type="number" 
+                min={item.receivedTotal || 1} // ล็อกค่าขั้นต่ำไม่ให้น้อยกว่าที่รับของไปแล้ว
+                className="border border-blue-300 rounded px-1 py-1 text-sm font-bold text-blue-700 bg-blue-50 outline-none w-20 text-center focus:ring-2 focus:ring-blue-500"
+                value={item.qty}
+                onChange={(e) => {
+                    const val = parseInt(e.target.value) || 0;
+                    const newData = {...tempCostRequest};
+                    newData.items[idx].qty = val; // เก็บค่า Qty ใหม่ลง Temp
+                    setTempCostRequest(newData);
+                }}
+                onClick={(e) => e.stopPropagation()}
+            />
+            
+            <select 
+                className="border border-indigo-300 rounded px-1 py-0.5 text-xs bg-indigo-50 text-indigo-700 outline-none w-20 text-center cursor-pointer hover:bg-indigo-100"
+                value={item.unit}
+                onChange={(e) => {
+                    const newData = {...tempCostRequest};
+                    newData.items[idx].unit = e.target.value;
+                    setTempCostRequest(newData);
+                }}
+                onClick={(e) => e.stopPropagation()}
+            >
+                {ITEM_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+        </div>
+    ) : (
+        <div className="font-bold text-blue-700 text-base">
+            {item.qty} <span className="text-xs text-gray-500 font-normal">{item.unit}</span>
+        </div>
+    )}
+    
+    {isRent && isBuy && (
+        <div className="text-[10px] mt-0.5 text-indigo-600 font-bold">
+            x {item.duration || 1} {item.rentalUnit === 'Day' ? 'วัน' : item.rentalUnit === 'Year' ? 'ปี' : 'เดือน'}
+        </div>
+    )}
+</td>
 
                             {/* 4. Column รวมเงิน */}
                             {isBuy && (
