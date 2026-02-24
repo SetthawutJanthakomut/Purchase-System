@@ -2413,6 +2413,18 @@ const handleCreateOrder = async (e, isDraft = false) => {
         return; 
     }
 
+    if (newOrderMeta.type === 'Withdraw') {
+        // เช็คว่าในตะกร้ามีของประเภทไหนอยู่บ้าง
+        const hasSystem = orderItems.some(item => item.stockType === 'System' || !item.stockType); 
+        const hasNonSystem = orderItems.some(item => item.stockType === 'NonSystem');
+        
+        // ถ้ามีทั้งคู่ปนกัน ให้เด้ง Error และหยุดการส่งคำขอทันที
+        if (hasSystem && hasNonSystem) {
+            showToast("ผิดพลาด: ไม่อนุญาตให้เบิกของ 'ในระบบ' และ 'นอกระบบ' ปนกันในคำขอเดียวกัน กรุณาแยกทำรายการ", 'error');
+            return;
+        }
+    }
+
     // ตรวจสอบรายละเอียดสินค้า (เฉพาะตอนกด "ส่งคำขอ" ไม่ใช่ "บันทึกร่าง")
     if (!isDraft) { 
         const targetProject = newOrderMeta.job;
@@ -2440,16 +2452,24 @@ const handleCreateOrder = async (e, isDraft = false) => {
                 }
             }
 
-            // --- Check 3 & 4: เช็คสต็อกเบื้องต้นหน้าบ้าน (Frontend Check) ---
-            // (คงไว้เพื่อกรอง Error ง่ายๆ ก่อนส่งไป Backend)
+// --- Check 3 & 4: เช็คสต็อกเบื้องต้นหน้าบ้าน (Frontend Check) ---
             if (newOrderMeta.type === 'Withdraw') {
-                const stockItem = inventory.find(i => i.name === item.name && i.project === targetProject);
+                // ⭐ ดึงประเภทสต็อกเพื่อนำไปเช็คให้ตรงจุด
+                const currentStockType = item.stockType || newOrderMeta.withdrawStockType || 'System';
+                const stockTypeLabel = currentStockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ';
+
+                const stockItem = inventory.find(i => 
+                    i.name === item.name && 
+                    i.project === targetProject &&
+                    (i.stockType || 'System') === currentStockType
+                );
+
                 if (!stockItem) {
-                    showToast(`ผิดพลาด: สินค้า "${item.name}" ไม่มีในโครงการ ${targetProject}`, 'error');
+                    showToast(`ผิดพลาด: สินค้า "${item.name}" (${stockTypeLabel}) ไม่มีในโครงการ ${targetProject}`, 'error');
                     return; 
                 }
                 if (item.qty > stockItem.qty) {
-                    showToast(`ผิดพลาด: สินค้า "${item.name}" มีไม่พอ (ขอ: ${item.qty}, มี: ${stockItem.qty})`, 'error');
+                    showToast(`ผิดพลาด: สินค้า "${item.name}" (${stockTypeLabel}) มีไม่พอ (ขอ: ${item.qty}, มีในคลัง: ${stockItem.qty})`, 'error');
                     return; 
                 }
             } else if (newOrderMeta.type === 'Borrow') {
@@ -2563,16 +2583,12 @@ const handleCreateOrder = async (e, isDraft = false) => {
 
         // --- ⭐ แก้ไข: ส่วนบันทึกข้อมูล ---
 
-        if (editingId) {
+if (editingId) {
             // ✅ กรณีแก้ไข (Edit):
             orderPayload.id = editingId;
             
-            await new Promise((resolve, reject) => {
-                 google.script.run
-                    .withSuccessHandler(resolve)
-                    .withFailureHandler(reject)
-                    .saveRequestToSheet(orderPayload);
-            });
+            // ⭐ แก้ไข: เรียกใช้งานฟังก์ชัน helper ของหน้าบ้านได้เลย (มี await ในตัวอยู่แล้ว)
+            await saveRequestToSheet(orderPayload); 
             
             // อัปเดต State หน้าจอ
             setRequests(prev => prev.map(r => r.id === editingId ? orderPayload : r));
@@ -3122,9 +3138,12 @@ const handleBulkAction = async (actionType) => {
 };
       const [receiveItems, setReceiveItems] = useState([]);
       const [editingId, setEditingId] = useState(null);
-      const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
+      const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', withdrawStockType: 'System', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
       // แก้ไขบรรทัดนี้
 const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', matCode: '', note: '', images: [], assetId: '', serial: '', duration: 1 });
+
+
+
       const [orderItems, setOrderItems] = useState([]);
       
       const [showSuggestions, setShowSuggestions] = useState(false);
@@ -4134,7 +4153,8 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
 
       // --- Functions & Handlers (Logic from original file) ---
       
-// Smart Suggestion (Multi-Project Search) - Updated: Grouping Logic
+
+// --- ส่วนค้นหา Suggestion ---
 useEffect(() => {
     let timeoutId;
     setFoundSuggestions([]);
@@ -4144,36 +4164,30 @@ useEffect(() => {
             const lowerName = tempItem.name.toLowerCase();
             let matches = [];
 
-            // 🟢 1. ค้นหาในคลัง (Inventory) -> แนะนำให้เบิก (รวมยอด ในระบบ+นอกระบบ)
+            // 🟢 1. ค้นหาในคลัง (Inventory) -> แนะนำให้เบิก (แยกยอด ในระบบ / นอกระบบ ออกจากกัน)
             const groupedInv = {};
             
             inventory.forEach(inv => {
                 // กรองชื่อและจำนวนที่มี
                 if (inv.name.toLowerCase().includes(lowerName) && inv.qty > 0) {
-                    // สร้าง Key สำหรับรวมกลุ่ม: "ชื่อสินค้า|ชื่อโครงการ"
-                    const key = `${inv.name}|${inv.project || 'ส่วนกลาง'}`;
+                    const currentStockType = inv.stockType || 'System'; // ถ้าไม่มีค่าถือเป็น System
+                    
+                    // ⭐ สร้าง Key สำหรับรวมกลุ่ม: "ชื่อสินค้า|ชื่อโครงการ|ประเภทสต็อก"
+                    const key = `${inv.name}|${inv.project || 'ส่วนกลาง'}|${currentStockType}`;
 
                     if (!groupedInv[key]) {
                         groupedInv[key] = {
-                            ...inv, // ยึดข้อมูลพื้นฐานจากรายการแรกที่เจอ
+                            ...inv, 
                             qty: 0, // รีเซ็ตยอดรวมเพื่อคำนวณใหม่
-                            sysQty: 0, // ยอดในระบบ
-                            nonQty: 0, // ยอดนอกระบบ
                             type: 'Material', 
                             matchType: 'Withdraw',
-                            sourceLabel: 'คลังวัสดุ'
+                            stockType: currentStockType, // เก็บประเภทไว้ใช้ตอนกดเลือก
+                            sourceLabel: `คลังวัสดุ (${currentStockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ'})`
                         };
                     }
 
-                    // บวกยอดรวม
+                    // บวกยอดรวมในกลุ่มเดียวกัน
                     groupedInv[key].qty += inv.qty;
-                    
-                    // แยกยอดตามประเภท
-                    if (inv.stockType === 'NonSystem') {
-                        groupedInv[key].nonQty += inv.qty;
-                    } else {
-                        groupedInv[key].sysQty += inv.qty;
-                    }
                 }
             });
 
@@ -4200,15 +4214,21 @@ useEffect(() => {
     return () => clearTimeout(timeoutId);
 }, [tempItem.name, inventory, assets, newOrderMeta.type]);
 
-// ฟังก์ชันเลือก Suggestion (Auto Switch Project)
+
+// --- ส่วนการกดเลือก Suggestion ---
 const selectSuggestion = (item) => {
-    if (confirm(`ต้องการเปลี่ยนไป "${item.matchType === 'Withdraw' ? 'เบิก' : 'ยืม'}" รายการนี้จากโครงการ "${item.project}" หรือไม่?`)) {
+    const actionLabel = item.matchType === 'Withdraw' 
+        ? `เบิก (จากคลัง${item.stockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ'})` 
+        : 'ยืม';
+
+    if (confirm(`ต้องการเปลี่ยนไป "${actionLabel}" รายการนี้จากโครงการ "${item.project}" หรือไม่?`)) {
         
-        // 1. เปลี่ยน Meta Data (Type & Project)
+        // 1. เปลี่ยน Meta Data (Type, Project, และ 📍 เลือก Radio Button อัตโนมัติ)
         setNewOrderMeta(prev => ({
             ...prev,
             type: item.matchType, // เปลี่ยนเป็น Withdraw หรือ Borrow
-            job: item.project || 'ส่วนกลาง' // ⭐ เปลี่ยนโครงการตามของที่เจอ
+            job: item.project || 'ส่วนกลาง', // เปลี่ยนโครงการตามของที่เจอ
+            withdrawStockType: item.stockType || 'System' // ⭐ ติ๊กเลือกประเภท ในระบบ/นอกระบบ ให้อัตโนมัติ
         }));
 
         // 2. ใส่ข้อมูลลงในฟอร์ม
@@ -4220,100 +4240,81 @@ const selectSuggestion = (item) => {
             unitPrice: 0, // เบิก/ยืม ไม่มีราคา
             assetId: item.id, // เก็บ ID
             serial: item.serial || '',
-            image: item.image
+            image: item.image,
+            stockType: item.stockType || 'System' // เก็บไว้สำหรับเบิก
         }));
 
         // 3. เคลียร์ Suggestion
         setFoundSuggestions([]);
     }
 };
-
-// --- LOGIC: ADD ITEM TO ORDER (UPDATED VALIDATION) ---
+// --- LOGIC: ADD ITEM TO ORDER (UPDATED) ---
 const handleAddItem = () => {
-    // Validation พื้นฐาน
     if (!tempItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
     
     const currentType = newOrderMeta.type;
 
     // 🟢 1. ตรวจสอบสำหรับ "เบิกวัสดุ" (Withdraw)
     if (currentType === 'Withdraw') {
-        // หาของทั้งหมดที่มีชื่อนี้ในโครงการนี้ (รวม System + NonSystem)
-        const stockItems = inventory.filter(i => i.name === tempItem.name && i.project === newOrderMeta.job);
+        const currentStockType = newOrderMeta.withdrawStockType || 'System';
+
+        // หาสินค้าเฉพาะประเภทที่เลือก (System/NonSystem)
+        const stockItem = inventory.find(i => 
+            i.name === tempItem.name && 
+            i.project === newOrderMeta.job &&
+            (i.stockType || 'System') === currentStockType
+        );
         
-        if (stockItems.length === 0) {
-            showToast(`ไม่พบสินค้า "${tempItem.name}" ในคลังของโครงการ ${newOrderMeta.job}`, 'error');
+        if (!stockItem) {
+            showToast(`ไม่พบสินค้า "${tempItem.name}" (${currentStockType === 'System' ? 'ในระบบ' : 'นอกระบบ'}) ในโครงการนี้`, 'error');
             return;
         }
 
-        // 1.1 คำนวณสต็อกรวมที่มีจริงในคลัง (Total Physical Stock)
-        const totalStock = stockItems.reduce((sum, i) => sum + i.qty, 0);
+        const totalStock = stockItem.qty;
 
-        // 1.2 คำนวณยอดที่ถูกจองในใบอื่น (Active Requests)
-        // ⭐ เพิ่ม Cancelled เข้าไปในรายการยกเว้น เพื่อให้คืนยอดจอง
         const activeRequests = requests.filter(r => 
-            r.id !== editingId && // ไม่นับใบตัวเอง
+            r.id !== editingId &&
             !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
             r.job === newOrderMeta.job && 
             r.type === 'Withdraw'
         );
         
         const reservedQty = activeRequests.reduce((sum, req) => {
-            const sameItem = req.items.find(i => i.name === tempItem.name);
+            const sameItem = req.items.find(i => i.name === tempItem.name && (i.stockType || req.withdrawStockType || 'System') === currentStockType);
             return sum + (sameItem ? (sameItem.qty || 0) : 0);
         }, 0);
 
-        // 1.3 คำนวณยอดคงเหลือที่เบิกได้จริง
         const realAvailable = totalStock - reservedQty;
 
         if (tempItem.qty > realAvailable) {
-            showToast(`จำนวนในคลังไม่พอ (มีรวม: ${totalStock}, ติดจอง: ${reservedQty}, คงเหลือเบิกได้: ${realAvailable})`, 'error');
+            showToast(`จำนวนไม่พอ (มี: ${totalStock}, ติดจอง: ${reservedQty}, ว่าง: ${realAvailable})`, 'error');
             return;
         }
+
+        // ⭐ ประทับตราประเภทสต็อกลงไปใน Item ด้วย
+        tempItem.stockType = currentStockType;
     }
 
     // 🔵 2. ตรวจสอบสำหรับ "ยืมทรัพย์สิน" (Borrow)
     if (currentType === 'Borrow') {
-        if (!tempItem.assetId) {
-            showToast(`กรุณาเลือกทรัพย์สินจากรายการ`, 'error');
-            return;
-        }
-        
-        // 2.1 เช็คว่าเลือกซ้ำในตะกร้าตัวเองหรือยัง
-        if (orderItems.some(item => item.assetId === tempItem.assetId)) {
-            showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error');
-            return;
-        }
+        if (!tempItem.assetId) { showToast(`กรุณาเลือกทรัพย์สินจากรายการ`, 'error'); return; }
+        if (orderItems.some(item => item.assetId === tempItem.assetId)) { showToast(`รายการซ้ำ: "${tempItem.name}" ถูกเลือกไปแล้ว`, 'error'); return; }
 
-        // 2.2 ⭐⭐ เช็คว่า "ติดจอง" โดยคนอื่นหรือไม่ (Double Check) ⭐⭐
         const isBookedByOther = requests.some(r => 
-            r.id !== editingId && // ไม่นับใบตัวเอง
+            r.id !== editingId &&
             !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
-            r.type === 'Borrow' && // เช็คเฉพาะบิลยืม
+            r.type === 'Borrow' &&
             r.items.some(i => i.assetId === tempItem.assetId)
         );
 
-        if (isBookedByOther) {
-            showToast(`ไม่สามารถเพิ่มรายการได้: ทรัพย์สินนี้กำลัง "รออนุมัติให้ผู้อื่น" อยู่`, 'error');
-            return;
-        }
+        if (isBookedByOther) { showToast(`ไม่สามารถเพิ่มได้: ทรัพย์สินนี้กำลังรออนุมัติให้ผู้อื่น`, 'error'); return; }
         
-        // 2.3 เช็คสถานะ Master Data (เผื่อมีการยืมตัดหน้าไปแล้วและ Approve เสร็จแล้ว)
         const currentAsset = assets.find(a => a.id === tempItem.assetId);
-        if (currentAsset && currentAsset.status !== 'Available') {
-             showToast(`ทรัพย์สินนี้ไม่ว่าง (สถานะ: ${currentAsset.status})`, 'error');
-             return;
-        }
+        if (currentAsset && currentAsset.status !== 'Available') { showToast(`ทรัพย์สินนี้ไม่ว่าง (${currentAsset.status})`, 'error'); return; }
     }
 
-    // ✅ ผ่านทุกเงื่อนไข -> เพิ่มรายการลงตะกร้า
     setOrderItems([...orderItems, { ...tempItem }]);
-    
-    // เคลียร์ค่าในฟอร์มเพื่อเตรียมเพิ่มรายการต่อไป
-    setTempItem({ 
-        name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', 
-        subJob: '', matCode: '', note: '', images: [], 
-        assetId: '', serial: '' 
-    });
+    setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', matCode: '', note: '', images: [], assetId: '', serial: '' });
     setStockSuggestion(null); 
 };
 
@@ -4375,68 +4376,50 @@ const getItemLatestImages = (item) => {
 
 
 
-// --- LOGIC: Filter Selection Items (Updated: Filter Booked Assets & Correct Inventory Reserve) ---
+// --- LOGIC: Filter Selection Items (Updated) ---
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
     const targetProject = newOrderMeta.job;
     
     if (!targetProject) return [];
-
     let items = [];
 
-    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> รวมยอด System + NonSystem และหักยอดจอง
+    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> กรองตามประเภทที่เลือก (System / NonSystem)
     if (type === 'Withdraw') {
-        // 1. หาเอกสารที่ "กำลังจองของอยู่" (Active Requests)
-        // ต้องไม่รวมสถานะที่จบไปแล้ว หรือ ยกเลิก (Cancelled)
+        const currentType = newOrderMeta.withdrawStockType || 'System'; // ค่าที่ผู้ใช้เลือก
+
+        // 1. หาบิลจองค้าง
         const activeRequests = requests.filter(r => 
-            r.id !== editingId && // ไม่นับใบที่กำลังแก้อยู่ (เดี๋ยวจะหักซ้ำ)
-            !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) && 
+            r.id !== editingId &&
+            !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
             r.job === targetProject &&
             r.type === 'Withdraw'
         );
 
-        // 2. คำนวณยอดจองรวมของสินค้าแต่ละตัว
+        // 2. คำนวณยอดจอง โดยนับเฉพาะ Type เดียวกัน
         const reservesByName = {};
         activeRequests.forEach(req => {
             req.items.forEach(item => {
-                reservesByName[item.name] = (reservesByName[item.name] || 0) + (item.qty || 0);
+                const iType = item.stockType || req.withdrawStockType || 'System'; 
+                if (iType === currentType) {
+                    reservesByName[item.name] = (reservesByName[item.name] || 0) + (item.qty || 0);
+                }
             });
         });
 
-        // 3. รวมสต็อก (System + NonSystem)
-        const groupedMap = {};
-        inventory
-            .filter(i => i.project === targetProject)
-            .forEach(inv => {
-                if (!groupedMap[inv.name]) {
-                    groupedMap[inv.name] = {
-                        ...inv, 
-                        qty: 0, 
-                        sysStock: 0,
-                        nonStock: 0,
-                        totalRaw: 0, // ยอดที่มีจริงในคลัง (ยังไม่หักจอง)
-                        isGrouped: true 
-                    };
-                }
-                
-                groupedMap[inv.name].totalRaw += inv.qty;
-                if (inv.stockType === 'NonSystem') {
-                    groupedMap[inv.name].nonStock += inv.qty;
-                } else {
-                    groupedMap[inv.name].sysStock += inv.qty;
-                }
-            });
-
-        // 4. คำนวณยอดคงเหลือจริง (ยอดในคลัง - ยอดจอง)
-        items = Object.values(groupedMap).map(item => {
-            const reserved = reservesByName[item.name] || 0; // ยอดที่ติดจอง
-            const realAvailable = Math.max(0, item.totalRaw - reserved); // ยอดที่เบิกได้จริง
-            return {
-                ...item,
-                qty: realAvailable, // โชว์เฉพาะยอดที่ว่าง
-                reserved: reserved
-            };
-        }).filter(i => i.qty > 0); // ซ่อนรายการที่หมดแล้ว (หรือติดจองจนหมด)
+        // 3. กรองและคำนวณยอดคงเหลือ
+        items = inventory
+            .filter(i => i.project === targetProject && (i.stockType || 'System') === currentType)
+            .map(item => {
+                const reserved = reservesByName[item.name] || 0;
+                const realAvailable = Math.max(0, item.qty - reserved);
+                return {
+                    ...item,
+                    qty: realAvailable, // โชว์ยอดว่าง
+                    reserved: reserved
+                };
+            })
+            .filter(i => i.qty > 0); // ซ่อนของหมด
     } 
     // 🔵 กรณี 2: ยืม (Borrow) หรือ ซื้อ (Local/HO)
     else {
@@ -4445,27 +4428,16 @@ const getSelectionItems = () => {
         
         const projectInventory = inventory.filter(i => i.project === targetProject && i.qty > 0);
         
-        // ⭐⭐ [ส่วนที่เพิ่มใหม่] หา ID ทรัพย์สินที่ "ติดจอง" ในใบคำขออื่นที่ยังไม่จบงาน ⭐⭐
         const pendingAssetIds = requests
-            .filter(r => 
-                r.id !== editingId &&
-                !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
-                r.type === 'Borrow' // เฉพาะคำขอ "ยืม" เท่านั้นที่ล็อก Asset ID
-            )
-            .flatMap(r => r.items.map(i => i.assetId)) // ดึง ID ทรัพย์สินทั้งหมดออกมา
-            .filter(id => id); // กรองค่า null/undefined ทิ้ง
+            .filter(r => r.id !== editingId && !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) && r.type === 'Borrow')
+            .flatMap(r => r.items.map(i => i.assetId))
+            .filter(id => id);
 
         const projectAssets = assets.filter(a => {
-            // กรองตามโครงการ
             if (a.project !== targetProject) return false;
-            
-            // กรองสถานะ Master Data (ต้อง Available เท่านั้น)
             if (a.status !== 'Available') return false; 
-            
-            // ⭐ กรองทรัพย์สินที่ติดจอง (Pending Request) ออก
-            if (pendingAssetIds.includes(a.id)) return false;
+            if (pendingAssetIds.includes(a.id)) return false; // หักติดจอง
 
-            // เช็ควันหมดอายุสัญญาเช่า (ถ้ามี)
             if (a.ownerType === 'Rent' && a.rentalEnd) {
                 const endDate = new Date(a.rentalEnd);
                 if (!isNaN(endDate.getTime())) {
@@ -4478,10 +4450,9 @@ const getSelectionItems = () => {
 
         if (type === 'Local') items = projectInventory;
         else if (type === 'HO') items = [...projectInventory, ...projectAssets];
-        else if (type === 'Borrow') items = projectAssets; // ใช้รายการที่กรอง Pending ออกแล้ว
+        else if (type === 'Borrow') items = projectAssets;
     }
 
-    // Logic Search: ค้นหาจากชื่อ หรือ รหัส
     if (selectionSearch) {
         const lower = selectionSearch.toLowerCase();
         items = items.filter(i => 
@@ -4521,18 +4492,28 @@ const getSelectionItems = () => {
           setShowSelectionModal(true);
       };
 
-      const handleEditDraft = (req) => {
+const handleEditDraft = (req) => {
           setEditingId(req.id);
+          
+          // ⭐ 1. เพิ่ม withdrawStockType เพื่อให้รู้ว่าเป็นเบิก "ในระบบ" หรือ "นอกระบบ"
           setNewOrderMeta({
               type: req.type,
               purchaseType: req.purchaseType || 'Buy',
+              withdrawStockType: req.withdrawStockType || 'System', // 👈 เพิ่มบรรทัดนี้
               job: req.job || '',
               dateRequired: req.dateRequired || '',
               priority: req.priority || 'Normal',
               attachment: req.attachment || null,
               quotation: req.quotation || null
           });
-          setOrderItems(req.items || []);
+          
+          // ⭐ 2. ประทับตรา stockType ลงไปใน items เดิมที่มีอยู่ เพื่อไม่ให้ validation ตะกร้าสินค้า Error
+          const itemsWithStockType = (req.items || []).map(item => ({
+              ...item,
+              stockType: item.stockType || req.withdrawStockType || 'System' // 👈 เพิ่มบรรทัดนี้
+          }));
+          
+          setOrderItems(itemsWithStockType); // 👈 เซ็ต items ที่เติมประเภทสต็อกแล้วลงตะกร้า
           setShowCreateModal(true);
       };
       
@@ -4545,7 +4526,7 @@ const getSelectionItems = () => {
           setShowCreateModal(false);
           setEditingId(null);
           setOrderItems([]);
-          setNewOrderMeta({ type: 'Local', purchaseType: 'Buy', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
+          setNewOrderMeta({ type: 'Local', purchaseType: 'Buy', withdrawStockType: 'System', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
           setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', matCode: '', note: '', images: [] });
       };
 
@@ -4560,15 +4541,16 @@ const getSelectionItems = () => {
       const handleOpenCreateModal = () => {
           setEditingId(null);
           setOrderItems([]);
-          setNewOrderMeta({ 
-              type: 'Local', 
-              purchaseType: 'Buy', 
-              job: globalProjectFilter !== 'All' ? globalProjectFilter : '', 
-              dateRequired: getFutureDate(7), // ⭐ กำหนดค่าเริ่มต้นเป็น อีก 15 วัน
-              priority: 'Urgent', // (8-30 วัน = Urgent)
-              attachment: null, 
-              quotation: null 
-          });
+setNewOrderMeta({ 
+    type: 'Local', 
+    purchaseType: 'Buy', 
+    withdrawStockType: 'System', // ⭐ เพิ่มบรรทัดนี้
+    job: globalProjectFilter !== 'All' ? globalProjectFilter : '', 
+    dateRequired: getFutureDate(7), 
+    priority: 'Urgent',
+    attachment: null, 
+    quotation: null 
+});
           setTempItem({ name: '', qty: 1, unitPrice: 0, unit: 'ชิ้น', subJob: '', matCode: '', note: '', images: [] });
           setShowCreateModal(true);
       };
@@ -5081,9 +5063,6 @@ const confirmReturnAsset = async () => {
     }
 };
 
-// --- LOGIC: UPDATE ASSET (UPDATED: Change ID & Update Logs) ---
-
-
 const handleUpdateAsset = async (e) => {
     e.preventDefault();
     
@@ -5161,8 +5140,13 @@ const handleUpdateAsset = async (e) => {
 
             // สถานะ
             if (val(originalAsset.status) !== val(updatedAsset.status)) changes.push(`สถานะ: ${val(originalAsset.status)} -> ${val(updatedAsset.status)}`);
+            
+            // ⭐ ผู้ถือครอง / ผู้ยืม (ใหม่)
+            if (val(originalAsset.holder) !== val(updatedAsset.holder)) changes.push(`ผู้ยืม: ${val(originalAsset.holder)} -> ${val(updatedAsset.holder)}`);
+
             // หมายเหตุ
             if (val(originalAsset.note) !== val(updatedAsset.note)) changes.push(`Note: ${val(originalAsset.note)} -> ${val(updatedAsset.note)}`);
+            
             // รูปภาพ
             if (newUploadedFiles.length > 0) changes.push(`รูปภาพ: อัปเดตใหม่`);
         }
@@ -7962,8 +7946,22 @@ if (isOwner && canRecall) return (
     </button>
 );
                                 })()}
-                                {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && (
-                                  <button type="button" onClick={() => handleOpenPrintPreview(req)} className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 shadow-sm"><Printer className="w-3 h-3"/> พิมพ์</button>
+                               {['Approved', 'Ordered', 'PR Issued', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received', 'Ready to Disburse', 'Completed', 'Returned'].includes(req.status) && 
+                                 (req.type === 'Local' ||
+                                  req.type === 'Withdraw' || 
+                                  req.type === 'Borrow' || 
+                                  // ⭐ เงื่อนไข HO: ยอมรับทั้ง Full Flow หรือรายการที่เคยอนุมัติแล้ว
+                                  (req.type === 'HO' && (req.isFullApprovalFlow || req.isPreviouslyApproved))
+                                 ) && (
+                                    <button 
+                                        type="button" 
+                                        onClick={() => handleOpenPrintPreview(req)} 
+                                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold rounded-lg hover:bg-blue-100 shadow-sm"
+                                        title="พิมพ์เอกสาร"
+                                    >
+                                        <Printer className="w-3 h-3"/> 
+                                        พิมพ์
+                                    </button>
                                 )}
                                 <button type="button" onClick={() => { setSelectedRequest(req); setShowDetailModal(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-200 shadow-sm"><History className="w-3 h-3"/> รายละเอียด</button>
                                 
@@ -9219,6 +9217,25 @@ if (isOwner && canRecall) return (
                       <label className="flex items-center gap-2 cursor-pointer"><input type="radio" name="purchaseType" className="accent-indigo-600 w-4 h-4" checked={newOrderMeta.purchaseType === 'Rent'} onChange={() => setNewOrderMeta({...newOrderMeta, purchaseType: 'Rent'})} /><span className="text-sm font-bold text-indigo-900">เช่า (Rent)</span></label>
                   </div>
               )}
+
+              {newOrderMeta.type === 'Withdraw' && (
+                  <div className="bg-pink-50 p-3 rounded-xl border border-pink-100 mb-2 flex gap-4 animate-in fade-in">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="radio" name="withdrawStockType" className="accent-pink-600 w-4 h-4" 
+                              checked={newOrderMeta.withdrawStockType === 'System'} 
+                              onChange={() => { setNewOrderMeta({...newOrderMeta, withdrawStockType: 'System'}); setTempItem({...tempItem, name: '', id: ''}); setOrderItems([]); }} 
+                          />
+                          <span className="text-sm font-bold text-pink-900">ของในระบบ (System)</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="radio" name="withdrawStockType" className="accent-pink-600 w-4 h-4" 
+                              checked={newOrderMeta.withdrawStockType === 'NonSystem'} 
+                              onChange={() => { setNewOrderMeta({...newOrderMeta, withdrawStockType: 'NonSystem'}); setTempItem({...tempItem, name: '', id: ''}); setOrderItems([]); }} 
+                          />
+                          <span className="text-sm font-bold text-pink-900">ของนอกระบบ (NonSystem)</span>
+                      </label>
+                  </div>
+              )}
               
               {/* Form Fields */}
               <div className="grid grid-cols-2 gap-4 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
@@ -9737,13 +9754,16 @@ if (isOwner && canRecall) return (
     <p className="text-xs text-gray-500 truncate font-mono">{getDisplayId(item.id) || item.serial || '-'}</p>          
     
     {/* ⭐ ส่วนแสดงผลที่แก้ไข: แยกกรณี Withdraw ให้โชว์ breakdown */}
-    {(newOrderMeta.type === 'Withdraw') ? (
-        <div className="mt-1">
-            <p className="text-xs text-green-600 font-bold">พร้อมเบิก: {item.qty} {item.unit}</p>
-            <p className="text-[10px] text-gray-500">
-                (ในระบบ: {item.sysStock || 0}, นอกระบบ: {item.nonStock || 0})
-            </p>
-        </div>
+{(newOrderMeta.type === 'Withdraw') ? (
+    <div className="mt-1">
+        {/* โชว์ยอดพร้อมเบิก ซึ่งคำนวณแยกตาม 'ในระบบ/นอกระบบ' และหักยอดจองมาให้แล้ว */}
+        <p className="text-xs text-green-600 font-bold">พร้อมเบิก: {item.qty} {item.unit}</p>
+        
+        {/* (Optional) ถ้าอยากให้ User รู้ว่ามีติดจองอยู่กี่ชิ้น สามารถเพิ่มบรรทัดนี้ได้ หรือจะลบทิ้งไปเลยก็ได้ครับ */}
+        {item.reserved > 0 && (
+            <p className="text-[10px] text-orange-500">ติดจองอยู่: {item.reserved} {item.unit}</p>
+        )}
+    </div>
     ) : (newOrderMeta.type !== 'Borrow') && (
         <p className="text-xs text-green-600 mt-1 font-bold">คงเหลือ: {item.qty} {item.unit}</p>
     )}
@@ -12479,10 +12499,17 @@ const relatedAssets = sourceAssets.filter(a =>
         </div>
     );
 
-    // 🟢 กรณี 1: Withdraw (เพิ่ม Checkbox & Reject Input)
+// 🟢 กรณี 1: Withdraw (เพิ่ม Checkbox & Reject Input)
     if (req.type === 'Withdraw') {
-        const totalInput = (item.useSys || 0) + (item.useNon || 0);
+        // 1. ดึงประเภทสต็อกที่ขอเบิกมา (ในระบบ/นอกระบบ)
+        const itemStockType = item.stockType || req.withdrawStockType || 'System';
+        const isNonSystem = itemStockType === 'NonSystem';
+        
+        // 2. คำนวณยอดที่กรอก และ ยอดที่มีในคลัง แยกตามประเภท
+        const totalInput = isNonSystem ? (item.useNon || 0) : (item.useSys || 0);
+        const availableQty = isNonSystem ? (item.nonAvailable || 0) : (item.sysAvailable || 0);
         const isMatch = totalInput === item.qty;
+        const stockTypeLabel = isNonSystem ? 'นอกระบบ' : 'ในระบบ';
         
         return (
             <div key={idx} className={`p-3 rounded-lg border shadow-sm flex gap-3 transition-colors ${item.isRejected ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'}`}>
@@ -12491,10 +12518,15 @@ const relatedAssets = sourceAssets.filter(a =>
                 <div className="flex-1 min-w-0">
                     <div className="flex justify-between mb-1">
                         <div className="flex flex-col">
-                            <span className={`font-bold ${item.isRejected ? 'text-red-700 decoration-red-400 line-through' : 'text-gray-800'}`}>{item.name}</span>
+                            <span className={`font-bold ${item.isRejected ? 'text-red-700 decoration-red-400 line-through' : 'text-gray-800'}`}>
+                                {item.name} 
+                                <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded border ${isNonSystem ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-blue-50 text-blue-600 border-blue-200'}`}>
+                                    {stockTypeLabel}
+                                </span>
+                            </span>
                             {/* Inventory ID Badge */}
                             {(() => {
-                                const stockItem = inventory.find(i => i.name === item.name && i.project === req.job);
+                                const stockItem = inventory.find(i => i.name === item.name && i.project === req.job && (i.stockType || 'System') === itemStockType);
                                 const displayId = stockItem ? getDisplayId(stockItem.id) : null;
                                 return displayId ? <span className="text-[10px] text-gray-500 font-mono bg-gray-100 px-1.5 rounded border w-fit mt-0.5">รหัส: {displayId}</span> : null;
                             })()}
@@ -12524,7 +12556,7 @@ const relatedAssets = sourceAssets.filter(a =>
                         </label>
                     </div>
 
-                    {/* ⭐ Input Inputs หรือ Reject Reason */}
+                    {/* ⭐ Input หรือ Reject Reason */}
                     {item.isRejected ? (
                         <div className="animate-in fade-in">
                             <input 
@@ -12542,16 +12574,36 @@ const relatedAssets = sourceAssets.filter(a =>
                     ) : (
                         <>
                             <div className="flex gap-3 items-end">
+                                {/* โชว์ช่องกรอกข้อมูลช่องเดียว ตามประเภทที่ขอเบิกมา */}
                                 <div className="flex-1">
-                                    <label className={`text-[10px] font-bold block mb-1 ${item.useSys > item.sysAvailable ? 'text-red-600' : 'text-blue-600'}`}>ในระบบ (มี: {item.sysAvailable})</label>
-                                    <input type="number" min="0" max={item.sysAvailable} className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useSys > item.sysAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`} value={item.useSys.toString()} onChange={(e) => { let val = parseInt(e.target.value); if (isNaN(val)) val = 0; const newItems = [...disburseItems]; newItems[idx].useSys = val; const remainingNeed = item.qty - val; if (remainingNeed >= 0) { newItems[idx].useNon = Math.min(remainingNeed, item.nonAvailable); } setDisburseItems(newItems); }} />
-                                </div>
-                                <div className="flex-1">
-                                    <label className={`text-[10px] font-bold block mb-1 ${item.useNon > item.nonAvailable ? 'text-red-600' : 'text-orange-600'}`}>นอกระบบ (มี: {item.nonAvailable})</label>
-                                    <input type="number" min="0" max={item.nonAvailable} className={`w-full p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${item.useNon > item.nonAvailable ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-orange-200 text-gray-800 focus:ring-orange-500'}`} value={item.useNon.toString()} onChange={(e) => { let val = parseInt(e.target.value); if (isNaN(val)) val = 0; const newItems = [...disburseItems]; newItems[idx].useNon = val; const remainingNeed = item.qty - val; if (remainingNeed >= 0) { newItems[idx].useSys = Math.min(remainingNeed, item.sysAvailable); } setDisburseItems(newItems); }} />
+                                    <label className={`text-[10px] font-bold block mb-1 ${totalInput > availableQty ? 'text-red-600' : (isNonSystem ? 'text-orange-600' : 'text-blue-600')}`}>
+                                        จ่ายจากคลัง {stockTypeLabel} (มีให้จ่าย: {availableQty})
+                                    </label>
+                                    <input 
+                                        type="number" 
+                                        min="0" 
+                                        max={availableQty} 
+                                        className={`w-1/2 p-1.5 border rounded text-center text-sm font-bold outline-none focus:ring-2 ${totalInput > availableQty ? 'border-red-500 text-red-600 focus:ring-red-200' : 'border-blue-200 text-gray-800 focus:ring-blue-500'}`} 
+                                        value={totalInput.toString()} 
+                                        onChange={(e) => { 
+                                            let val = parseInt(e.target.value); 
+                                            if (isNaN(val)) val = 0; 
+                                            const newItems = [...disburseItems]; 
+                                            
+                                            // บันทึกลง property ที่ถูกต้อง
+                                            if (isNonSystem) {
+                                                newItems[idx].useNon = val;
+                                                newItems[idx].useSys = 0;
+                                            } else {
+                                                newItems[idx].useSys = val;
+                                                newItems[idx].useNon = 0;
+                                            }
+                                            setDisburseItems(newItems); 
+                                        }} 
+                                    />
                                 </div>
                             </div>
-                            <div className={`mt-2 text-xs text-right font-bold ${isMatch ? 'text-green-600' : 'text-orange-600'}`}>
+                            <div className={`mt-2 text-xs font-bold ${isMatch ? 'text-green-600' : 'text-orange-600'}`}>
                                 รวมจ่าย: {totalInput} / {item.qty} {!isMatch && '(จ่ายไม่ครบ/จ่ายบางส่วน)'}
                             </div>
                         </>
@@ -12559,7 +12611,7 @@ const relatedAssets = sourceAssets.filter(a =>
                 </div>
             </div>
         );
-    } 
+    }
     
     // 🔵 กรณี 2: Borrow (เพิ่ม Checkbox & Reject Input)
     else {
@@ -12791,6 +12843,16 @@ const relatedAssets = sourceAssets.filter(a =>
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
                   
                   <div className="px-6 py-4 border-b bg-white flex justify-between items-center sticky top-0 z-10">
+<datalist id="user-list-options">
+
+                    {allUsers.map((u, i) => (
+
+                        <option key={i} value={`${u.firstName} ${u.lastName}`}>{u.empId}</option>
+
+                    ))}
+
+                </datalist>
+
                       <h3 className="font-bold text-lg text-blue-700 flex items-center gap-2"><Edit className="w-5 h-5"/> แก้ไขข้อมูลทรัพย์สิน</h3>
                       <button onClick={() => setShowEditAssetModal(false)} className="text-gray-400 hover:text-gray-600 p-2 rounded-full hover:bg-gray-100"><X className="w-5 h-5"/></button>
                   </div>
@@ -12865,47 +12927,69 @@ const relatedAssets = sourceAssets.filter(a =>
 )}
                        </div>
 
-                       <div className="grid grid-cols-2 gap-4">
+<div className="grid grid-cols-2 gap-4">
                            {/* Status */}
                            <div>
                                <label className="text-xs font-bold text-gray-500 mb-1 block">สถานะ (Status)</label>
+                               {/* ⭐ ปลดล็อกให้ Super Admin (user.isSuperAdmin) แก้ไขได้เสมอ */}
                                <select 
-                                   className={`w-full p-2.5 border rounded-xl text-sm ${editingAssetItem.status === 'Borrowed' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white'}`}
+                                   className={`w-full p-2.5 border rounded-xl text-sm ${(editingAssetItem.status === 'Borrowed' && !user?.isSuperAdmin) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white'}`}
                                    value={editingAssetItem.status} 
-                                   onChange={e => setEditingAssetItem({...editingAssetItem, status: e.target.value})}
-                                   disabled={editingAssetItem.status === 'Borrowed'}
+                                   onChange={e => {
+                                       const newStatus = e.target.value;
+                                       // ถ้าเลือกสถานะอื่นที่ไม่ใช่ Borrowed ให้ล้างชื่อผู้ยืมทิ้งเป็น '-' อัตโนมัติ
+                                       const newHolder = newStatus !== 'Borrowed' ? '-' : editingAssetItem.holder;
+                                       setEditingAssetItem({...editingAssetItem, status: newStatus, holder: newHolder});
+                                   }}
+                                   disabled={editingAssetItem.status === 'Borrowed' && !user?.isSuperAdmin}
                                >
                                    <option value="Available">ว่าง (Available)</option>
                                    <option value="Lost">สูญหาย (Lost)</option>
                                    <option value="Damaged">ชำรุด (Damaged)</option>
-                                   {editingAssetItem.status === 'Borrowed' && <option value="Borrowed">ถูกยืม (Borrowed)</option>}
+                                   {/* ให้ Super Admin เห็นและเลือกสถานะถูกยืมได้เสมอ */}
+                                   {(editingAssetItem.status === 'Borrowed' || user?.isSuperAdmin) && <option value="Borrowed">ถูกยืม (Borrowed)</option>}
                                </select>
                            </div>
                            
                            {/* Image Upload */}
-                        {/* Image Upload - Edit Asset */}
-<div>
-   <label className="text-xs font-bold text-gray-500 mb-1 block">
-       อัปเดตรูปภาพ 
-       {editingAssetItem.status === 'Damaged' && <span className="text-red-500 ml-1">*จำเป็น</span>}
-   </label>
-   <div className="flex gap-2">
-       {/* ปุ่มอัลบั้ม */}
-       <label className={`flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl text-sm font-bold transition-colors group ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-300 bg-red-50 text-red-600' : 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'}`}>
-           <ImageIcon className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
-           <span className="text-[10px]">อัลบั้ม</span>
-           <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
-       </label>
-       {/* ปุ่มกล้อง */}
-       <label className={`flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl text-sm font-bold transition-colors group ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-400 bg-red-100 text-red-700' : 'border-indigo-300 bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
-           <Camera className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
-           <span className="text-[10px]">ถ่ายรูป</span>
-           <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
-       </label>
-   </div>
-</div>
+                           <div>
+                               <label className="text-xs font-bold text-gray-500 mb-1 block">
+                                   อัปเดตรูปภาพ 
+                                   {editingAssetItem.status === 'Damaged' && <span className="text-red-500 ml-1">*จำเป็น</span>}
+                               </label>
+                               <div className="flex gap-2">
+                                   {/* ปุ่มอัลบั้ม */}
+                                   <label className={`flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl text-sm font-bold transition-colors group ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-300 bg-red-50 text-red-600' : 'border-blue-300 bg-blue-50 text-blue-600 hover:bg-blue-100'}`}>
+                                       <ImageIcon className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+                                       <span className="text-[10px]">อัลบั้ม</span>
+                                       <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
+                                   </label>
+                                   {/* ปุ่มกล้อง */}
+                                   <label className={`flex-1 cursor-pointer flex flex-col items-center justify-center h-14 border-2 border-dashed rounded-xl text-sm font-bold transition-colors group ${editingAssetItem.status === 'Damaged' && (!editingAssetItem.newImages || editingAssetItem.newImages.length === 0) ? 'border-red-400 bg-red-100 text-red-700' : 'border-indigo-300 bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
+                                       <Camera className="w-4 h-4 mb-0.5 group-hover:scale-110 transition-transform"/>
+                                       <span className="text-[10px]">ถ่ายรูป</span>
+                                       <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleAssetImageSelect(e, true)}/>
+                                   </label>
+                               </div>
+                           </div>
                        </div>
                        
+{/* ⭐ [NEW] ส่วนแก้ไขผู้ยืม (แสดงเมื่อสถานะ = ถูกยืม และเป็น Super Admin) */}
+                       {editingAssetItem.status === 'Borrowed' && user?.isSuperAdmin && (
+                           <div className="animate-in fade-in col-span-2">
+                               <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อผู้ยืม / ผู้ถือครอง (Holder) <span className="text-red-500">*</span></label>
+                               <input 
+                                   type="text" 
+                                   list="user-list-options" /* ⭐ เชื่อมกับ datalist รายชื่อที่มีอยู่ในระบบแล้ว */
+                                   className="w-full p-2.5 border rounded-xl text-sm border-orange-300 bg-orange-50 focus:ring-2 focus:ring-orange-500 text-orange-900 placeholder-orange-300" 
+                                   placeholder="พิมพ์ชื่อเพื่อค้นหา หรือเลือกจากรายการ..."
+                                   value={editingAssetItem.holder || ''} 
+                                   onChange={e => setEditingAssetItem({...editingAssetItem, holder: e.target.value})}
+                               />
+                               <p className="text-[10px] text-orange-600 mt-1">* ควรเลือกชื่อที่มีในระบบเพื่อความถูกต้อง</p>
+                           </div>
+                       )}
+
                        {/* ⭐ Note Field */}
                        <div>
                            <label className="text-xs font-bold text-gray-500 mb-1 block">
@@ -12917,7 +13001,7 @@ const relatedAssets = sourceAssets.filter(a =>
                                rows="2" 
                                value={editingAssetItem.note || ''} 
                                onChange={e => setEditingAssetItem({...editingAssetItem, note: e.target.value})}
-                               placeholder="ระบุสาเหตุ..."
+                               placeholder="ระบุสาเหตุ / รายละเอียดการเปลี่ยนสถานะ..."
                            ></textarea>
                        </div>
                        
@@ -13493,7 +13577,7 @@ const relatedAssets = sourceAssets.filter(a =>
                                       </div>
                                   </div>
 
-                                  {/* Right Column */}
+                                {/* Right Column */}
                                   <div className="flex flex-col gap-8">
                                       {/* Borrowed By */}
                                       <div className="relative">
@@ -13641,7 +13725,17 @@ const relatedAssets = sourceAssets.filter(a =>
                             <div className={`w-5 h-5 border border-black flex items-center justify-center bg-white`}>
                                 {(selectedRequest.type === 'Withdraw') && <span className="text-lg font-bold leading-none mb-1">✓</span>}
                             </div> 
-                            <span>เบิกวัสดุ (Withdraw)</span>
+                            {(() => {
+                                const isNonSystem = selectedRequest.type === 'Withdraw' && 
+                                    (selectedRequest.withdrawStockType === 'NonSystem' || 
+                                    (selectedRequest.items && selectedRequest.items.some(i => i.stockType === 'NonSystem')));
+                                
+                                return (
+                                    <span className={isNonSystem ? "font-bold underline" : ""}>
+                                        {isNonSystem ? 'เบิกวัสดุ นอกระบบ (Withdraw)' : 'เบิกวัสดุ (Withdraw)'}
+                                    </span>
+                                );
+                            })()}
                         </label>
                     </div>
                     <div className="flex justify-center">
@@ -13714,6 +13808,8 @@ const relatedAssets = sourceAssets.filter(a =>
         // สถานะจบงาน (Withdraw ต้องจบงานก่อนถึงจะรู้ว่าจ่ายไม่ครบ)
         const isClosed = ['Completed', 'Returned', 'Rejected', 'Partially Received'].includes(selectedRequest.status);
 
+        const isAfterOrdered = ['Ordered', 'Shipping', 'Partially Received', 'Completed'].includes(selectedRequest.status);
+
         // --- 3. Logic การแสดงผล ---
         
         // เงื่อนไข Partial สำหรับ Withdraw เท่านั้น!! (ต้องจบงาน + ไม่ถูก Reject + ได้น้อยกว่าขอ)
@@ -13780,14 +13876,14 @@ const relatedAssets = sourceAssets.filter(a =>
                     ) : '-'}
                 </td>
 
-                {/* Col 4: วันที่ / หมายเหตุ */}
+     {/* Col 4: วันที่ / หมายเหตุ */}
                 <td className="text-left align-top border border-black p-2">
                     <div className="font-bold text-center mb-1 bg-gray-50 rounded border border-gray-200 text-xs py-0.5">
                         {formatDateTh(selectedRequest.dateRequired)}
                     </div>
                     
-                    {/* ⭐⭐ HO/Local: โชว์ยอดรับ/ค้างรับ ตรงนี้แทน ⭐⭐ */}
-                    {isOrder && !isRejected && (paid > 0 || remaining > 0) && (
+                    {/* ⭐⭐ HO/Local: โชว์ยอดรับ/ค้างรับ โดยเช็ค isAfterOrdered เพิ่มเข้าไป ⭐⭐ */}
+                    {isOrder && !isRejected && isAfterOrdered && (paid > 0 || remaining > 0) && (
                          <div className="mt-1 pt-1 border-t border-dotted border-gray-400 text-[11px] leading-tight">
                             {paid > 0 && (
                                 <div className="text-green-700 font-bold">
@@ -13812,28 +13908,31 @@ const relatedAssets = sourceAssets.filter(a =>
         );
     })}
 </tbody>
-            </table>
+
+</table>
 {/* --- SIGNATURES SECTION (REARRANGED - RAW JSX) --- */}
             <div className="mt-8 signature-section break-inside-avoid">
                 {selectedRequest.type === 'Withdraw' ? (
                     /* 🟢 กรณีเบิก (Withdraw) */
                     <div className="grid grid-cols-3 gap-4 text-center">
                         {/* 1. ผู้ขอ */}
-                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                        <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                             <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
-                            <div className="flex-1 flex items-center justify-center">
-                                {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
+                            {/* ⭐ ล็อกความสูงตายตัว 70px และให้รูปลอยตัว */}
+                            <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                {sigReq ? <img src={sigReq} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
                             </div>
                             <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                 <div className="font-bold">{nameReq}</div>
+                                {userReq?.empId && <div className="font-mono text-[10px] text-gray-600">{userReq.empId}</div>}
                                 <div>วันที่: {dateReq}</div>
                             </div>
                         </div>
                         {/* 2. สโตร์ */}
-                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                        <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                             <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">{storeLabel}</div>
-                            <div className="flex-1 flex items-center justify-center">
-                                {sigStore ? <img src={sigStore} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                            <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                {sigStore ? <img src={sigStore} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
                             </div>
                             <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                 <div className="font-bold">{nameStore}</div>
@@ -13841,10 +13940,10 @@ const relatedAssets = sourceAssets.filter(a =>
                             </div>
                         </div>
                         {/* 3. ผู้อนุมัติ */}
-                        <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                        <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                             <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ</div>
-                            <div className="flex-1 flex items-center justify-center">
-                                {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                            <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                {sigL1 ? <img src={sigL1} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
                             </div>
                             <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                 <div className="font-bold">{nameL1}</div>
@@ -13858,21 +13957,22 @@ const relatedAssets = sourceAssets.filter(a =>
                         {/* แถวที่ 1 */}
                         <div className="grid grid-cols-3 gap-4 text-center">
                             {/* 1. ผู้ขอ */}
-                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                                 <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้ขอ (Requester)</div>
-                                <div className="flex-1 flex items-center justify-center">
-                                    {sigReq ? <img src={sigReq} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
+                                <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                    {sigReq ? <img src={sigReq} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">(เซ็นชื่อ)</span>}
                                 </div>
                                 <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                     <div className="font-bold">{nameReq}</div>
+                                    {userReq?.empId && <div className="font-mono text-[10px] text-gray-600">{userReq.empId}</div>}
                                     <div>วันที่: {dateReq}</div>
                                 </div>
                             </div>
                             {/* 2. ฝ่ายจัดซื้อ (NEW) */}
-                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                                 <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ฝ่ายจัดซื้อ (Purchasing)</div>
-                                <div className="flex-1 flex items-center justify-center">
-                                    {sigPurchasing ? <img src={sigPurchasing} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                    {sigPurchasing ? <img src={sigPurchasing} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
                                 </div>
                                 <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                     <div className="font-bold">{namePurchasing}</div>
@@ -13880,10 +13980,10 @@ const relatedAssets = sourceAssets.filter(a =>
                                 </div>
                             </div>
                             {/* 3. สโตร์ */}
-                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                                 <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">{storeLabel}</div>
-                                <div className="flex-1 flex items-center justify-center">
-                                    {sigStore ? <img src={sigStore} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                    {sigStore ? <img src={sigStore} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
                                 </div>
                                 <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                     <div className="font-bold">{nameStore}</div>
@@ -13895,10 +13995,10 @@ const relatedAssets = sourceAssets.filter(a =>
                         {/* แถวที่ 2 */}
                         <div className="grid grid-cols-2 gap-4 text-center px-10">
                             {/* 4. ผู้อนุมัติ L1 */}
-                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                                 <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 1)</div>
-                                <div className="flex-1 flex items-center justify-center">
-                                    {sigL1 ? <img src={sigL1} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                    {sigL1 ? <img src={sigL1} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
                                 </div>
                                 <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                     <div className="font-bold">{nameL1}</div>
@@ -13906,10 +14006,10 @@ const relatedAssets = sourceAssets.filter(a =>
                                 </div>
                             </div>
                             {/* 5. ผู้อนุมัติ L2 */}
-                            <div className="border border-black p-2 h-36 flex flex-col justify-between bg-white">
+                            <div className="border border-black p-2 h-44 flex flex-col justify-between bg-white">
                                 <div className="text-sm font-bold border-b border-gray-200 pb-1 mb-1">ผู้อนุมัติ (Level 2)</div>
-                                <div className="flex-1 flex items-center justify-center">
-                                    {sigL2 ? <img src={sigL2} className="max-h-16 max-w-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
+                                <div className="h-[70px] shrink-0 relative flex items-center justify-center">
+                                    {sigL2 ? <img src={sigL2} className="absolute inset-0 w-full h-full object-contain"/> : <span className="text-gray-300 text-xs">..........................</span>}
                                 </div>
                                 <div className="border-t border-dotted border-black mt-1 pt-1 text-xs">
                                     <div className="font-bold">{nameL2}</div>
@@ -13936,7 +14036,7 @@ const relatedAssets = sourceAssets.filter(a =>
 
 {/* ⭐ FULLSCREEN IMAGE VIEWER (With Download) ⭐ */}
       {viewingAttachments && (
-         <div className="fixed inset-0 bg-black/95 z-[200] flex flex-col justify-center p-4 backdrop-blur-sm animate-in fade-in">
+         <div className="fixed inset-0 bg-black/95 z-[400] flex flex-col justify-center p-4 backdrop-blur-sm animate-in fade-in">
             
             {/* Header Clean Style */}
             <div className="flex justify-between items-center text-white mb-4 px-2 max-w-4xl mx-auto w-full">
