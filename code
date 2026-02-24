@@ -2413,78 +2413,73 @@ function createRequestSecurely(reqData) {
 }
 
 function checkAvailability(newReq, allRequests) {
-  // ดึงข้อมูลคลังและทรัพย์สินล่าสุดเดี๋ยวนี้
   var inventory = getSheetData('Inventory'); 
   var assets = getSheetData('Assets');
 
-  // วนลูปเช็คสินค้าทุกตัวในคำขอใหม่
   for (var i = 0; i < newReq.items.length; i++) {
     var item = newReq.items[i];
 
     // --- กรณี 1: เบิกวัสดุ (Withdraw) ---
     if (newReq.type === 'Withdraw') {
-      // 1. หาของใน Inventory
+      // ดึงประเภทที่เลือกว่าเป็น System หรือ NonSystem (ถ้าไม่มีให้ถือเป็น System)
+      var itemStockType = item.stockType || newReq.withdrawStockType || 'System';
+
+      // 1. หาของใน Inventory ตาม Project และ StockType ที่เลือก
       var stockItem = inventory.find(function(inv) { 
-        return inv.name === item.name; // หรือเช็คด้วย ID ถ้ามี
+        return inv.name === item.name && 
+               inv.project === newReq.job && 
+               (inv.stockType || 'System') === itemStockType;
       });
 
-      if (!stockItem) return 'ไม่พบสินค้า "' + item.name + '" ในระบบคลังสินค้า';
+      if (!stockItem) return 'ไม่พบสินค้า "' + item.name + '" ประเภท "' + (itemStockType === 'System' ? 'ในระบบ' : 'นอกระบบ') + '" ในคลังสินค้า';
 
-      // 2. คำนวณยอดที่ "ถูกจองแล้วแต่ยังไม่ได้รับของ" (Pending Requests)
-      // เลือกเฉพาะคำขอประเภท Withdraw ที่สถานะยังไม่จบ (ไม่ใช่ Completed/Rejected)
+      // 2. คำนวณยอดจองรออนุมัติ (แยกตาม Type เดียวกัน)
       var pendingQty = allRequests.filter(function(r) {
         return r.type === 'Withdraw' && 
+               r.job === newReq.job &&
                r.status !== 'Completed' && 
                r.status !== 'Rejected' && 
                r.status !== 'Draft' &&
-               r.status !== 'Cancelled';
+               r.status !== 'Cancelled' &&
+               r.id !== newReq.id;
       }).reduce(function(sum, r) {
-        // หาว่าในคำขอนั้น มีสินค้าตัวเดียวกับเราไหม
-        var matchItem = r.items ? r.items.find(function(it) { return it.name === item.name; }) : null;
+        var matchItem = r.items ? r.items.find(function(it) { 
+            var itType = it.stockType || r.withdrawStockType || 'System';
+            return it.name === item.name && itType === itemStockType; 
+        }) : null;
         return sum + (matchItem ? Number(matchItem.qty) : 0);
       }, 0);
 
-      // 3. เช็คยอดคงเหลือจริง (สต็อกจริง - ยอดจองรออนุมัติ - ยอดที่กำลังจะขอ)
-      var currentStock = Number(stockItem.qty || 0); // สมมติว่าใน Inventory คอลัมน์ชื่อ qty
+      // 3. เช็คยอดคงเหลือจริง
+      var currentStock = Number(stockItem.qty || 0); 
       var realAvailable = currentStock - pendingQty;
 
       if (Number(item.qty) > realAvailable) {
-        return 'สินค้า "' + item.name + '" มีไม่พอ (คงเหลือ: ' + currentStock + ', ติดจอง: ' + pendingQty + ', ว่าง: ' + realAvailable + ')';
+        return 'สินค้า "' + item.name + '" มีไม่พอ (คงเหลือว่าง: ' + realAvailable + ', ยอดจอง: ' + pendingQty + ')';
       }
     }
 
     // --- กรณี 2: ยืมทรัพย์สิน (Borrow) ---
     else if (newReq.type === 'Borrow') {
-      // 1. เช็คสถานะจาก Master Data (Assets)
-      // ต้องแน่ใจว่า item ส่ง assetId หรือ code มาด้วย
       if (item.assetId) { 
-        var assetObj = assets.find(function(a) { return a.id === item.assetId; }); // แก้ id เป็นชื่อคอลัมน์จริงของคุณ
+        var assetObj = assets.find(function(a) { return a.id === item.assetId; }); 
         
         if (!assetObj) return 'ไม่พบรหัสทรัพย์สิน ' + item.assetId;
-        
-        if (assetObj.status !== 'Available') {
-           return 'ทรัพย์สิน "' + item.name + '" ไม่ว่าง (สถานะปัจจุบัน: ' + assetObj.status + ')';
-        }
+        if (assetObj.status !== 'Available') return 'ทรัพย์สิน "' + item.name + '" ไม่ว่าง (สถานะ: ' + assetObj.status + ')';
 
-        // 2. เช็คว่ามีใครจองตัดหน้าไปแล้วหรือยัง (อยู่ใน List Requests แต่ยังไม่อนุมัติ)
         var isBookedByOther = allRequests.some(function(r) {
            return r.type === 'Borrow' &&
-                  r.status !== 'Completed' && 
-                  r.status !== 'Rejected' && 
-                  r.status !== 'Returned' && 
-                  r.status !== 'Cancelled' &&
-                  r.status !== 'Draft' &&
+                  !['Completed', 'Rejected', 'Returned', 'Cancelled', 'Draft'].includes(r.status) &&
+                  r.id !== newReq.id &&
                   r.items && r.items.some(function(it) { return it.assetId === item.assetId; });
         });
 
-        if (isBookedByOther) {
-           return 'ทรัพย์สิน "' + item.name + '" กำลังติดการจองโดยผู้อื่นอยู่';
-        }
+        if (isBookedByOther) return 'ทรัพย์สิน "' + item.name + '" กำลังติดการจองโดยผู้อื่นอยู่';
       }
     }
   }
 
-  return null; // ถ้าผ่านทุกอย่าง ส่งค่า null (ไม่มี Error)
+  return null; 
 }
 
 function forceAuth() {
