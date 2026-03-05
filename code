@@ -1353,18 +1353,21 @@ function handleStatusNotification(req) {
 
   if (recipients.length === 0) return;
 
-  // จัดการชื่อสถานะสำหรับแสดงผล
+// จัดการชื่อสถานะสำหรับแสดงผล
   let displayStatus = status;
   if (status === 'Pending Head') displayStatus = 'Pending Level 1';
   if (status === 'Pending PM') displayStatus = 'Pending Level 2';
+  if (status === 'Revise Needed') displayStatus = 'ต้องแก้ไขข้อมูล (Revise Needed)';
 
   // ⭐ [เพิ่มใหม่] ตรวจสอบว่าเป็น Rollback หรือไม่ (เช็คจาก Note ในประวัติล่าสุด)
   let subjectPrefix = `[อัปเดตสถานะ: ${displayStatus}]`;
-  
   const lastLog = req.history && req.history.length > 0 ? req.history[req.history.length - 1] : null;
+  
   // ถ้า Note มีคำว่า Rollback ให้เปลี่ยนหัวข้อเมล
   if (lastLog && lastLog.note && (lastLog.note.includes('Rollback') || lastLog.note.includes('ย้อนกลับ'))) {
       subjectPrefix = `[แจ้งเตือน: ย้อนสถานะ (Rollback) กลับเป็น ${displayStatus}]`;
+  } else if (status === 'Revise Needed') {
+      subjectPrefix = `[⚠️ แจ้งเตือน: ส่งเอกสารคืนเพื่อแก้ไข]`; // ⭐ หัวข้ออีเมลตอนส่งกลับให้ดูสำคัญ
   }
 
   // 4. สร้างเนื้อหาและส่ง
@@ -1428,27 +1431,53 @@ function findUserEmail(requesterStr) {
 }
 
 function createNotificationBody(req, displayStatus) {
-  const color = 
-      req.status === 'Rejected' ? '#d32f2f' : 
-      req.status === 'Completed' ? '#2e7d32' : 
-      req.status.includes('Pending') ? '#f57c00' : '#1976d2';
+  // กำหนดสีตามสถานะ
+  let color = '#1976d2'; // ค่าเริ่มต้นสีน้ำเงิน
+  if (req.status === 'Rejected') color = '#d32f2f'; // สีแดง
+  else if (req.status === 'Completed') color = '#2e7d32'; // สีเขียว
+  else if (req.status.includes('Pending')) color = '#f57c00'; // สีส้ม
+  else if (req.status === 'Revise Needed') color = '#e65100'; // ⭐ สีส้มเข้มเตือนสายตา
 
   // ถ้าไม่ได้ส่ง displayStatus มา ให้คำนวณใหม่
   if (!displayStatus) {
       displayStatus = req.status;
       if (req.status === 'Pending Head') displayStatus = 'Pending Level 1';
       if (req.status === 'Pending PM') displayStatus = 'Pending Level 2';
+      if (req.status === 'Revise Needed') displayStatus = 'ต้องแก้ไขข้อมูล (Revise Needed)'; // ⭐
+  }
+
+  // ⭐ ดึงประวัติการทำงานล่าสุดเพื่อเอาเหตุผล (Note)
+  const lastLog = req.history && req.history.length > 0 ? req.history[req.history.length - 1] : null;
+  
+  // สร้างกล่องข้อความแจ้งเหตุผล
+  let noteHtml = '';
+  if (lastLog) {
+      // ถ้าเป็นสถานะที่ถูกตีกลับ หรือไม่อนุมัติ จะโชว์กล่องข้อความเตือนชัดเจน
+      if (req.status === 'Revise Needed' || req.status === 'Rejected') {
+          noteHtml = `
+          <div style="margin-top: 15px; padding: 15px; background-color: #fff3e0; border-left: 4px solid ${color}; border-radius: 4px;">
+              <h3 style="margin: 0 0 10px 0; color: ${color}; font-size: 16px;">⚠️ ข้อความจากผู้ตรวจสอบ:</h3>
+              <p style="margin: 0; font-size: 14px; color: #d84315; font-weight: bold; line-height: 1.5;">${lastLog.note || 'ไม่มีระบุเหตุผล'}</p>
+          </div>`;
+      } else {
+          // ถ้าสถานะปกติ โชว์เป็นข้อความอัปเดตธรรมดา
+          noteHtml = `
+          <p style="color: #666; font-size: 12px; margin-top: 15px;">
+              <strong>อัปเดตล่าสุดโดย:</strong> ${lastLog.user}<br/>
+              <strong>บันทึก:</strong> ${lastLog.note || '-'}
+          </p>`;
+      }
   }
 
   return `
     <div style="font-family: 'Sarabun', sans-serif; max-width: 600px; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
         <div style="background-color: ${color}; color: white; padding: 15px;">
-            <h2 style="margin: 0; font-size: 18px;">รายการมีการอัปเดตสถานะ</h2>
+            <h2 style="margin: 0; font-size: 18px;">${req.status === 'Revise Needed' ? '⚠️ เอกสารต้องแก้ไข (Action Required)' : 'รายการมีการอัปเดตสถานะ'}</h2>
         </div>
         <div style="padding: 20px;">
-            <p>เรียน ผู้เกี่ยวข้อง,</p>
-            <p>รายการคำขอหมายเลข <strong>${req.id}</strong> มีการเปลี่ยนแปลงสถานะดังนี้:</p>
-            
+            <p>เรียน คุณ${req.requester},</p>
+            <p>รายการคำขอหมายเลข <strong>${req.id}</strong> ${req.status === 'Revise Needed' ? 'ถูกส่งกลับมาเพื่อให้ท่านแก้ไขข้อมูล ดังนี้:' : 'มีการเปลี่ยนแปลงสถานะดังนี้:'}</p>
+     
             <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
                 <tr style="background-color: #f5f5f5;">
                     <td style="padding: 10px; border: 1px solid #ddd;"><strong>สถานะปัจจุบัน</strong></td>
@@ -1464,18 +1493,14 @@ function createNotificationBody(req, displayStatus) {
                 </tr>
                 <tr>
                     <td style="padding: 10px; border: 1px solid #ddd;"><strong>รายการสินค้า</strong></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;">${req.items[0].name} ${req.items.length > 1 ? `(และอีก ${req.items.length - 1} รายการ)` : ''}</td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${req.items[0]?.name} ${req.items.length > 1 ? `(และอีก ${req.items.length - 1} รายการ)` : ''}</td>
                 </tr>
             </table>
 
-            ${req.history && req.history.length > 0 ? `
-            <p style="color: #666; font-size: 12px;">
-                <strong>อัปเดตล่าสุดโดย:</strong> ${req.history[req.history.length - 1].user}<br/>
-                <strong>บันทึก:</strong> ${req.history[req.history.length - 1].note || '-'}
-            </p>` : ''}
+            ${noteHtml}
             
-            <div style="text-align: center; margin-top: 20px;">
-                <a href="${ScriptApp.getService().getUrl()}" style="background-color: #1976d2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">เข้าสู่ระบบเพื่อดูรายละเอียด</a>
+            <div style="text-align: center; margin-top: 25px;">
+                <a href="${ScriptApp.getService().getUrl()}" style="background-color: ${color}; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">เข้าสู่ระบบเพื่อดูรายละเอียด / แก้ไข</a>
             </div>
         </div>
     </div>
@@ -2161,16 +2186,18 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     // 6. บันทึกข้อมูลลง Supabase
     saveDataToSheet('Requests', req.id, req);
 
-    // 7. จัดการส่งอีเมล (แยก Logic มาจาก syncRequest เดิม)
-    /* 🔴 [STOPPED] หยุดการส่งเมลเฉพาะส่วน Update Status ชั่วคราว 
-       (เพื่อให้การกดเปลี่ยนสถานะหน้าเว็บเร็วขึ้น หรือป้องกันเมลรบกวน)
-    try {
-        triggerEmails(req); // ส่งเมลขออนุมัติ (ถ้ามี)
-        handleStatusNotification(req); // ส่งเมลแจ้งเตือนสถานะ
-    } catch (err) {
-        console.error("Email Error: " + err);
+ // 7. จัดการส่งอีเมล (แยก Logic มาจาก syncRequest เดิม)
+    /* 🔴 [STOPPED] หยุดการส่งเมลแจ้งเตือนทั่วไป 
+       (เพื่อให้การกดเปลี่ยนสถานะหน้าเว็บเร็วขึ้น หรือป้องกันเมลรบกวน) ... */
+       
+    // ⭐ [ปลดล็อก] ยอมให้ส่งอีเมล "เฉพาะ" กรณีที่ตีกลับให้แก้ไข หรือไม่อนุมัติ (เพื่อให้ผู้ขอรู้ตัวทันที)
+    if (newStatus === 'Revise Needed' || newStatus === 'Rejected') {
+        try {
+            handleStatusNotification(req);
+        } catch (err) {
+            console.error("Email Error: " + err);
+        }
     }
-    */
 
     return { success: true, request: req };
 
@@ -2181,7 +2208,7 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     lock.releaseLock();
   }
 }
-// ... existing code ...
+
 
 // Helper: ฟังก์ชันส่งเมลขออนุมัติ (แยกออกมาเพื่อให้เรียกใช้ได้สะดวก)
 function triggerEmails(request) {
