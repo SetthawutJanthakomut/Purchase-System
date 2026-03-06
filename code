@@ -273,7 +273,7 @@ if (userObj) {
       
       saveDataToSheet('Requests', req.id, req);
       
-      // -- 8. แจ้งเตือน --
+     // -- 8. แจ้งเตือน --
       if (newStatus === 'Pending PM') {
           try {
               const pmEmails = findApproverEmails(req.job, 9);
@@ -282,6 +282,9 @@ if (userObj) {
       }
       
       try { handleStatusNotification(req); } catch(e){}
+
+      // ⭐⭐⭐ เพิ่มโค้ดดักส่ง LINE ตรงนี้ ⭐⭐⭐
+      try { sendLineGroupNotification(req); } catch(e){}
 
       successCount++;
   });
@@ -1324,12 +1327,14 @@ function uploadUserSignature(base64Data, fileName) {
 }
 
 
-// --- NOTIFICATION SYSTEM (NEW) ---
-
-// --- NOTIFICATION SYSTEM (UPDATED FOR ROLLBACK) ---
-
 function handleStatusNotification(req) {
   const status = req.status;
+  
+  // ⭐ ปิดระบบส่งอีเมลสถานะอื่นๆ ทั้งหมด (ยกเว้น Revise Needed)
+ if (status !== 'Revise Needed' && status !== 'Rejected') {
+      return; 
+  }
+
   if (status === 'Draft') return;
 
   // 1. หาอีเมลผู้ขอ (เจ้าของ Order)
@@ -2190,7 +2195,7 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
     /* 🔴 [STOPPED] หยุดการส่งเมลแจ้งเตือนทั่วไป 
        (เพื่อให้การกดเปลี่ยนสถานะหน้าเว็บเร็วขึ้น หรือป้องกันเมลรบกวน) ... */
        
-    // ⭐ [ปลดล็อก] ยอมให้ส่งอีเมล "เฉพาะ" กรณีที่ตีกลับให้แก้ไข หรือไม่อนุมัติ (เพื่อให้ผู้ขอรู้ตัวทันที)
+// ⭐ [ปลดล็อก] ยอมให้ส่งอีเมล "เฉพาะ" กรณีที่ตีกลับให้แก้ไข หรือไม่อนุมัติ (เพื่อให้ผู้ขอรู้ตัวทันที)
     if (newStatus === 'Revise Needed' || newStatus === 'Rejected') {
         try {
             handleStatusNotification(req);
@@ -2199,9 +2204,15 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
         }
     }
 
-    return { success: true, request: req };
+    // ⭐⭐⭐ เพิ่มโค้ดดักส่ง LINE ตรงนี้ ⭐⭐⭐
+    try {
+        sendLineGroupNotification(req);
+    } catch (err) {
+        console.error("LINE Error: " + err);
+    }
 
-  } catch (e) {
+    return { success: true, request: req };
+} catch (e) {
     return { success: false, message: 'Error: ' + e.toString() };
   } finally {
     // 8. ปลดล็อกเสมอ เพื่อให้คนอื่นใช้งานต่อได้
@@ -2210,8 +2221,10 @@ function updateStatusSecurely(id, newStatus, logObj, extraUpdates = {}) {
 }
 
 
-// Helper: ฟังก์ชันส่งเมลขออนุมัติ (แยกออกมาเพื่อให้เรียกใช้ได้สะดวก)
 function triggerEmails(request) {
+  // ⭐ เพิ่มบรรทัดนี้ เพื่อส่งแจ้งเตือนเข้ากลุ่ม LINE
+  sendLineGroupNotification(request);
+
   if (request.status === 'Pending Head') {
       if (request.type === 'Withdraw' || request.type === 'Borrow') {
           var headEmails = findApproverEmails(request.job, 8);
@@ -2220,7 +2233,7 @@ function triggerEmails(request) {
           if (headEmails) recipients.push(headEmails);
           if (pmEmails) recipients.push(pmEmails);
           if (recipients.length > 0) {
-              sendApprovalEmail(request, recipients.join(','), 'Approver'); 
+              sendApprovalEmail(request, recipients.join(','), 'Approver');
           }
       } else {
           var headEmails = findApproverEmails(request.job, 8);
@@ -3143,4 +3156,90 @@ function getAllLogsForItem(assetId) {
     return [];
   }
 }
+
+
+// ==========================================
+// ฟังก์ชันส่งการแจ้งเตือนเข้ากลุ่ม LINE
+// ==========================================
+const LINE_ACCESS_TOKEN = 'xCgwPyQbRcCviUcp4eKylr6u1x0guUPxfjbL/xcFuq237DrUFgyFPcciv3PKseYq1UJlE5l/At3CPpjY1eRKFo7vf+6Dam6EMojOVVoC2Q3+ANpYj1l9uDjPw2TMHXRj5bS23a2jycoQLdSWgd9UcgdB04t89/1O/w1cDnyilFU=';
+const LINE_GROUP_APPROVE = 'Caddbe38f8930c12f37fc29c5f76861b9'; // กลุ่มรออนุมัติ
+const LINE_GROUP_STORE = 'Cad7fbfbfc9ab9bee4c2f027694e38b9e';   // กลุ่มสโตร์ (รอตัดจ่าย)
+
+function sendLineGroupNotification(req) {
+  let targetGroupId = '';
+  let displayStatus = '';
+  let headerText = '';
+
+  // 1. ตรวจสอบสถานะเพื่อกำหนดกลุ่มเป้าหมายและข้อความ
+  if (req.status === 'Pending Head') {
+    targetGroupId = LINE_GROUP_APPROVE;
+    headerText = '🔔 มีคำขอใหม่ต้องการการอนุมัติ!';
+    
+    // แยกชื่อสถานะตามประเภทเอกสาร
+    if (req.type === 'Withdraw' || req.type === 'Borrow') {
+      displayStatus = 'รออนุมัติ Level 1 / Level 2';
+    } else {
+      displayStatus = 'รออนุมัติ Level 1';
+    }
+
+  } else if (req.status === 'Ready to Disburse') {
+    targetGroupId = LINE_GROUP_STORE;
+    headerText = '📦 มีรายการรอจ่ายของ / ตัดสต็อก!';
+    displayStatus = 'รอจ่ายของ (เบิก/ยืม)';
+    
+  } else {
+    // ถ้านอกเหนือจาก 2 สถานะนี้ จะไม่ส่ง LINE ออกไป
+    return;
+  }
+
+  // 2. แปลงประเภท (Type) ให้เป็นภาษาไทยเพื่อให้อ่านง่าย
+  let displayType = req.type;
+  if (req.type === 'Local') displayType = 'สั่งซื้อ Local';
+  else if (req.type === 'HO') displayType = req.purchaseType === 'Rent' ? 'สั่งซื้อ HO (เช่า)' : 'สั่งซื้อ HO (ซื้อขาด)';
+  else if (req.type === 'Withdraw') displayType = 'เบิกวัสดุ';
+  else if (req.type === 'Borrow') displayType = 'ยืมทรัพย์สิน';
+
+  // 3. สรุปรายการสินค้า (แสดงสูงสุด 5 รายการแรก เพื่อไม่ให้ข้อความยาวเกินไป)
+  let itemsList = req.items.slice(0, 5).map((item, i) => `  ${i+1}. ${item.name} (${item.qty} ${item.unit})`).join('\n');
+  if (req.items.length > 5) {
+    itemsList += `\n  ... และอื่นๆ อีก ${req.items.length - 5} รายการ`;
+  }
+  
+  // 4. จัดรูปแบบข้อความที่จะส่ง
+  const messageText = `${headerText}\n\n` +
+                      `📌 สถานะ: ${displayStatus}\n` +
+                      `📄 เลขที่: ${req.docNumber || req.id}\n` +
+                      `🏢 โครงการ: ${req.job}\n` +
+                      `👤 ผู้ขอ: ${req.requester}\n` +
+                      `🏷️ ประเภท: ${displayType}\n` +
+                      `\n📦 รายการ:\n${itemsList}\n` +
+                      `\n👉 กรุณาเข้าสู่ระบบเพื่อตรวจสอบและดำเนินการครับ`;
+
+  // 5. ข้อมูลสำหรับยิง API
+  const url = 'https://api.line.me/v2/bot/message/push';
+  const payload = {
+    to: targetGroupId,
+    messages: [{ type: 'text', text: messageText }]
+  };
+  
+  const options = {
+    method: 'post',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + LINE_ACCESS_TOKEN
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const res = UrlFetchApp.fetch(url, options);
+    console.log("LINE Notify Response: " + res.getContentText());
+  } catch (error) {
+    console.error("LINE Notify Error: " + error.toString());
+  }
+}
+
+
+
 
