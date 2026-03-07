@@ -811,17 +811,20 @@ function saveDataToSheet(sheetName, id, dataObj) {
   };
   
   UrlFetchApp.fetch(url, options);
+  clearAppCache();
+
   return true;
 }
 
-function deleteDataFromSheet(sheetName, id) {
-  // ⭐ แก้ไข: ต้อง Encode ID ก่อนส่ง เพราะมีภาษาไทยและเครื่องหมาย |
-  var encodedId = encodeURIComponent(id);
-  
-  // สั่งลบแถวที่ id ตรงกัน
-  callSupabase(sheetName, 'delete', null, `?id=eq.${encodedId}`);
-}
 
+
+function deleteDataFromSheet(sheetName, id) {
+  var encodedId = encodeURIComponent(id);
+  callSupabase(sheetName, 'delete', null, `?id=eq.${encodedId}`);
+  
+  // ⭐ เพิ่มบรรทัดนี้: ล้างความจำทุกครั้งที่มีการลบข้อมูล
+  clearAppCache(); 
+}
 // --- FILE UPLOAD FUNCTIONS ---
 
 function uploadFileToDrive(base64Data, fileName) {
@@ -973,20 +976,122 @@ function saveUserData(user) {
   return { success: true, message: 'บันทึกข้อมูลเรียบร้อย' };
 }
 
-function loadInitialData() {
-  const settings = getSheetData('Settings');
-  const announcement = settings.find(s => s.id === 'ANNOUNCEMENT') || null;
+
+// ⭐ ฟังก์ชันโหลดเฉพาะตอนเปิดเว็บครั้งแรก (เอาแค่ประกาศ) - เร็วทะลุนรก
+function loadLoginData() {
+  try {
+    const settings = getSheetData('Settings');
+    const announcement = settings.find(s => s.id === 'ANNOUNCEMENT') || null;
+    return { announcement: announcement };
+  } catch(e) {
+    return { announcement: null };
+  }
+}
+
+
+// ==========================================
+// ⭐ ระบบ Cache ของ Google (รองรับข้อมูลขนาดใหญ่)
+// ==========================================
+function getCachedData(key) {
+  const cache = CacheService.getScriptCache();
+  const chunks = cache.get(key + '_CHUNKS');
+  if (!chunks) return null;
   
-  return {
-    requests: getSheetData('Requests'),
-    inventory: getSheetData('Inventory'),
-    assets: getSheetData('Assets'),
-    // logs: getSheetData('Logs'), // ❌ ปิดบรรทัดนี้ เพื่อไม่ให้โหลด Logs ก้อนยักษ์ตอนเปิดแอป
-    logs: [], // ✅ ส่ง Array ว่างกลับไปก่อนเพื่อให้หน้าเว็บไม่พัง
-    projects: getSheetData('Projects'),
-    users: getSheetData('Users'),
-    announcement: announcement
-  };
+  let stringData = '';
+  for (let i = 0; i < parseInt(chunks); i++) {
+    const chunk = cache.get(key + '_' + i);
+    if (!chunk) return null; // ถ้าชิ้นส่วนหาย ให้ถือว่า Cache เสีย
+    stringData += chunk;
+  }
+  return stringData;
+}
+
+function setCachedData(key, stringData, expirationInSeconds) {
+  const cache = CacheService.getScriptCache();
+  const chunkSize = 45000; // ตัดแบ่งก้อนละ 45,000 ตัวอักษร (ป้องกันเกิน Limit 100KB ของ Google)
+  const chunks = Math.ceil(stringData.length / chunkSize);
+  
+  if (chunks > 30) return; // ถ้าข้อมูลใหญ่เกินไป ไม่ต้องจำ
+  
+  cache.put(key + '_CHUNKS', chunks.toString(), expirationInSeconds);
+  for (let i = 0; i < chunks; i++) {
+    cache.put(key + '_' + i, stringData.substring(i * chunkSize, (i + 1) * chunkSize), expirationInSeconds);
+  }
+}
+
+function clearAppCache() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('ALL_APP_DATA_CHUNKS');
+  for(let i=0; i<30; i++) {
+    cache.remove('ALL_APP_DATA_' + i);
+  }
+}
+
+// ==========================================
+// ⭐ ฟังก์ชันโหลดข้อมูลหลัก (ดึงพร้อมกัน + ระบบจำข้อมูล)
+// ==========================================
+function loadInitialData() {
+  // 1. ตรวจสอบความจำ (Cache) ก่อน
+  const cachedString = getCachedData('ALL_APP_DATA');
+  if (cachedString) {
+    try {
+      return JSON.parse(cachedString); // ถ้าเคยจำไว้ ส่งข้อมูลกลับทันที ไม่ต้องรอ Database!
+    } catch (e) {}
+  }
+
+  // 2. ถ้าไม่มีในความจำ ให้ไปดึงแบบ Concurrent (ดึงพร้อมกันทุกตาราง)
+  const tables = ['settings', 'requests', 'inventory', 'assets', 'projects', 'users'];
+  
+  const fetchRequests = tables.map(table => {
+    let params = '?select=payload';
+    
+    // ⭐ แก้ไขตรงนี้: ใช้ -%3E%3E แทน ->> เพื่อป้องกัน Error Invalid Argument
+    if (table === 'requests') params += '&payload-%3E%3Estatus=not.eq.Cancelled';
+    
+    return {
+      url: `${SUPABASE_URL}/rest/v1/${table}${params}`,
+      method: 'get',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      muteHttpExceptions: true
+    };
+  });
+
+  try {
+    const responses = UrlFetchApp.fetchAll(fetchRequests);
+    
+    const parseData = (response) => {
+      if (response.getResponseCode() >= 400) return [];
+      try {
+        const data = JSON.parse(response.getContentText());
+        return Array.isArray(data) ? data.map(row => row.payload) : [];
+      } catch(e) { return []; }
+    };
+
+    const settingsData = parseData(responses[0]);
+    
+    const finalData = {
+      announcement: settingsData.find(s => s.id === 'ANNOUNCEMENT') || null,
+      requests: parseData(responses[1]),
+      inventory: parseData(responses[2]),
+      assets: parseData(responses[3]),
+      projects: parseData(responses[4]),
+      users: parseData(responses[5]),
+      logs: [] // ปิด Log ก้อนใหญ่ไว้เพื่อให้หน้าเว็บโหลดไว
+    };
+
+    // 3. เอาข้อมูลที่ดึงมาใหม่ ไปจำใส่ Cache ไว้เป็นเวลา 15 นาที (900 วินาที)
+    setCachedData('ALL_APP_DATA', JSON.stringify(finalData), 900);
+
+    return finalData;
+    
+  } catch (error) {
+    throw new Error("Failed to load initial data: " + error.toString());
+  }
 }
 
 // ค้นหาฟังก์ชัน getRecentLogs (ประมาณบรรทัด 2564) แล้วแทนที่ด้วยโค้ดนี้
@@ -3158,6 +3263,10 @@ function getAllLogsForItem(assetId) {
 }
 
 
+
+
+
+
 // ==========================================
 // ฟังก์ชันส่งการแจ้งเตือนเข้ากลุ่ม LINE
 // ==========================================
@@ -3239,7 +3348,3 @@ function sendLineGroupNotification(req) {
     console.error("LINE Notify Error: " + error.toString());
   }
 }
-
-
-
-
