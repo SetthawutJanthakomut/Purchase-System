@@ -1,67 +1,54 @@
-<!DOCTYPE html>
-<html lang="th">
-<head>
-  <meta charset="UTF-8">
-  <title>PurchaseHub System</title>
-  
-  <script src="https://cdn.tailwindcss.com"></script>
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import * as lucideReact from 'lucide-react';
+import './index.css';
+import { createClient } from '@supabase/supabase-js';
 
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+// ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key)
+const SUPABASE_URL = 'https://cgrmoykqhqopxexkuzto.supabase.co'; 
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNncm1veWtxaHFvcHhleGt1enRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwNjEwMDAsImV4cCI6MjA4NDYzNzAwMH0.FRaiZabMW8bxVIy-bmoREO0iE69u29D7pTdBg6sqncw';
 
-  <script src="https://unpkg.com/lucide@latest"></script>
-  
-  <style>
-    /* Custom Scrollbar */
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: #f1f1f1; }
-    ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
-    .animate-in { animation: fadeIn 0.2s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// =================================================================
+// 1. จำลองสภาพแวดล้อม google.script.run (ทำให้รันทดสอบบนคอมได้ไม่ Error)
+// =================================================================
+if (typeof window !== 'undefined' && !window.google) {
+  window.google = { 
+    script: { 
+      run: { 
+        withSuccessHandler: function() { return this; },
+        withFailureHandler: function() { return this; },
+        loadInitialData: () => {},
+        getRecentLogs: () => {},
+        getPublicAnnouncements: () => {},
+        getAllAnnouncements: () => {}
+      } 
+    } 
+  };
+}
 
+// =================================================================
+// 2. ระบบ Icon (ดึงจาก lucide-react ของแท้ ลบระบบจำลองเดิมทิ้งได้เลย)
+// =================================================================
+const {
+  LayoutDashboard, Plus, Package, CheckCircle, Clock, 
+  FileText, Search, User, LogOut, ChevronRight, 
+  ShoppingCart, Truck, AlertCircle, Paperclip,
+  HardHat, Briefcase, Building, ShieldCheck, BadgeCheck,
+  UploadCloud, FileCheck, Sparkles, X, MessageSquare, History, Store, Mail, Trash2, FileInput,
+  Save, Edit, RotateCcw, Send, AlertTriangle, Bell, Pencil, Box, Filter, RefreshCw, ArrowRight, List, ClipboardList, ArrowLeftRight, Monitor, Smartphone, Tag, Wrench, ArrowUpDown, Download, 
+  Image: ImageIcon, Eye, XCircle, Camera, Paperclip: AttachmentIcon, 
+  Info, Briefcase: BriefcaseIcon, Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
+  Upload, Settings, Lock, EyeOff, BellOff, Megaphone, Menu
+} = lucideReact;
 
+// Helper สำหรับดึง Icon (เผื่อมีการเรียกใช้ Dynamic ในโค้ด)
+const createIcon = (name) => (props) => {
+    const Icon = lucideReact[name];
+    return Icon ? React.createElement(Icon, props) : null;
+};
 
-  </style>
-</head>
-<body>
-  <div id="root"></div>
-
-  <script type="text/babel">
-    const { useState, useEffect, useMemo, useRef } = React;
-
-    // =================================================================
-    // --- ICON SYSTEM (EXPLICIT SAFE MODE) ---
-    // สร้าง Component รอไว้เลย ไม่ต้องรอ Library โหลดเสร็จ ป้องกัน Error 100%
-    // =================================================================
-    
-// รายชื่อไอคอนทั้งหมดที่ใช้ในแอปนี้
-    const USED_ICONS = [
-      'LayoutDashboard', 'Plus', 'Package', 'CheckCircle', 'Clock', 
-      'FileText', 'Search', 'User', 'LogOut', 'ChevronRight', 
-      'ShoppingCart', 'Truck', 'AlertCircle', 'Paperclip',
-      'HardHat', 'Briefcase', 'Building', 'ShieldCheck', 'BadgeCheck',
-      'UploadCloud', 'FileCheck', 'Sparkles', 'X', 'MessageSquare', 'History', 
-      'Store', 'Mail', 'Trash2', 'FileInput',
-      'Save', 'Edit', 'RotateCcw', 'Send', 'AlertTriangle', 'Bell', 'Pencil', 'Box', 'Filter', 'RefreshCw', 'ArrowRight', 'List', 'ClipboardList', 'ArrowLeftRight', 
-      'Monitor', 'Smartphone', 'Tag', 'Wrench', 'ArrowUpDown', 'Download', 
-      'Image', // Alias: ImageIcon
-      'Eye', 'XCircle', 'Camera', 
-      'Info', 
-      'Printer', 'CornerUpLeft', 'CheckSquare', 'XSquare', 'ExternalLink', 'PlayCircle', 'ArrowUpRight', 'PenTool', 'FileSignature', 'Calendar', 'CalendarClock', 'CreditCard', 'Flame', 'MousePointerClick',
-      'Upload',
-      'Settings',
-      'Lock',
-      'Menu', // ⭐ เพิ่มไอคอน Menu ตรงนี้
-      'Eye', 'EyeOff',
-      'BellOff', 'Megaphone'// ⭐⭐⭐ เพิ่มบรรทัดนี้ครับ (อย่าลืม comma ข้างหลัง Settings ด้วย)
-    ];
-    const lucideReact = {};
-    // --- PERMISSION CONSTANTS ---
-    const PERMISSIONS = {
+const PERMISSIONS = {
         1:  'ดูอย่างเดียว (Read Only)',
         2:  'Admin (ได้สิทธิ์ทุกสิทธิ์ในโครงการ)',
         3:  'Sub-Admin (สร้างคำขอซื้อ/เบิก/ยืม ได้ทั้งหมด)',
@@ -98,77 +85,20 @@
     // Helper: แปลง PascalCase -> kebab-case
     const pascalToKebab = (str) => str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase().replace(/^-/, '');
 
-    // สร้าง Component ปลอมรอไว้สำหรับทุกไอคอน
-    USED_ICONS.forEach(name => {
-        lucideReact[name] = (props) => {
-            // 1. เช็คว่า Library มาหรือยัง
-            if (!window.lucide || !window.lucide.icons) {
-                return React.createElement('div', { 
-                    style: { width: props.size || 24, height: props.size || 24, background: '#eee', borderRadius: 4, display: 'inline-block' },
-                    className: props.className
-                });
-            }
 
-            const cleanName = pascalToKebab(name);
-            const iconData = window.lucide.icons[cleanName];
-
-            // 2. ถ้าหาไอคอนไม่เจอ (อาจจะชื่อผิด) ให้แสดง Fallback
-            if (!iconData) {
-                return null;
-            }
-
-            // 3. วาดไอคอนจริง
-            const tag = iconData[0];
-            const attrs = iconData[1];
-            const children = iconData[2];
-
-            return React.createElement(tag, {
-                ...attrs,
-                width: props.size || 24,
-                height: props.size || 24,
-                stroke: props.color || "currentColor",
-                strokeWidth: props.strokeWidth || (attrs ? attrs["stroke-width"] : 2),
-                className: `lucide lucide-${cleanName} ${props.className || ""}`,
-                ...props
-            }, children.map((child, idx) => 
-                React.createElement(child[0], { ...child[1], key: idx })
-            ));
-        };
-    });
 
     // =================================================================
     // --- APP LOGIC ---
     // =================================================================
 
-    // ดึงตัวแปร Icon (มั่นใจได้ว่ามีครบทุกตัวแน่นอน)
-const {
-      LayoutDashboard, Plus, Package, CheckCircle, Clock, 
-      FileText, Search, User, LogOut, ChevronRight, 
-      ShoppingCart, Truck, AlertCircle, Paperclip,
-      HardHat, Briefcase, Building, ShieldCheck, BadgeCheck,
-      UploadCloud, FileCheck, Sparkles, X, MessageSquare, History, Store, Mail, Trash2, FileInput,
-      Save, Edit, RotateCcw, Send, AlertTriangle, Bell, Pencil, Box, Filter, RefreshCw, ArrowRight, List, ClipboardList, ArrowLeftRight, Monitor, Smartphone, Tag, Wrench, ArrowUpDown, Download, 
-      Image: ImageIcon, 
-      Eye, XCircle, Camera, 
-      Paperclip: AttachmentIcon, 
-      Info, 
-      Briefcase: BriefcaseIcon, 
-      Printer, CornerUpLeft, CheckSquare, XSquare, ExternalLink, PlayCircle, ArrowUpRight, PenTool, FileSignature, Calendar, CalendarClock, CreditCard, Flame, MousePointerClick,
-      Upload,
-      Settings,Lock,EyeOff, 
-      BellOff, Megaphone,
-      Menu // ⭐ เพิ่มตรงนี้ครับ
-    } = lucideReact;
+
 
     // Manual Aliasing for missing/renamed icons
     // (กรณีที่ชื่อใน Array ข้างบนไม่ตรงกับตัวแปรที่ใช้)
     if (!BriefcaseIcon) lucideReact.BriefcaseIcon = lucideReact.Briefcase;
     if (!AttachmentIcon) lucideReact.AttachmentIcon = lucideReact.Paperclip;
 
-    const createIcon = (name) => (props) => {
-        const Icon = lucideReact[name];
-        return Icon ? React.createElement(Icon, props) : null;
-    };
+ 
 
     // --- Configuration & Constants ---
 const ROLES = {
@@ -1164,16 +1094,7 @@ const hasPermission = (permId, project = globalProjectFilter) => {
             return () => clearTimeout(timer);
         }, [countdown]);
 
-        // Stats Logic
-        const stats = useMemo(() => {
-            const active = requests.filter(r => r.status !== 'Draft');
-            return {
-                pending: active.filter(r => r.status.includes('Pending') || r.status === 'PR Issued' || r.status === 'Approved' || r.status === 'Revise Needed' || r.status === 'Contract Pending').length,
-                processing: active.filter(r => ['Ordered', 'PO Issued', 'Shipping', 'Contract Signed', 'Partially Received'].includes(r.status)).length,
-                ready: active.filter(r => r.status === 'Ready to Disburse').length,
-                completed: active.filter(r => r.status === 'Completed' || r.status === 'Returned').length
-            };
-        }, [requests]);
+
 
         const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
         const validatePassword = (pwd) => pwd.length >= 6 && /[a-zA-Z]/.test(pwd) && /[0-9]/.test(pwd);
@@ -1279,28 +1200,35 @@ const handleRegisterRequestOTP = () => {
                         <p className="text-slate-500 text-lg">"ระบบบริหารจัดการงานจัดซื้อและคลังสินค้า ครบวงจร ใช้งานง่าย โปร่งใส ตรวจสอบได้"</p>
                     </div>
 
-                    <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 relative z-20 mt-8">
-                        <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
-                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-amber-600 group-hover:scale-110 transition-transform"><Clock size={24} strokeWidth={2}/></div></div>
-                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.pending}</div>
-                            <p className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded w-fit">รออนุมัติ/ตรวจสอบ</p>
-                        </div>
-                        <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
-                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-blue-600 group-hover:scale-110 transition-transform"><Truck size={24} strokeWidth={2}/></div></div>
-                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.processing}</div>
-                            <p className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded w-fit">กำลังดำเนินการ</p>
-                        </div>
-                        <div className="bg-purple-50 border border-purple-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
-                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-purple-600 group-hover:scale-110 transition-transform"><Package size={24} strokeWidth={2}/></div></div>
-                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.ready}</div>
-                            <p className="text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-1 rounded w-fit">รอจ่ายของ/เบิก</p>
-                        </div>
-                        <div className="bg-green-50 border border-green-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
-                            <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-green-600 group-hover:scale-110 transition-transform"><CheckCircle size={24} strokeWidth={2}/></div></div>
-                            <div className="text-3xl font-extrabold text-slate-800 mb-1">{stats.completed}</div>
-                            <p className="text-[10px] font-bold text-green-700 bg-green-100 px-2 py-1 rounded w-fit">เสร็จสิ้น/รับของแล้ว</p>
-                        </div>
-                    </div>
+<div className="grid grid-cols-2 xl:grid-cols-4 gap-4 relative z-20 mt-8">
+    {/* กล่องที่ 1: รออนุมัติ */}
+    <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+        <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-amber-600 group-hover:scale-110 transition-transform"><Clock size={24} strokeWidth={2}/></div></div>
+        <div className="text-3xl font-extrabold text-slate-800 mb-1 tracking-widest">****</div>
+        <p className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded w-fit">รออนุมัติ/ตรวจสอบ</p>
+    </div>
+
+    {/* กล่องที่ 2: กำลังดำเนินการ */}
+    <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+        <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-blue-600 group-hover:scale-110 transition-transform"><Truck size={24} strokeWidth={2}/></div></div>
+        <div className="text-3xl font-extrabold text-slate-800 mb-1 tracking-widest">****</div>
+        <p className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded w-fit">กำลังดำเนินการ</p>
+    </div>
+
+    {/* กล่องที่ 3: รอจ่ายของ */}
+    <div className="bg-purple-50 border border-purple-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+        <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-purple-600 group-hover:scale-110 transition-transform"><Package size={24} strokeWidth={2}/></div></div>
+        <div className="text-3xl font-extrabold text-slate-800 mb-1 tracking-widest">****</div>
+        <p className="text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-1 rounded w-fit">รอจ่ายของ/เบิก</p>
+    </div>
+
+    {/* กล่องที่ 4: เสร็จสิ้น */}
+    <div className="bg-green-50 border border-green-100 p-4 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+        <div className="flex justify-between items-start mb-2"><div className="p-2 bg-white rounded-lg shadow-sm text-green-600 group-hover:scale-110 transition-transform"><CheckCircle size={24} strokeWidth={2}/></div></div>
+        <div className="text-3xl font-extrabold text-slate-800 mb-1 tracking-widest">****</div>
+        <p className="text-[10px] font-bold text-green-700 bg-green-100 px-2 py-1 rounded w-fit">เสร็จสิ้น/รับของแล้ว</p>
+    </div>
+</div>
 
                     <div className="relative z-20 mt-6 bg-white/90 backdrop-blur-sm p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4 max-w-2xl">
                         <div className="p-3 bg-indigo-100 text-indigo-700 rounded-xl"><Sparkles size={24}/></div>
@@ -2710,6 +2638,51 @@ const handleRefresh = () => {
         .loadInitialData(); // เรียกฟังก์ชันหลักที่ Backend
 };
 
+// ==========================================
+  // 🤫 ฟังก์ชันแอบดึงข้อมูลพื้นหลัง (Silent Refresh)
+  // ==========================================
+  const handleSilentRefresh = () => {
+    // ❌ ไม่ใส่ setIsLoading(true) เพื่อไม่ให้รบกวนหน้าจอผู้ใช้
+    google.script.run
+      .withSuccessHandler((data) => {
+        // อัปเดตข้อมูลเบื้องหลัง React จะเปลี่ยนตัวเลขหน้าจอให้เอง
+        if (data.requests) setRequests(data.requests);
+        if (data.inventory) setInventory(data.inventory);
+        if (data.assets) setAssets(data.assets);
+      })
+      .withFailureHandler((error) => console.error("Silent refresh failed:", error))
+      .loadInitialData(); 
+  };
+
+  // ==========================================
+  // 🔥 ระบบ Real-time: ดักฟังตาราง (ตัวเล็กทั้งหมด)
+  // ==========================================
+  useEffect(() => {
+    if (!user) return; 
+
+    const channel = supabase.channel('purchase-hub-realtime');
+    let debounceTimer;
+
+    const triggerRealtimeRefresh = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        console.log('🔄 ตรวจพบการอัปเดต: กำลังดึงข้อมูลใหม่เงียบๆ...');
+        handleSilentRefresh();
+      }, 1500); 
+    };
+
+    // 👇 เปลี่ยนชื่อตารางเป็นตัวพิมพ์เล็กทั้งหมดให้ตรงกับ Supabase
+    channel
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'requests' }, triggerRealtimeRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, triggerRealtimeRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'assets' }, triggerRealtimeRefresh)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
 // --- LOGIC: New User Count (นับผู้ใช้ใหม่) ---
 const newUsersCount = useMemo(() => {
     if (!allUsers) return 0;
@@ -2791,39 +2764,19 @@ useEffect(() => {
 
 useEffect(() => {
   setIsLoading(true);
-  setIsError(false); // Reset Error ก่อนโหลด
+  setIsError(false);
 
+  // ⭐ เปลี่ยนมาโหลดแค่ข้อมูลเบาๆ สำหรับหน้า Login
   google.script.run
     .withSuccessHandler((data) => {
-        // ... (โค้ดเดิมที่ setRequests, setInventory ฯลฯ) ...
-        if(data.requests) setRequests(data.requests);
-        if(data.inventory) setInventory(data.inventory);
-        if(data.assets) setAssets(data.assets);
-        if(data.projects) setProjects(data.projects);
-        if(data.users) setAllUsers(data.users);
-        
         if (data.announcement && data.announcement.active) {
             setAnnouncement(data.announcement);
             setAnnounceForm({ title: data.announcement.title, detail: data.announcement.detail });
-        } else {
-            setAnnouncement(null);
-            setAnnounceForm({ title: '', detail: '' });
         }
-
-        setIsLoading(false);
-        
-        // โหลด Logs ตามหลัง (เหมือนเดิม)
-        google.script.run.withSuccessHandler((logs) => {
-            if(logs && logs.length > 0) setInvLogs(logs);
-        }).getRecentLogs(100);
+        setIsLoading(false); // ปิดโหลด ให้โชว์หน้า Login ทันที!
     })
-    .withFailureHandler((error) => { // ⭐ เพิ่มส่วนนี้: เมื่อโหลดพัง
-        console.error(error);
-        setIsLoading(false);
-        setIsError(true);
-        setErrorMessage(error.message || "ไม่สามารถเชื่อมต่อกับ Server ได้");
-    })
-    .loadInitialData();
+    .withFailureHandler(() => setIsLoading(false))
+    .loadLoginData(); 
 }, []);
 
 
@@ -3746,11 +3699,7 @@ const handleExportAssets = () => {
     document.body.removeChild(link);
 };
 
-// คำนวณจำนวนงานที่ค้าง (สำหรับ Sidebar)
-      const pendingOrdersCount = useMemo(() => {
-         if (!filteredRequests) return 0;
-         return filteredRequests.filter(r => !['Completed', 'Rejected', 'Returned', 'Draft'].includes(r.status)).length;
-      }, [filteredRequests]);
+
 
 
 
@@ -4019,6 +3968,12 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
         });
 
       }, [requests, searchQuery, statusFilter, currentUserRole, globalProjectFilter, user]); // เพิ่ม user dependency
+
+      // คำนวณจำนวนงานที่ค้าง (สำหรับ Sidebar)
+      const pendingOrdersCount = useMemo(() => {
+         if (!filteredRequests) return 0;
+         return filteredRequests.filter(r => !['Completed', 'Rejected', 'Returned', 'Draft'].includes(r.status)).length;
+      }, [filteredRequests]);
 
 // --- LOGIC: Filter & Process Inventory (Updated with Combined IDs) ---
       const filteredInventory = useMemo(() => {
@@ -6806,22 +6761,23 @@ const PublicAnnouncementPopup = () => (
 
       
       // ⭐ 2. เพิ่มการตรวจสอบ Login (ปรับแก้ให้แสดง Popup ได้แม้ยังไม่ Login)
-      if (!user) {
-          return (
-            <>
-                <PublicAnnouncementPopup />
-                <AuthScreen 
-                    requests={requests} 
-                    onLoginSuccess={(userData) => {
-                        setUser(userData);
-                        setCurrentUserRole(userData.role || ROLES.USER); 
-                        // โหลดประกาศทั้งหมด (Admin view) เมื่อ Login สำเร็จ
-                        google.script.run.withSuccessHandler(setAnnouncements).getAllAnnouncements();
-                    }} 
-                />
-            </>
-          );
-      }
+if (!user) {
+    return (
+      <>
+          <PublicAnnouncementPopup />
+          <AuthScreen 
+              // ไม่ต้องส่ง requests={requests} แล้ว
+              onLoginSuccess={(userData) => {
+                  setUser(userData);
+                  setCurrentUserRole(userData.role || ROLES.USER); 
+                  
+                  // ⭐ ล็อกอินเสร็จ ค่อยสั่งโหลดข้อมูลชุดใหญ่
+                  handleRefresh(); 
+              }} 
+          />
+      </>
+    );
+}
 
 
 
@@ -15762,7 +15718,7 @@ const relatedAssets = sourceAssets.filter(a =>
                                                             {line.startsWith('Project:') ? (
                                                                 <span>
                                                                     <span className="font-bold text-blue-600">{line.split('->')[0]}</span>
-                                                                    <span className="text-gray-600"> -> {line.split('->')[1]}</span>
+                                                                    <span className="text-gray-600"> {"->"} {line.split('->')[1]}</span>
                                                                 </span>
                                                             ) : line}
                                                         </div>
@@ -16787,8 +16743,6 @@ const relatedAssets = sourceAssets.filter(a =>
       );
     };
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
-  </script>
-</body>
-</htm
+    
+
+    export default App;
