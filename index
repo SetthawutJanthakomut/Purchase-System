@@ -4,8 +4,7 @@ import './index.css';
 import { createClient } from '@supabase/supabase-js';
 
 // ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key)
-const SUPABASE_URL = 'https://cgrmoykqhqopxexkuzto.supabase.co'; 
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNncm1veWtxaHFvcHhleGt1enRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwNjEwMDAsImV4cCI6MjA4NDYzNzAwMH0.FRaiZabMW8bxVIy-bmoREO0iE69u29D7pTdBg6sqncw';
+.eyJiRaiZBg6sqncw';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
