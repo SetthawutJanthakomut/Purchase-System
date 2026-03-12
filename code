@@ -1027,25 +1027,38 @@ function clearAppCache() {
   }
 }
 
+
 // ==========================================
-// ⭐ ฟังก์ชันโหลดข้อมูลหลัก (ดึงพร้อมกัน + ระบบจำข้อมูล)
+// ฟังก์ชันสำหรับโหลดข้อมูลเฉพาะหน้า Login (เบาและเร็ว)
+// ==========================================
+function loadLoginData() {
+  try {
+    const settings = getSheetData('Settings');
+    const announcement = settings.find(s => s.id === 'ANNOUNCEMENT') || null;
+
+    return {
+      success: true,
+      users: getSheetData('Users'),
+      projects: getSheetData('Projects'),
+      announcement: announcement
+    };
+  } catch (error) {
+    console.error("loadLoginData Error: " + error.toString());
+    return { success: false, message: error.toString() };
+  }
+}
+
+// ==========================================
+// ⭐ ฟังก์ชันโหลดข้อมูลหลัก (ดึงพร้อมกัน 6 ตารางแบบ Concurrent เร็วทะลุนรก!)
 // ==========================================
 function loadInitialData() {
-  // 1. ตรวจสอบความจำ (Cache) ก่อน
-  const cachedString = getCachedData('ALL_APP_DATA');
-  if (cachedString) {
-    try {
-      return JSON.parse(cachedString); // ถ้าเคยจำไว้ ส่งข้อมูลกลับทันที ไม่ต้องรอ Database!
-    } catch (e) {}
-  }
-
-  // 2. ถ้าไม่มีในความจำ ให้ไปดึงแบบ Concurrent (ดึงพร้อมกันทุกตาราง)
+  // ไม่ใช้ Cache เพื่อให้ระบบ Real-time (Silent Refresh) ได้ข้อมูลล่าสุดเสมอ
   const tables = ['settings', 'requests', 'inventory', 'assets', 'projects', 'users'];
   
   const fetchRequests = tables.map(table => {
     let params = '?select=payload';
     
-    // ⭐ แก้ไขตรงนี้: ใช้ -%3E%3E แทน ->> เพื่อป้องกัน Error Invalid Argument
+    // ⭐ ใช้ -%3E%3E แทน ->> เพื่อป้องกัน Error Invalid Argument
     if (table === 'requests') params += '&payload-%3E%3Estatus=not.eq.Cancelled';
     
     return {
@@ -1062,6 +1075,7 @@ function loadInitialData() {
   });
 
   try {
+    // 🔥 ยิง Request ไปที่ Supabase พร้อมกัน 6 เส้นทีเดียว!
     const responses = UrlFetchApp.fetchAll(fetchRequests);
     
     const parseData = (response) => {
@@ -1081,11 +1095,8 @@ function loadInitialData() {
       assets: parseData(responses[3]),
       projects: parseData(responses[4]),
       users: parseData(responses[5]),
-      logs: [] // ปิด Log ก้อนใหญ่ไว้เพื่อให้หน้าเว็บโหลดไว
+      logs: [] // ❌ ปิด Log ก้อนใหญ่ไว้เพื่อให้หน้าเว็บโหลดไว (ให้ดึงแยกทีหลัง)
     };
-
-    // 3. เอาข้อมูลที่ดึงมาใหม่ ไปจำใส่ Cache ไว้เป็นเวลา 15 นาที (900 วินาที)
-    setCachedData('ALL_APP_DATA', JSON.stringify(finalData), 900);
 
     return finalData;
     
