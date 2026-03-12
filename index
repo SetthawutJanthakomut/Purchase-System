@@ -3,7 +3,10 @@ import * as lucideReact from 'lucide-react';
 import './index.css';
 import { createClient } from '@supabase/supabase-js';
 
-
+// ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key) ของ จริง
+const SUPABASE_URL = ''; 
+const SUPABASE_ANON_KEY = '';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =================================================================
 // 1. จำลองสภาพแวดล้อม google.script.run (ทำให้รันทดสอบบนคอมได้ไม่ Error)
@@ -307,7 +310,7 @@ const handleTabChange = (tabId) => {
       const [inventory, setInventory] = useState([]);
       const [assets, setAssets] = useState([]);
       const [invLogs, setInvLogs] = useState([]);
-      const [isLoading, setIsLoading] = useState(true);
+      const [isLoading, setIsLoading] = useState(false);
       const [uploadFiles, setUploadFiles] = useState({ email: null, quotation: null });
       // --- STATE: Image Preview Modal ---
       const [fullscreenImage, setFullscreenImage] = useState(null); // เก็บ URL หรือ Base64 ของรูปที่จะดู
@@ -885,6 +888,27 @@ const openChecklistModal = (mode) => {
         const [isOpen, setIsOpen] = useState(false);
         const [search, setSearch] = useState("");
         const wrapperRef = useRef(null);
+
+
+        // ==========================================
+  // 🛡️ ป้องกันการเผลอปิดหน้าเว็บตอนระบบกำลังทำงาน
+  // ==========================================
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      // ถ้า isLoading เป็น true (ระบบกำลังทำงาน) ให้แสดงแจ้งเตือน
+      if (isLoading) {
+        e.preventDefault();
+        e.returnValue = ''; // คำสั่งบังคับให้เบราว์เซอร์โชว์ Popup ยืนยันการออก
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // คืนค่า (Cleanup) เมื่อ Component ถูกทำลายหรือค่า isLoading เปลี่ยน
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [isLoading]); // สังเกตการเปลี่ยนแปลงของ isLoading
 
         // Sync ข้อความในช่องค้นหาให้ตรงกับค่าที่เลือก (value)
         useEffect(() => {
@@ -2666,8 +2690,33 @@ const handleRefresh = () => {
       .loadInitialData(); 
   };
 
-  // ==========================================
-  // 🔥 ระบบ Real-time: ดักฟังตาราง (เพิ่มตาราง logs)
+
+  // --- ฟังก์ชันแอบโหลดข้อมูลทั้งหมดตอนเพิ่ง Login เข้ามา (Silent Load) ---
+const handleSilentLoadAll = () => {
+    // ❌ ไม่ใส่ setIsLoading(true) หน้าจอจะได้ไม่หมุน และเข้า Dashboard ได้ทันที
+    google.script.run
+        .withSuccessHandler((data) => {
+            // พอข้อมูลมาถึง ค่อยจับยัดใส่ State หน้าจอจะกระพริบอัปเดตตัวเลขเอง
+            if(data.requests) setRequests(data.requests);
+            if(data.inventory) setInventory(data.inventory);
+            if(data.assets) setAssets(data.assets);
+            if(data.projects) setProjects(data.projects);
+            if(data.users) setAllUsers(data.users);
+            
+            // ดึงประวัติ (Logs) ต่อแบบเงียบๆ
+            google.script.run.withSuccessHandler((logs) => {
+                if (logs && logs.length > 0) setInvLogs(logs);
+            }).getRecentLogs(200); 
+
+        })
+        .withFailureHandler((error) => {
+            console.error('โหลดข้อมูลพื้นหลังล้มเหลว:', error);
+        })
+        .loadInitialData();
+};
+
+// ==========================================
+  // 🔥 ระบบ Real-time: ดักฟังตาราง
   // ==========================================
   useEffect(() => {
     if (!user) return; 
@@ -2678,7 +2727,11 @@ const handleRefresh = () => {
     const triggerRealtimeRefresh = () => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        console.log('🔄 ตรวจพบการอัปเดต: กำลังดึงข้อมูลและประวัติใหม่เงียบๆ...');
+        console.log('🔄 ตรวจพบการอัปเดต: กำลังดึงข้อมูลใหม่เงียบๆ...');
+        
+        // ⭐ เพิ่มบรรทัดนี้: แจ้งเตือนผู้ใช้ที่เปิดจอค้างไว้
+        showToast('🔄 มีการเคลื่อนไหวในระบบ: อัปเดตข้อมูลล่าสุดแล้ว', 'info');
+        
         handleSilentRefresh();
       }, 1500); 
     };
@@ -2687,7 +2740,7 @@ const handleRefresh = () => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'requests' }, triggerRealtimeRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, triggerRealtimeRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'assets' }, triggerRealtimeRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, triggerRealtimeRefresh) // ⭐ เพิ่มการดักฟังตาราง logs
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, triggerRealtimeRefresh)
       .subscribe();
 
     return () => {
@@ -2752,13 +2805,16 @@ useEffect(() => {
         }).getPublicAnnouncements();
     }, []);
       
+// ==========================================
+      // 🚀 ระบบ Pre-fetch: แอบโหลดข้อมูลหลักเงียบๆ ตอนอยู่หน้า Login
+      // ==========================================
       useEffect(() => {
-        setIsLoading(true);
+        // ❌ เอา setIsLoading(true); ออก เพื่อไม่ให้หน้าเว็บหมุนบล็อกการพิมพ์รหัสผ่าน
+
         google.script.run.withSuccessHandler((data) => {
            if(data.requests) setRequests(data.requests);
            if(data.inventory) setInventory(data.inventory);
            if(data.assets) setAssets(data.assets);
-           if(data.logs) setInvLogs(data.logs);
            if(data.projects) setProjects(data.projects);
            if(data.users) setAllUsers(data.users);
            
@@ -2770,7 +2826,16 @@ useEffect(() => {
                setAnnounceForm({ title: '', detail: '' });
            }
 
-           setIsLoading(false);
+           // ⭐ เพิ่มการแอบไปดึงประวัติ (Logs) ตามมาเงียบๆ 
+           // (เพราะเราตั้งใจไม่ส่ง Logs มาพร้อมข้อมูลก้อนแรกเพื่อให้โหลดไวทะลุนรก)
+           google.script.run.withSuccessHandler((logs) => {
+               if (logs && logs.length > 0) setInvLogs(logs);
+           }).getRecentLogs(200);
+
+           // ❌ เอา setIsLoading(false); ออกเช่นกัน
+
+        }).withFailureHandler((error) => {
+           console.error("Pre-fetch Error:", error);
         }).loadInitialData();
       }, []);
 
@@ -3065,45 +3130,39 @@ const canUserManageRequest = (req) => {
 const toggleSelectOrder = (id) => {
     setSelectedOrderIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 };
-
 // Function: อนุมัติ/ไม่อนุมัติ แบบกลุ่ม
 const handleBulkAction = async (actionType) => {
     if (selectedOrderIds.length === 0) return;
     
-    // หาข้อมูล Request ที่เลือกมาทั้งหมด
     const targets = requests.filter(r => selectedOrderIds.includes(r.id));
     
     if (actionType === 'Reject') {
-        // กรณีไม่อนุมัติ: ถามเหตุผลครั้งเดียว
         const reason = prompt(`ระบุเหตุผลการไม่อนุมัติ ${targets.length} รายการ:`, "");
-        if (reason === null) return; // กด Cancel
+        if (reason === null) return; 
         if (!reason) { showToast("กรุณาระบุเหตุผล", "error"); return; }
 
-        setIsLoading(true);
+        setIsLoading(true); // 🟢 เปิดวงกลมโหลด (และล็อกห้ามปิดหน้าเว็บ)
         try {
             for (const req of targets) {
-                // เรียกใช้ฟังก์ชันเดิมที่มีอยู่แล้ว
                 await handleUpdateStatus(req.id, 'Rejected', `[Bulk Reject] ไม่อนุมัติ: ${reason}`);
             }
-            setSelectedOrderIds([]); // เคลียร์การเลือก
+            setSelectedOrderIds([]); 
             showToast(`ไม่อนุมัติ ${targets.length} รายการ เรียบร้อย`);
         } catch (err) {
             console.error(err);
             showToast("เกิดข้อผิดพลาดบางรายการ", "error");
         } finally {
-            setIsLoading(false);
+            setIsLoading(false); // 🟢 ปิดวงกลมโหลด
         }
     } 
     else if (actionType === 'Approve') {
-        // กรณีอนุมัติ: ต้องคำนวณสถานะถัดไปของแต่ละใบเอง
         if (!confirm(`ยืนยันการอนุมัติ ${targets.length} รายการ?`)) return;
 
-        setIsLoading(true);
+        setIsLoading(true); // 🟢 เปิดวงกลมโหลด (และล็อกห้ามปิดหน้าเว็บ)
         try {
             for (const req of targets) {
                 let nextStatus = '';
                 
-                // Logic คำนวณสถานะถัดไป (เหมือนปุ่มเดี่ยว)
                 if (req.status === 'Pending Head') {
                     if (req.type === 'Withdraw' || req.type === 'Borrow') nextStatus = 'Ready to Disburse';
                     else nextStatus = 'Pending PM';
@@ -3116,16 +3175,17 @@ const handleBulkAction = async (actionType) => {
                     await handleUpdateStatus(req.id, nextStatus, `[Bulk Approve] อนุมัติโดย ${user.firstName}`);
                 }
             }
-            setSelectedOrderIds([]); // เคลียร์การเลือก
+            setSelectedOrderIds([]); 
             showToast(`อนุมัติ ${targets.length} รายการ เรียบร้อย`);
         } catch (err) {
             console.error(err);
             showToast("เกิดข้อผิดพลาดบางรายการ", "error");
         } finally {
-            setIsLoading(false);
+            setIsLoading(false); // 🟢 ปิดวงกลมโหลด
         }
     }
 };
+
       const [receiveItems, setReceiveItems] = useState([]);
       const [editingId, setEditingId] = useState(null);
       const [newOrderMeta, setNewOrderMeta] = useState({ type: 'Local', purchaseType: 'Buy', withdrawStockType: 'System', job: '', dateRequired: '', priority: 'Normal', attachment: null, quotation: null });
@@ -6780,19 +6840,18 @@ const PublicAnnouncementPopup = () => (
       }
 
       
-      // ⭐ 2. เพิ่มการตรวจสอบ Login (ปรับแก้ให้แสดง Popup ได้แม้ยังไม่ Login)
+// ⭐ 2. เพิ่มการตรวจสอบ Login
 if (!user) {
     return (
       <>
           <PublicAnnouncementPopup />
           <AuthScreen 
-              // ไม่ต้องส่ง requests={requests} แล้ว
               onLoginSuccess={(userData) => {
                   setUser(userData);
                   setCurrentUserRole(userData.role || ROLES.USER); 
                   
-                  // ⭐ ล็อกอินเสร็จ ค่อยสั่งโหลดข้อมูลชุดใหญ่
-                  handleRefresh(); 
+                  // ❌ ลบ handleSilentLoadAll(); หรือ handleRefresh(); ตรงนี้ทิ้งไปเลยครับ 
+                  // เพราะเราใช้ Pre-fetch โหลดมารอตั้งแต่ตอนพิมพ์รหัสผ่านแล้ว
               }} 
           />
       </>
@@ -6802,14 +6861,7 @@ if (!user) {
 
 
       
-      if (!user) {
-          return <AuthScreen 
-            requests={requests} // ส่งข้อมูลไปคำนวณตัวเลข
-            onLoginSuccess={(userData) => {
-              setUser(userData);
-              setCurrentUserRole(userData.role || ROLES.USER); 
-          }} />;
-      }
+
       
      
       return (
@@ -9997,7 +10049,12 @@ py-1 rounded text-xs font-bold ${
 </div>
 
                  <div className="flex-1 min-w-0">
-    <h4 className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors">{item.name}</h4>
+   <h4 
+    className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors"
+    title={item.name} 
+>
+    {item.name}
+</h4>
     {/* ⭐ ใช้ getDisplayId ตรงนี้ */}
     <p className="text-xs text-gray-500 truncate font-mono">{getDisplayId(item.id) || item.serial || '-'}</p>          
     
