@@ -3,7 +3,10 @@ import * as lucideReact from 'lucide-react';
 import './index.css';
 import { createClient } from '@supabase/supabase-js';
 
-
+// ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key) ของ จริง
+const SUPABASE_URL = ''; 
+const SUPABASE_ANON_KEY = '';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =================================================================
 // 1. จำลองสภาพแวดล้อม google.script.run (ทำให้รันทดสอบบนคอมได้ไม่ Error)
