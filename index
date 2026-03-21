@@ -3,9 +3,10 @@ import * as lucideReact from 'lucide-react';
 import './index.css';
 import { createClient } from '@supabase/supabase-js';
 
-// ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key) ของ จริง
-const SUPABASE_URL = ''; 
+// ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key) ของ Test
+const SUPABASE_URL = 'https://zaugfyldiqcpfhfaxapc.supabase.co'; 
 const SUPABASE_ANON_KEY = '';
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =================================================================
@@ -835,7 +836,6 @@ const getChecklistFilteredItems = () => {
     });
 };
 
-// Logic: Upload Signed Checklist
 const handleUploadChecklist = async () => {
     if (!checklistUploadFile) {
         showToast('กรุณาเลือกไฟล์ก่อนอัปโหลด', 'error');
@@ -844,22 +844,15 @@ const handleUploadChecklist = async () => {
     
     setIsLoading(true);
     try {
-        const base64 = await fileToBase64(checklistUploadFile);
-        const result = await new Promise((resolve, reject) => {
-            google.script.run
-                .withSuccessHandler(resolve)
-                .withFailureHandler(reject)
-                .uploadFileToDrive(base64, checklistUploadFile.name);
-        });
-
-        if (result.error) throw new Error(result.error);
+        // 🚀 อัปโหลดเข้าโฟลเดอร์ documents ใน Supabase
+        const result = await uploadFileToSupabase(checklistUploadFile, 'documents');
+        if (!result || !result.url) throw new Error('อัปโหลดไฟล์ Checklist ล้มเหลว');
 
         // บันทึก Log
         const logAction = checklistMode === 'Inventory' ? 'Audit Inventory' : 'Audit Assets';
         const note = `อัปโหลดไฟล์ Checklist (${checklistMode}) \nไฟล์: ${result.name}`;
-        const logImages = []; // หรือใส่เป็น Link ไฟล์ก็ได้ถ้าต้องการ
         
-        // ใช้ addInvLog เพื่อบันทึกลงประวัติรวม
+        // ใช้ addInvLog เพื่อบันทึกลงประวัติรวม (แนบ URL จาก Supabase เข้าไปเลย)
         await addInvLog(
             logAction, 
             'Checklist Document', 
@@ -878,7 +871,6 @@ const handleUploadChecklist = async () => {
         setIsLoading(false);
     }
 };
-
 
 const handlePrintChecklist = () => {
     // เก็บชื่อ Title เดิมไว้
@@ -2206,7 +2198,7 @@ const handleRemoveCurrentInvImage = () => {
 const handleUpdateInventory = async () => {
     if (!editingStockItem) return;
 
-    // 1. Validation: เช็คชื่อซ้ำในประเภทเดียวกัน
+    // 1. Validation
     const duplicateName = inventory.find(i => 
         i.name === editingStockItem.name && 
         i.project === editingStockItem.project && 
@@ -2224,13 +2216,11 @@ const handleUpdateInventory = async () => {
         const date = new Date().toLocaleString('th-TH');
         const currentType = editingStockItem.stockType || 'System';
         
-        // 2. สร้าง ID เต็ม (Real ID)
         let inputId = editingStockItem.id;
         if (inputId.includes('|')) inputId = inputId.split('|')[0];
         
         let finalId = `${inputId}|${editingStockItem.project}|${currentType}`;
         
-        // 3. เช็ค ID ซ้ำ
         if (finalId !== editingStockItem.originalId) { 
              let counter = 1;
              while (inventory.some(i => i.id === finalId && i.id !== editingStockItem.originalId)) {
@@ -2241,60 +2231,49 @@ const handleUpdateInventory = async () => {
              finalId = editingStockItem.originalId;
         }
 
-        // 4. Upload Images
+        // 🚀 4. Upload Images (เปลี่ยนมาใช้ Supabase)
         let newUploadedFiles = [];
         if (editingStockItem.newImages && editingStockItem.newImages.length > 0) {
              const uploadPromises = editingStockItem.newImages.map(imgObj => {
-                return new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.readAsDataURL(imgObj.file);
-                        reader.onload = () => google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(reader.result, imgObj.file.name);
-                });
+                 if (imgObj.file) {
+                     return uploadFileToSupabase(imgObj.file, 'items');
+                 }
+                 return Promise.resolve(imgObj);
             });
-            newUploadedFiles = await Promise.all(uploadPromises);
+            const results = await Promise.all(uploadPromises);
+            newUploadedFiles = results.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
-        const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].name : editingStockItem.image;
+        const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].url : editingStockItem.image;
         
         // 5. เตรียมข้อมูลใหม่
         const updatedItem = {
             ...editingStockItem,
-            id: finalId, // ใช้ ID ใหม่
+            id: finalId, 
             lastUpdated: date,
             image: mainImage,
             images: [], 
             newImages: []
         };
 
-        // ⭐ 6. เปรียบเทียบข้อมูลเพื่อบันทึกประวัติ (Detailed Change Log)
+        // 6. เปรียบเทียบข้อมูล
         const oldItem = inventory.find(i => i.id === editingStockItem.originalId);
         let changes = [];
-        const val = (v) => (v === null || v === undefined || v === '') ? '-' : v; // Helper
+        const val = (v) => (v === null || v === undefined || v === '') ? '-' : v; 
 
         if (oldItem) {
-            // ประเภท
             if (val(oldItem.stockType) !== val(updatedItem.stockType)) changes.push(`ประเภท: ${val(oldItem.stockType)} -> ${val(updatedItem.stockType)}`);
-            // รหัสสินค้า
             if (val(getDisplayId(oldItem.id)) !== val(inputId)) changes.push(`รหัส: ${getDisplayId(oldItem.id)} -> ${inputId}`);
-            // ชื่อสินค้า
             if (val(oldItem.name) !== val(updatedItem.name)) changes.push(`ชื่อ: ${val(oldItem.name)} -> ${val(updatedItem.name)}`);
-            // คงเหลือ
             if (oldItem.qty !== updatedItem.qty) changes.push(`Qty: ${oldItem.qty} -> ${updatedItem.qty}`);
-            // หน่วยนับ
             if (val(oldItem.unit) !== val(updatedItem.unit)) changes.push(`หน่วย: ${val(oldItem.unit)} -> ${val(updatedItem.unit)}`);
-            // Min Stock
             if (oldItem.minStock !== updatedItem.minStock) changes.push(`Min Stock: ${oldItem.minStock} -> ${updatedItem.minStock}`);
-            // ราคา
             if (oldItem.price !== updatedItem.price) changes.push(`ราคา: ${oldItem.price} -> ${updatedItem.price}`);
-            // หมายเหตุ
             if (val(oldItem.note) !== val(updatedItem.note)) changes.push(`Note: ${val(oldItem.note)} -> ${val(updatedItem.note)}`);
-            // รูปภาพ
             if (newUploadedFiles.length > 0) changes.push(`รูปภาพ: อัปเดตใหม่`);
         }
 
-        // 7. จัดการกรณีเปลี่ยนรหัส (Change ID Logic)
         if (editingStockItem.originalId !== finalId) {
              await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Inventory', editingStockItem.originalId)); 
-             
              try {
                  await new Promise(r => google.script.run.withSuccessHandler(r).updateLogItemId(editingStockItem.originalId, finalId));
              } catch (e) { console.log("Backend updateLogItemId error"); }
@@ -2305,7 +2284,6 @@ const handleUpdateInventory = async () => {
              }));
         }
 
-        // 8. Update State & Save
         setInventory(prev => {
             const filtered = prev.filter(i => i.id !== editingStockItem.originalId);
             return [...filtered, updatedItem];
@@ -2314,10 +2292,7 @@ const handleUpdateInventory = async () => {
         const { images, newImages, originalId, originalName, originalProject, ...itemForServer } = updatedItem;
         await saveInventoryToSheet(itemForServer);
 
-        // 9. Add Log
-        const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-        
-        // ใช้ข้อมูล Changes ที่เตรียมไว้
+        const logAttachments = newUploadedFiles;
         const changeDetail = changes.length > 0 ? changes.join('\n') : 'แก้ไขข้อมูล (ไม่มีการเปลี่ยนแปลงค่า)';
         const noteText = `โครงการ: ${updatedItem.project}\n${changeDetail}`;
             
@@ -2473,8 +2448,8 @@ const handleCreateOrder = async (e, isDraft = false) => {
         }
     }
 
-    // =================================================================
-    // 2. Prepare Data & Upload Files (เหมือนเดิม)
+// =================================================================
+    // 2. Prepare Data & Upload Files (เปลี่ยนมาใช้ Supabase)
     // =================================================================
     setIsLoading(true);
     
@@ -2482,43 +2457,34 @@ const handleCreateOrder = async (e, isDraft = false) => {
     let quotationData = newOrderMeta.quotation;
     
     try {
-        // 2.1 อัปโหลดไฟล์แนบหลัก
+        // 🚀 2.1 อัปโหลดไฟล์แนบหลัก
         if (uploadFiles.email) {
-            const base64 = await fileToBase64(uploadFiles.email);
-            const result = await new Promise((resolve, reject) => {
-                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.email.name);
-            });
-            if (result.error) throw new Error(result.error);
+            const result = await uploadFileToSupabase(uploadFiles.email, 'documents');
+            if (!result || !result.url) throw new Error('อัปโหลดไฟล์อีเมลล้มเหลว');
             attachmentData = result;
         }
         
         if (uploadFiles.quotation) {
-            const base64 = await fileToBase64(uploadFiles.quotation);
-            const result = await new Promise((resolve, reject) => {
-                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadFileToDrive(base64, uploadFiles.quotation.name);
-            });
-            if (result.error) throw new Error(result.error);
+            const result = await uploadFileToSupabase(uploadFiles.quotation, 'documents');
+            if (!result || !result.url) throw new Error('อัปโหลดใบเสนอราคาล้มเหลว');
             quotationData = result;
         }
 
-        // 2.2 อัปโหลดรูปภาพรายสินค้า
+        // 🚀 2.2 อัปโหลดรูปภาพรายสินค้า
         const processedItems = await Promise.all(orderItems.map(async (item) => {
             let processedImages = [];
             if (item.images && item.images.length > 0) {
                 const itemImagePromises = item.images.map(imgObj => {
-                    if (imgObj.base64) {
-                            return new Promise((resolve, reject) => {
-                            google.script.run
-                                .withSuccessHandler(resolve)
-                                .withFailureHandler(reject)
-                                .uploadAssetImage(imgObj.base64, imgObj.name); 
-                        });
+                    if (imgObj.file) {
+                        return uploadFileToSupabase(imgObj.file, 'items');
                     }
                     return Promise.resolve(imgObj);
                 });
 
                 const uploadedResults = await Promise.all(itemImagePromises);
-                processedImages = uploadedResults.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                processedImages = uploadedResults
+                    .filter(u => u && (u.url || u.base64))
+                    .map(u => ({ name: u.name, type: 'image/jpeg', url: u.url || u.base64 }));
             }
             return { ...item, images: processedImages };
         }));
@@ -2636,88 +2602,107 @@ if (editingId) {
         setIsLoading(false);
     }
 };
-// --- ฟังก์ชัน Refresh ข้อมูล (อัปเดตใหม่: ดึงประวัติ Logs กลับมาด้วย) ---
-const handleRefresh = () => {
+
+
+// --- ฟังก์ชัน Refresh ข้อมูล (อัปเดตใหม่: ยิงตรงเข้า Supabase) ---
+const handleRefresh = async () => {
     setIsLoading(true);
     setIsError(false); // Reset Error state
 
-    // 1. โหลดข้อมูลหลัก (Requests, Inventory, Assets, Users, Projects)
-    google.script.run
-        .withSuccessHandler((data) => {
-            // อัปเดตข้อมูลหลัก
+    try {
+        // 1. โหลดข้อมูลหลักแบบยิงตรง 🚀
+        const data = await loadInitialDataDirectly();
+        if(data.requests) setRequests(data.requests);
+        if(data.inventory) setInventory(data.inventory);
+        if(data.assets) setAssets(data.assets);
+        if(data.projects) setProjects(data.projects);
+        if(data.users) setAllUsers(data.users);
+        
+        // 2. ⭐⭐ สั่งดึงประวัติ (Logs) แบบยิงตรง 🚀
+        const logs = await getRecentLogsDirectly(200);
+        if (logs && logs.length > 0) setInvLogs(logs);
+
+        showToast('รีเฟรชข้อมูลและประวัติล่าสุดเรียบร้อย');
+    } catch (error) {
+        console.error("Refresh Error:", error);
+        showToast('รีเฟรชล้มเหลว: ' + error.message, 'error');
+    } finally {
+        setIsLoading(false); // หยุดหมุน
+    }
+};
+
+// --- จุดโหลดเริ่มต้นตอนเปิดเว็บ (useEffect) ---
+useEffect(() => {
+    const fetchStartupData = async () => {
+        try {
+            // 1. ดึงข้อมูลก้อนแรกแบบยิงตรง 🚀
+            const data = await loadInitialDataDirectly();
             if(data.requests) setRequests(data.requests);
             if(data.inventory) setInventory(data.inventory);
             if(data.assets) setAssets(data.assets);
             if(data.projects) setProjects(data.projects);
             if(data.users) setAllUsers(data.users);
             
-            // 2. ⭐⭐ สั่งดึงประวัติ (Logs) ต่อทันที ⭐⭐
-            google.script.run.withSuccessHandler((logs) => {
-                if (logs && logs.length > 0) {
-                    setInvLogs(logs); // อัปเดตตัวแปร invLogs ที่ใช้แสดงในหน้าประวัติ
-                }
-                
-                setIsLoading(false); // หยุดหมุน
-                showToast('รีเฟรชข้อมูลและประวัติล่าสุดเรียบร้อย');
-                
-            }).getRecentLogs(200); // ดึง 200 รายการล่าสุด (เพื่อให้หน้าประวัติอัปเดต)
+            if (data.announcement && data.announcement.active) {
+                setAnnouncement(data.announcement);
+                setAnnounceForm({ title: data.announcement.title, detail: data.announcement.detail });
+            } else {
+                setAnnouncement(null);
+                setAnnounceForm({ title: '', detail: '' });
+            }
 
-        })
-        .withFailureHandler((error) => {
-            setIsLoading(false);
-            showToast('รีเฟรชล้มเหลว: ' + error.message, 'error');
-        })
-        .loadInitialData(); // เรียกฟังก์ชันหลักที่ Backend
+            // 2. แอบไปดึงประวัติ (Logs) ตามมาเงียบๆ แบบยิงตรง 🚀
+            const logs = await getRecentLogsDirectly(200);
+            if (logs && logs.length > 0) setInvLogs(logs);
+
+        } catch (error) {
+            console.error("Pre-fetch Error:", error);
+        }
+    };
+
+    fetchStartupData();
+}, []);
+
+
+// --- ฟังก์ชัน Silent Load All (ดึงเงียบๆ ไม่มี Loading) ---
+const handleSilentLoadAll = async () => {
+    try {
+        // 1. โหลดข้อมูลหลักแบบยิงตรง 🚀
+        const data = await loadInitialDataDirectly();
+        if(data.requests) setRequests(data.requests);
+        if(data.inventory) setInventory(data.inventory);
+        if(data.assets) setAssets(data.assets);
+        if(data.projects) setProjects(data.projects);
+        if(data.users) setAllUsers(data.users);
+        
+        // 2. ดึงประวัติ (Logs) ต่อแบบเงียบๆ 🚀
+        const logs = await getRecentLogsDirectly(200);
+        if (logs && logs.length > 0) setInvLogs(logs);
+
+    } catch (error) {
+        console.error('โหลดข้อมูลพื้นหลังล้มเหลว:', error);
+    }
 };
 
-// ==========================================
-  // 🤫 ฟังก์ชันแอบดึงข้อมูลพื้นหลัง (Silent Refresh) - อัปเดตให้ดึง Logs ด้วย
-  // ==========================================
-  const handleSilentRefresh = () => {
-    // ❌ ไม่ใส่ setIsLoading(true)
-    google.script.run
-      .withSuccessHandler((data) => {
-        // 1. อัปเดตข้อมูลตารางหลัก
+
+// --- ฟังก์ชัน Silent Refresh (ดึงเฉพาะบางตารางตอนกลับมาหน้าจอ) ---
+const handleSilentRefresh = async () => {
+    try {
+        // 1. อัปเดตข้อมูลตารางหลักแบบยิงตรง 🚀
+        const data = await loadInitialDataDirectly();
         if (data.requests) setRequests(data.requests);
         if (data.inventory) setInventory(data.inventory);
         if (data.assets) setAssets(data.assets);
 
-        // ⭐ 2. แอบไปดึงประวัติ (Logs) ล่าสุด 200 รายการมาอัปเดตหน้าจอเงียบๆ
-        google.script.run
-          .withSuccessHandler((logs) => {
-             if (logs && logs.length > 0) setInvLogs(logs);
-          })
-          .getRecentLogs(200); 
+        // 2. แอบไปดึงประวัติ (Logs) ล่าสุดมาอัปเดตหน้าจอเงียบๆ 🚀
+        const logs = await getRecentLogsDirectly(200);
+        if (logs && logs.length > 0) setInvLogs(logs);
 
-      })
-      .withFailureHandler((error) => console.error("Silent refresh failed:", error))
-      .loadInitialData(); 
-  };
-
-
-  // --- ฟังก์ชันแอบโหลดข้อมูลทั้งหมดตอนเพิ่ง Login เข้ามา (Silent Load) ---
-const handleSilentLoadAll = () => {
-    // ❌ ไม่ใส่ setIsLoading(true) หน้าจอจะได้ไม่หมุน และเข้า Dashboard ได้ทันที
-    google.script.run
-        .withSuccessHandler((data) => {
-            // พอข้อมูลมาถึง ค่อยจับยัดใส่ State หน้าจอจะกระพริบอัปเดตตัวเลขเอง
-            if(data.requests) setRequests(data.requests);
-            if(data.inventory) setInventory(data.inventory);
-            if(data.assets) setAssets(data.assets);
-            if(data.projects) setProjects(data.projects);
-            if(data.users) setAllUsers(data.users);
-            
-            // ดึงประวัติ (Logs) ต่อแบบเงียบๆ
-            google.script.run.withSuccessHandler((logs) => {
-                if (logs && logs.length > 0) setInvLogs(logs);
-            }).getRecentLogs(200); 
-
-        })
-        .withFailureHandler((error) => {
-            console.error('โหลดข้อมูลพื้นหลังล้มเหลว:', error);
-        })
-        .loadInitialData();
+    } catch (error) {
+        console.error("Silent refresh failed:", error);
+    }
 };
+
 
 // ==========================================
   // 🔥 ระบบ Real-time: ดักฟังตาราง
@@ -2809,39 +2794,7 @@ useEffect(() => {
         }).getPublicAnnouncements();
     }, []);
       
-// ==========================================
-      // 🚀 ระบบ Pre-fetch: แอบโหลดข้อมูลหลักเงียบๆ ตอนอยู่หน้า Login
-      // ==========================================
-      useEffect(() => {
-        // ❌ เอา setIsLoading(true); ออก เพื่อไม่ให้หน้าเว็บหมุนบล็อกการพิมพ์รหัสผ่าน
 
-        google.script.run.withSuccessHandler((data) => {
-           if(data.requests) setRequests(data.requests);
-           if(data.inventory) setInventory(data.inventory);
-           if(data.assets) setAssets(data.assets);
-           if(data.projects) setProjects(data.projects);
-           if(data.users) setAllUsers(data.users);
-           
-           if (data.announcement && data.announcement.active) {
-               setAnnouncement(data.announcement);
-               setAnnounceForm({ title: data.announcement.title, detail: data.announcement.detail });
-           } else {
-               setAnnouncement(null);
-               setAnnounceForm({ title: '', detail: '' });
-           }
-
-           // ⭐ เพิ่มการแอบไปดึงประวัติ (Logs) ตามมาเงียบๆ 
-           // (เพราะเราตั้งใจไม่ส่ง Logs มาพร้อมข้อมูลก้อนแรกเพื่อให้โหลดไวทะลุนรก)
-           google.script.run.withSuccessHandler((logs) => {
-               if (logs && logs.length > 0) setInvLogs(logs);
-           }).getRecentLogs(200);
-
-           // ❌ เอา setIsLoading(false); ออกเช่นกัน
-
-        }).withFailureHandler((error) => {
-           console.error("Pre-fetch Error:", error);
-        }).loadInitialData();
-      }, []);
 
 
 
@@ -4028,6 +3981,7 @@ const filteredLogs = useMemo(() => {
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 3000);
       };
+
         const fileToBase64 = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -4036,6 +3990,198 @@ const filteredLogs = useMemo(() => {
       reader.onerror = (error) => reject(error);
     });
   };
+
+  // =================================================================
+// 🚀 กลุ่มฟังก์ชันอ่านข้อมูล (READ) ยิงตรงเข้า Supabase ทะลุความเร็ว
+// =================================================================
+
+// 1. โหลดข้อมูลเริ่มต้นทั้งหมดตอนเปิดเว็บ
+const loadInitialDataDirectly = async () => {
+    try {
+        // ยิงดึงข้อมูล 6 ตาราง "พร้อมกัน" (Parallel Fetch)
+        const [
+            { data: settingsData },
+            { data: requestsData },
+            { data: inventoryData },
+            { data: assetsData },
+            { data: projectsData },
+            { data: usersData }
+        ] = await Promise.all([
+            supabase.from('settings').select('payload'),
+            supabase.from('requests').select('payload').neq('payload->>status', 'Cancelled'), // ไม่เอาที่ยกเลิกแล้ว
+            supabase.from('inventory').select('payload'),
+            supabase.from('assets').select('payload'),
+            supabase.from('projects').select('payload'),
+            supabase.from('users').select('payload')
+        ]);
+
+        // Map แกะเอาเฉพาะไส้ใน (payload) ออกมาใช้
+        const settings = settingsData ? settingsData.map(row => row.payload) : [];
+        
+        return {
+            announcement: settings.find(s => s.id === 'ANNOUNCEMENT') || null,
+            requests: requestsData ? requestsData.map(row => row.payload) : [],
+            inventory: inventoryData ? inventoryData.map(row => row.payload) : [],
+            assets: assetsData ? assetsData.map(row => row.payload) : [],
+            projects: projectsData ? projectsData.map(row => row.payload) : [],
+            users: usersData ? usersData.map(row => row.payload) : [],
+            logs: [] // คืนค่าว่างไปก่อน (ตาม Logic เดิมที่อยากให้โหลดไว)
+        };
+    } catch (error) {
+        console.error("Failed to load initial data directly:", error);
+        throw new Error("โหลดข้อมูลไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ");
+    }
+};
+
+// 2. โหลดประวัติล่าสุด (จำกัด 200 รายการ)
+const getRecentLogsDirectly = async (limit = 200) => {
+    try {
+        const { data, error } = await supabase
+            .from('logs')
+            .select('payload')
+            .order('created_at', { ascending: false }) // เรียงจากใหม่ไปเก่า
+            .limit(limit);
+
+        if (error) throw error;
+        return data ? data.map(row => row.payload) : [];
+    } catch (error) {
+        console.error("Error fetching recent logs:", error);
+        return [];
+    }
+};
+
+// 3. โหลดประวัติเฉพาะของสินค้านั้นๆ (Asset ID)
+const getAllLogsForItemDirectly = async (assetId) => {
+    try {
+        const { data, error } = await supabase
+            .from('logs')
+            .select('payload')
+            .eq('payload->>assetId', assetId) // กรองเฉพาะสินค้านี้
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        return data ? data.map(row => row.payload) : [];
+    } catch (error) {
+        console.error("Error fetching item logs:", error);
+        return [];
+    }
+};
+
+
+
+  // --- HELPER: อัปเดตข้อมูลย้อนหลังทั่วทั้งระบบ (ยิงตรงเข้า Supabase) 🚀 ---
+const updateGlobalDataDirectly = async (oldData, newData) => {
+    const newFullSig = `${newData.empId} ${newData.firstName} ${newData.lastName}`;
+    const newShortName = `${newData.firstName} ${newData.lastName}`;
+
+    const oldPatterns = [
+        `${oldData.empId} ${oldData.firstName} ${oldData.lastName}`,
+        `${oldData.empId} ${oldData.firstName} ${oldData.lastName} (Email)`,
+        `${oldData.firstName} ${oldData.lastName}`,
+        `${oldData.empId} ${oldData.firstName}`,
+        oldData.empId
+    ];
+
+    const isMatch = (value) => {
+        if (!value || typeof value !== 'string') return false;
+        const val = value.trim();
+        return oldPatterns.some(pattern => {
+            if (pattern === oldData.empId) return val.startsWith(pattern);
+            return val === pattern || val.replace(/\s+/g, ' ') === pattern;
+        });
+    };
+
+    try {
+        // 🌟 1. ดึงและอัปเดตตาราง Requests
+        // ใช้ .limit(50000) เพื่อป้องกันการติด Max Rows ของ Supabase
+        const { data: reqData } = await supabase.from('requests').select('id, payload').limit(50000);
+        let reqUpdates = [];
+        if (reqData) {
+            reqData.forEach(row => {
+                let req = row.payload;
+                let changed = false;
+                if (isMatch(req.requester)) { req.requester = newShortName; changed = true; }
+                if (isMatch(req.approverL1)) { req.approverL1 = newFullSig; changed = true; }
+                if (isMatch(req.approverL2)) { req.approverL2 = newFullSig; changed = true; }
+                if (req.history && Array.isArray(req.history)) {
+                    req.history.forEach(h => { if (isMatch(h.user)) { h.user = newFullSig; changed = true; } });
+                }
+                if (changed) reqUpdates.push({ id: row.id, payload: req });
+            });
+            // ยิง Bulk อัปเดตกลับไป 1 ครั้ง
+            if (reqUpdates.length > 0) await supabase.from('requests').upsert(reqUpdates);
+        }
+
+        // 🌟 2. ดึงและอัปเดตตาราง Logs
+        const { data: logData } = await supabase.from('logs').select('id, payload').limit(50000);
+        let logUpdates = [];
+        if (logData) {
+            logData.forEach(row => {
+                let log = row.payload;
+                if (isMatch(log.by)) { log.by = newFullSig; logUpdates.push({ id: row.id, payload: log }); }
+            });
+            if (logUpdates.length > 0) await supabase.from('logs').upsert(logUpdates);
+        }
+
+        // 🌟 3. ดึงและอัปเดตตาราง Assets
+        const { data: assetData } = await supabase.from('assets').select('id, payload').limit(50000);
+        let assetUpdates = [];
+        if (assetData) {
+            assetData.forEach(row => {
+                let asset = row.payload;
+                if (isMatch(asset.holder)) { asset.holder = newShortName; assetUpdates.push({ id: row.id, payload: asset }); }
+            });
+            if (assetUpdates.length > 0) await supabase.from('assets').upsert(assetUpdates);
+        }
+
+        return `อัปเดตสำเร็จ: เอกสาร(${reqUpdates.length}), ประวัติ(${logUpdates.length}), ทรัพย์สิน(${assetUpdates.length})`;
+
+    } catch (error) {
+        console.error("Global Update Error:", error);
+        throw new Error("ล้มเหลวในการอัปเดตข้อมูลย้อนหลัง");
+    }
+};
+
+
+  // --- HELPER: อัปโหลดไฟล์ขึ้น Supabase Storage ---
+const uploadFileToSupabase = async (file, folderName = 'uploads') => {
+    try {
+        // 1. สุ่มชื่อไฟล์ใหม่ป้องกันชื่อซ้ำกัน
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${folderName}/${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+
+        // 2. อัปโหลดเข้า Bucket ชื่อ 'purchase-hub'
+        const { data, error } = await supabase.storage
+            .from('purchase-hub') 
+            .upload(fileName, file, {
+                cacheControl: '3600',
+                upsert: false 
+            });
+
+        if (error) {
+            console.error("Supabase Upload Error:", error.message);
+            return null;
+        }
+
+        // 3. ดึง Public URL ของไฟล์ที่อัปโหลดเสร็จแล้ว
+        const { data: publicUrlData } = supabase.storage
+            .from('purchase-hub')
+            .getPublicUrl(fileName);
+
+        // คืนค่ากลับไปในรูปแบบที่โค้ดเดิมของคุณใช้งานอยู่
+        return {
+            name: file.name,
+            url: publicUrlData.publicUrl, // ได้ลิงก์ Supabase ตรงๆ เอาไปโชว์ได้เลย
+            base64: null, // ไม่ต้องใช้ Base64 แล้ว
+            file: null // เคลียร์ไฟล์ทิ้งเพื่อไม่ให้หนักหน่วยความจำ
+        };
+    } catch (err) {
+        console.error("Upload Catch Error:", err);
+        return null;
+    }
+};
+
+
 
  // --- LOGIC: HISTORY & LOGS (UPDATED WITH REFERENCE) ---
 
@@ -4459,6 +4605,11 @@ const selectSuggestion = (item) => {
 // --- LOGIC: ADD ITEM TO ORDER (UPDATED) ---
 const handleAddItem = () => {
     if (!tempItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
+
+    if (!tempItem.note || tempItem.note.trim() === '') { 
+        showToast('กรุณาระบุหมายเหตุ', 'error'); 
+        return; 
+    }
     
     const currentType = newOrderMeta.type;
 
@@ -4955,49 +5106,42 @@ const handleAddNewProduct = async () => {
     
     const currentType = newStockItem.stockType || 'System';
 
-    // 2. เช็คว่ามีของเดิมหรือไม่ (ยึดชื่อสินค้า+โครงการ+ประเภท เป็นหลัก)
+    // 2. เช็คว่ามีของเดิมหรือไม่
     const existingInv = inventory.find(i => 
         i.name === newStockItem.name && 
         i.project === newStockItem.project && 
         (i.stockType === currentType || (!i.stockType && currentType === 'System'))
     );
 
-    // ⭐ [Rule 4] ตรวจสอบรหัสวัสดุ (Mat Code) ขัดแย้ง
-    // ถ้าพิมพ์ชื่อสินค้าที่เคยมีแล้ว แต่พิมพ์รหัสมาไม่ตรงกับในระบบ -> แจ้งเตือน!
+    // ⭐ [Rule 4] ตรวจสอบรหัสวัสดุ
     if (existingInv && !newStockItem.isAutoId && newStockItem.id && newStockItem.id.trim() !== '') {
         const existingBaseId = getDisplayId(existingInv.id);
         if (newStockItem.id !== existingBaseId) {
             alert(`⚠️ ขัดแย้งกัน: สินค้า "${newStockItem.name}" มีอยู่ในระบบแล้ว แต่รหัสไม่ตรงกัน\n\n- รหัสที่ถูกต้องในระบบ: ${existingBaseId}\n- รหัสที่คุณกรอก: ${newStockItem.id}\n\nกรุณาแก้ไขรหัสวัสดุให้ตรงกัน หรือติ๊ก Auto Gen เพื่อให้ระบบดึงรหัสเดิมให้`);
-            return; // หยุดการทำงานถ้าขัดแย้ง
+            return; 
         }
     }
     
-    // 3. เตรียม Base ID (รหัสสั้น)
+    // 3. เตรียม Base ID
     let baseId = newStockItem.id;
     if (newStockItem.isAutoId) {
-        // ⭐ Auto Gen Logic: วนลูปหาเลขที่ว่างจริงๆ
         let runNoCount = inventory.length + 1;
         baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
-        // เช็คซ้ำกับ "รหัสหน้าบ้าน" ของทุกรายการในระบบ
         while (inventory.some(inv => getDisplayId(inv.id) === baseId)) {
             runNoCount++;
             baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
         }
     } else {
-        // ถ้า Manual ID มา ต้องเช็คว่าว่างไหม
         if (!baseId || baseId.trim() === '') { showToast('กรุณาระบุรหัสสินค้า', 'error'); return; }
     }
 
-    // ⭐ 4. สร้าง Real ID (รหัส|โครงการ|ประเภท) และระบบ Counter
+    // ⭐ 4. สร้าง Real ID
     let finalId = '';
     if (existingInv) {
-        // ถ้าเจอของเดิม (ชื่อตรงกัน) -> ใช้ ID เดิมเพื่อบวกเพิ่มยอด
         finalId = existingInv.id; 
     } else {
-        // ถ้าของใหม่ (ชื่อไม่เคยมี) -> สร้าง ID เต็ม
         finalId = `${baseId}|${newStockItem.project}|${currentType}`;
         let counter = 1;
-        // [Rule 1, 2] ถ้ารหัสเต็มบังเอิญซ้ำเป๊ะๆ (จงใจใช้รหัสซ้ำกับสินค้าอื่น) ให้ดันเลข Counter ขึ้นเพื่อกัน Database ทับกัน
         while (inventory.some(i => i.id === finalId)) {
             finalId = `${baseId}|${newStockItem.project}|${currentType}|${counter}`;
             counter++;
@@ -5006,19 +5150,20 @@ const handleAddNewProduct = async () => {
 
     setIsLoading(true);
     try {
-        // ... (ส่วน Upload Image) ...
+        // 🚀 ส่วน Upload Image (เปลี่ยนมาใช้ Supabase)
         let uploadedFiles = [];
         if (newStockItem.images && newStockItem.images.length > 0) {
             const uploadPromises = newStockItem.images.map(imgObj => {
-                return new Promise((resolve, reject) => {
-                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
-                });
+                if (imgObj.file) {
+                    return uploadFileToSupabase(imgObj.file, 'items');
+                }
+                return Promise.resolve(imgObj);
             });
-            uploadedFiles = await Promise.all(uploadPromises);
+            const results = await Promise.all(uploadPromises);
+            uploadedFiles = results.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
-        const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].name : (existingInv ? existingInv.image : null);
+        const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].url : (existingInv ? existingInv.image : null);
         const date = new Date().toLocaleString('th-TH');
-        // ... (จบส่วน Image) ...
         
         const supplierTxt = newStockItem.supplier ? ` | ร้านค้า: ${newStockItem.supplier}` : '';
         
@@ -5031,22 +5176,22 @@ const handleAddNewProduct = async () => {
                 note: newStockItem.note ? (existingInv.note ? `${existingInv.note} | ${newStockItem.note}` : newStockItem.note) : existingInv.note,
                 lastUpdated: date,
                 image: mainImageName,
-                supplier: newStockItem.supplier || existingInv.supplier // ⭐ อัปเดต Supplier
+                supplier: newStockItem.supplier || existingInv.supplier 
             };
             setInventory(prev => prev.map(i => i.id === existingInv.id ? updatedItem : i));
             
             await saveInventoryToSheet(updatedItem);
             
-            const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+            const logAttachments = uploadedFiles;
             await addInvLog('Add Stock (Merge)', updatedItem.name, `+${newStockItem.qty}`, `โครงการ: ${updatedItem.project} (${currentType})${supplierTxt}`, logAttachments, null, finalId, { supplier: newStockItem.supplier });
             
             showToast(`เพิ่มยอดสินค้าเดิมเรียบร้อย (${updatedItem.qty})`);
             
         } else {
-            // ✅ NEW
+ // ✅ NEW
             const newItem = {
-                id: finalId, // ⭐ แก้จาก finalInvId เป็น finalId ตามตัวแปรด้านบน
-                ...newStockItem,
+                ...newStockItem, // 👈 1. เอาค่าจากฟอร์มมากางก่อน (id ตอนนี้คือค่าว่าง)
+                id: finalId,     // 👈 2. เอารหัสที่ Gen เสร็จแล้ว มาเซฟทับค่าว่าง! (สำคัญมากต้องอยู่ใต้ ...)
                 supplier: newStockItem.supplier || '',
                 stockType: currentType,
                 lastUpdated: date,
@@ -5057,7 +5202,7 @@ const handleAddNewProduct = async () => {
             setInventory(prev => [...prev, newItem]);
             await saveInventoryToSheet(itemForServer);
             
-            const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+            const logAttachments = uploadedFiles;
             const typeLabel = currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
             await addInvLog('Add New Item', newItem.name, `Start: ${newItem.qty}`, `โครงการ: ${newItem.project} | ${typeLabel}${supplierTxt}`, logAttachments, null, finalId, { supplier: newItem.supplier });
             showToast('บันทึกสินค้าใหม่เรียบร้อย');
@@ -5065,7 +5210,6 @@ const handleAddNewProduct = async () => {
 
         setIsLoading(false);
         setShowAddInvModal(false);
-        // Reset Form
         setNewStockItem({ name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], note: '', stockType: 'System', project: globalProjectFilter !== 'All' ? globalProjectFilter : '', id: '', isAutoId: true, supplier: '' });
 
     } catch (error) {
@@ -5075,115 +5219,89 @@ const handleAddNewProduct = async () => {
     }
 };
 
-// --- LOGIC: ADD ASSET (UPDATED: Check Holder) ---
+// --- LOGIC: ADD ASSET (UPDATED: Check Holder & Supabase) ---
 const handleAddAsset = async () => {
-          // Validation
-          if (!newAssetItem.ownerType) { showToast('กรุณาเลือกประเภททรัพย์สิน', 'error');
-          return; }
-          if (!newAssetItem.isAutoId && !newAssetItem.id) { showToast('กรุณาระบุรหัสทรัพย์สิน', 'error'); return;
-          }
-          if (!newAssetItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return;
-          }
-          if (!newAssetItem.isAutoId && assets.some(a => a.id === newAssetItem.id)) { showToast('รหัสทรัพย์สินซ้ำ', 'error');
-          return; }
-          
-          // ⭐ [แก้ไขใหม่] ตรวจสอบชื่อคนยืม ถ้าสถานะเป็น Borrowed
-          if (newAssetItem.status === 'Borrowed') {
-              if (!newAssetItem.holder || newAssetItem.holder.trim() === '') {
-                  showToast('กรุณาระบุชื่อผู้ยืม', 'error');
-                  return;
-              }
-              // ตรวจสอบว่าชื่อที่เลือกมา มีอยู่ในระบบจริงหรือไม่
-              const isValidUser = allUsers.some(u => `${u.firstName} ${u.lastName}` === newAssetItem.holder);
-              if (!isValidUser) {
-                  showToast('ชื่อผู้ยืมไม่ถูกต้อง (กรุณาเลือกจากรายชื่อที่มีในระบบ)', 'error');
-                  return;
-              }
-          }
+    // Validation
+    if (!newAssetItem.ownerType) { showToast('กรุณาเลือกประเภททรัพย์สิน', 'error'); return; }
+    if (!newAssetItem.isAutoId && !newAssetItem.id) { showToast('กรุณาระบุรหัสทรัพย์สิน', 'error'); return; }
+    if (!newAssetItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
+    if (!newAssetItem.isAutoId && assets.some(a => a.id === newAssetItem.id)) { showToast('รหัสทรัพย์สินซ้ำ', 'error'); return; }
+    
+    // ตรวจสอบชื่อคนยืม
+    if (newAssetItem.status === 'Borrowed') {
+        if (!newAssetItem.holder || newAssetItem.holder.trim() === '') {
+            showToast('กรุณาระบุชื่อผู้ยืม', 'error');
+            return;
+        }
+        const isValidUser = allUsers.some(u => `${u.firstName} ${u.lastName}` === newAssetItem.holder);
+        if (!isValidUser) {
+            showToast('ชื่อผู้ยืมไม่ถูกต้อง (กรุณาเลือกจากรายชื่อที่มีในระบบ)', 'error');
+            return;
+        }
+    }
 
-          setIsLoading(true);
+    setIsLoading(true);
 
-          try {
-              const date = new Date().toLocaleString('th-TH');
-              
-              // Auto Gen ID
-              let finalId = newAssetItem.id;
-              if (newAssetItem.isAutoId) {
-                  const prefix = newAssetItem.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
-                  const runNo = String(assets.length + 1).padStart(3, '0');
-                  finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
-              }
+    try {
+        const date = new Date().toLocaleString('th-TH');
+        
+        let finalId = newAssetItem.id;
+        if (newAssetItem.isAutoId) {
+            const prefix = newAssetItem.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
+            const runNo = String(assets.length + 1).padStart(3, '0');
+            finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
+        }
 
-              // Upload Images
-              let uploadedFiles = [];
-              if (newAssetItem.images && newAssetItem.images.length > 0) {
-                  const uploadPromises = newAssetItem.images.map(imgObj => {
-                      return new Promise((resolve, reject) => {
-                          google.script.run
-                            .withSuccessHandler(resolve)
-                            .withFailureHandler(reject)
-                            .uploadAssetImage(imgObj.base64, imgObj.name);
-                      });
-                  });
-                  uploadedFiles = await Promise.all(uploadPromises);
-              }
+        // 🚀 Upload Images (เปลี่ยนมาใช้ Supabase)
+        let uploadedFiles = [];
+        if (newAssetItem.images && newAssetItem.images.length > 0) {
+            const uploadPromises = newAssetItem.images.map(imgObj => {
+                if (imgObj.file) {
+                    return uploadFileToSupabase(imgObj.file, 'items');
+                }
+                return Promise.resolve(imgObj);
+            });
+            const results = await Promise.all(uploadPromises);
+            uploadedFiles = results.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+        }
 
-              const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].name : null;
+        const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].url : null;
 
-              // ⭐ กำหนดค่า Holder: ถ้า Borrowed ใช้ค่าที่กรอก, ถ้าไม่ใช้ ให้เป็น '-'
-              const finalHolder = newAssetItem.status === 'Borrowed' ? newAssetItem.holder : '-';
+        const finalHolder = newAssetItem.status === 'Borrowed' ? newAssetItem.holder : '-';
 
-const newAsset = { 
-                  currentRequestId: null, 
-                  lastUpdated: date,
-                  ...newAssetItem, 
-                  holder: finalHolder,
-                  id: finalId,     
-                  image: mainImageName,
-                  supplier: newAssetItem.supplier || '', // ⭐ เพิ่ม: บันทึก Supplier
-                  images: [] 
-              };
-              
-              const { images, ...assetForServer } = newAsset;
-              saveAssetToSheet(assetForServer); 
-              setAssets(prev => [...prev, newAsset]);
-              
-              // Log
-              const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
-              
-              // สร้างข้อความ Log
-              let logAction = `รับเข้าโครงการ ${newAssetItem.project || 'ไม่ระบุ'} - เพิ่มทรัพย์สินใหม่ ${finalId} (${newAssetItem.status})`;
-              if (newAssetItem.status === 'Borrowed') logAction += ` ผู้ยืม: ${finalHolder}`;
-              if (newAssetItem.supplier) logAction += ` | ร้านค้า: ${newAssetItem.supplier}`;
+        const newAsset = { 
+            currentRequestId: null, 
+            lastUpdated: date,
+            ...newAssetItem, 
+            holder: finalHolder,
+            id: finalId,     
+            image: mainImageName,
+            supplier: newAssetItem.supplier || '', 
+            images: [] 
+        };
+        
+        const { images, ...assetForServer } = newAsset;
+        saveAssetToSheet(assetForServer); 
+        setAssets(prev => [...prev, newAsset]);
+        
+        const logAttachments = uploadedFiles;
+        
+        let logAction = `รับเข้าโครงการ ${newAssetItem.project || 'ไม่ระบุ'} - เพิ่มทรัพย์สินใหม่ ${finalId} (${newAssetItem.status})`;
+        if (newAssetItem.status === 'Borrowed') logAction += ` ผู้ยืม: ${finalHolder}`;
+        if (newAssetItem.supplier) logAction += ` | ร้านค้า: ${newAssetItem.supplier}`;
 
-              addInvLog('Add Asset', newAssetItem.name, 'New', logAction, logAttachments, null, null, { supplier: newAssetItem.supplier });
+        addInvLog('Add Asset', newAssetItem.name, 'New', logAction, logAttachments, null, null, { supplier: newAssetItem.supplier });
+        
+        setIsLoading(false);
+        setShowAssetModal(false);
+        setNewAssetItem({ id: '', isAutoId: false, name: '', serial: '', status: 'Available', condition: 'Good', ownerType: '', price: 0, rentalPrice: 0, rentalUnit: 'Month', images: [], note: '', holder: '' });
+        showToast(`เพิ่มทรัพย์สินเรียบร้อย`);
 
-              
-              setIsLoading(false);
-              setShowAssetModal(false);
-              // Reset State
-              setNewAssetItem({ id: '', isAutoId: false, name: '', serial: '', status: 'Available', condition: 'Good', ownerType: '', price: 0, rentalPrice: 0, rentalUnit: 'Month', images: [], note: '', holder: '' });
-              showToast(`เพิ่มทรัพย์สินเรียบร้อย`);
-
-          } catch (error) {
-              setIsLoading(false);
-              showToast("Error: " + error.message, 'error');
-          }
-      };
-
- // แก้ไข initiateReturnAsset
-      const initiateReturnAsset = (asset) => {
-          setReturnAssetData({ 
-              id: asset.id, 
-              name: asset.name, // เก็บชื่อไว้ใช้แสดง
-              serial: asset.serial, // เก็บ serial ไว้ใช้แสดง
-              condition: 'Good', 
-              note: '', 
-              images: [], 
-              previews: [] // เพิ่มตัวนี้
-          });
-          setShowReturnAssetModal(true);
-      };
+    } catch (error) {
+        setIsLoading(false);
+        showToast("Error: " + error.message, 'error');
+    }
+};
 
 // [แก้ไข] ฟังก์ชันยืนยันรับคืน (Update: บันทึก User จริงลงประวัติ)
 const confirmReturnAsset = async () => {
@@ -5318,25 +5436,20 @@ const handleUpdateAsset = async (e) => {
         const date = new Date().toLocaleString('th-TH');
         const originalAsset = assets.find(a => a.id === editingAssetItem.originalId);
 
-        // 2. Upload New Images
+        // 🚀 2. Upload New Images (เปลี่ยนมาใช้ Supabase)
         let newUploadedFiles = [];
         if (editingAssetItem.newImages && editingAssetItem.newImages.length > 0) {
             const uploadPromises = editingAssetItem.newImages.map(imgObj => {
-                return new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.readAsDataURL(imgObj.file);
-                        reader.onload = () => {
-                            google.script.run
-                            .withSuccessHandler(resolve)
-                            .withFailureHandler(reject)
-                            .uploadAssetImage(reader.result, imgObj.file.name);
-                        };
-                });
+                if (imgObj.file) {
+                    return uploadFileToSupabase(imgObj.file, 'items');
+                }
+                return Promise.resolve(imgObj);
             });
-            newUploadedFiles = await Promise.all(uploadPromises);
+            const results = await Promise.all(uploadPromises);
+            newUploadedFiles = results.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
 
-        const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].name : editingAssetItem.image;
+        const mainImage = newUploadedFiles.length > 0 ? newUploadedFiles[0].url : editingAssetItem.image;
         
         // 3. Prepare Updated Data
         const updatedAsset = { 
@@ -5347,19 +5460,15 @@ const handleUpdateAsset = async (e) => {
             newImages: [] 
         };
         
-        // ⭐ 4. Compare Changes (Detailed Log)
+        // 4. Compare Changes
         let changes = [];
         const val = (v) => (v === null || v === undefined || v === '') ? '-' : v;
 
         if (originalAsset) {
-            // รหัสทรัพย์สิน
             if (val(originalAsset.id) !== val(updatedAsset.id)) changes.push(`ID: ${originalAsset.id} -> ${updatedAsset.id}`);
-            // ชื่อรายการ
             if (val(originalAsset.name) !== val(updatedAsset.name)) changes.push(`ชื่อ: ${originalAsset.name} -> ${updatedAsset.name}`);
-            // Serial Number
             if (val(originalAsset.serial) !== val(updatedAsset.serial)) changes.push(`S/N: ${val(originalAsset.serial)} -> ${val(updatedAsset.serial)}`);
             
-            // ข้อมูลราคา/เช่า
             if (updatedAsset.ownerType === 'Rent') {
                 if (originalAsset.rentalPrice !== updatedAsset.rentalPrice) changes.push(`ค่าเช่า: ${originalAsset.rentalPrice} -> ${updatedAsset.rentalPrice}`);
                 if (val(originalAsset.rentalUnit) !== val(updatedAsset.rentalUnit)) changes.push(`หน่วยเช่า: ${val(originalAsset.rentalUnit)} -> ${val(updatedAsset.rentalUnit)}`);
@@ -5369,22 +5478,14 @@ const handleUpdateAsset = async (e) => {
                 if (originalAsset.price !== updatedAsset.price) changes.push(`ราคาซื้อ: ${originalAsset.price} -> ${updatedAsset.price}`);
             }
 
-            // สถานะ
             if (val(originalAsset.status) !== val(updatedAsset.status)) changes.push(`สถานะ: ${val(originalAsset.status)} -> ${val(updatedAsset.status)}`);
-            
-            // ⭐ ผู้ถือครอง / ผู้ยืม (ใหม่)
             if (val(originalAsset.holder) !== val(updatedAsset.holder)) changes.push(`ผู้ยืม: ${val(originalAsset.holder)} -> ${val(updatedAsset.holder)}`);
-
-            // หมายเหตุ
             if (val(originalAsset.note) !== val(updatedAsset.note)) changes.push(`Note: ${val(originalAsset.note)} -> ${val(updatedAsset.note)}`);
-            
-            // รูปภาพ
             if (newUploadedFiles.length > 0) changes.push(`รูปภาพ: อัปเดตใหม่`);
         }
    
         const changeLog = changes.length > 0 ? changes.join('\n') : 'แก้ไขข้อมูล (ไม่มีการเปลี่ยนแปลงค่า)';
 
-        // 5. Handle ID Change
         if (originalAsset && originalAsset.id !== updatedAsset.id) {
              await new Promise(r => google.script.run.withSuccessHandler(r).deleteDataFromSheet('Assets', originalAsset.id)); 
              try {
@@ -5397,7 +5498,6 @@ const handleUpdateAsset = async (e) => {
              }));
         }
 
-        // 6. Update Asset State & Save
         setAssets(prev => {
             const filtered = prev.filter(a => a.id !== editingAssetItem.originalId);
             return [...filtered, updatedAsset];
@@ -5406,8 +5506,7 @@ const handleUpdateAsset = async (e) => {
         const { images, newImages, originalId, ...assetForServer } = updatedAsset;
         saveAssetToSheet(assetForServer); 
 
-        // 7. Log Action
-        const logAttachments = newUploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
+        const logAttachments = newUploadedFiles;
         await addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
         
         setIsLoading(false);
@@ -5564,61 +5663,62 @@ const getBudgetStats = (req, identifier, type, isGroup = false) => {
       return checks.quotation && checks.email && checks.details;
   };
 
-// --- LOGIC: UPDATE ASSET IMAGE (NEW) ---
-      const handleUpdateImage = async (e) => {
-          if (!e.target.files || e.target.files.length === 0) return;
-          if (!viewingItem) return;
+// --- LOGIC: UPDATE ASSET IMAGE (NEW - USING SUPABASE) ---
+const handleUpdateImage = async (e) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    if (!viewingItem) return;
 
-          const file = e.target.files[0];
-          setIsLoading(true); // หมุนๆ รอ
+    const file = e.target.files[0];
+    setIsLoading(true); // หมุนๆ รอ
 
-          try {
-              const base64 = await fileToBase64(file);
-              // เรียก Server function ตัวใหม่ที่สร้างไว้
-              const result = await new Promise((resolve, reject) => {
-                  google.script.run
-                    .withSuccessHandler(resolve)
-                    .withFailureHandler(reject)
-                    .uploadAssetImage(base64, file.name); 
-              });
+    try {
+        // 🚀 1. เรียกใช้ฟังก์ชันอัปโหลดขึ้น Supabase ตรงๆ (ไม่ต้องแปลง Base64 แล้ว)
+        const uploadedData = await uploadFileToSupabase(file, 'items'); 
+        
+        // เช็คว่าอัปโหลดผ่านไหม ถ้าไม่ผ่านให้โยน Error
+        if (!uploadedData || !uploadedData.url) {
+            throw new Error('อัปโหลดขึ้น Supabase ไม่สำเร็จ');
+        }
 
-              if (result.error) throw new Error(result.error);
+        // 2. อัปเดตข้อมูลใน State (Assets หรือ Inventory)
+        const date = new Date().toLocaleString('th-TH');
+        const updatedItem = { 
+            ...viewingItem, 
+            image: uploadedData.url, // 🌟 สำคัญ: เก็บเป็น URL ของ Supabase แทนการเก็บแค่ชื่อไฟล์
+            lastUpdated: date 
+        };
 
-              // 1. อัปเดตข้อมูลใน State (Assets หรือ Inventory)
-              const date = new Date().toLocaleString('th-TH');
-              const updatedItem = { 
-                  ...viewingItem, 
-                  image: result.name, // อัปเดตชื่อไฟล์รูปปัจจุบัน
-                  lastUpdated: date 
-              };
+        // อัปเดตใน List หลัก
+        if (viewingItem.serial !== undefined) {
+            // เป็น Asset
+            setAssets(prev => prev.map(a => a.id === viewingItem.id ? updatedItem : a));
+            saveAssetToSheet(updatedItem); // ระบบจะเอา URL ใหม่ไปเซฟทับในฐานข้อมูล
+        } else {
+            // เป็น Inventory
+            setInventory(prev => prev.map(i => i.id === viewingItem.id ? updatedItem : i));
+            saveInventoryToSheet(updatedItem);
+        }
 
-              // อัปเดตใน List หลัก
-              if (viewingItem.serial !== undefined) {
-                  // เป็น Asset
-                  setAssets(prev => prev.map(a => a.id === viewingItem.id ? updatedItem : a));
-                  saveAssetToSheet(updatedItem);
-              } else {
-                  // เป็น Inventory
-                  setInventory(prev => prev.map(i => i.id === viewingItem.id ? updatedItem : i));
-                  saveInventoryToSheet(updatedItem);
-              }
+        // 3. บันทึก Log ว่ามีการอัปเดตรูป
+        addInvLog('Update Image', viewingItem.name, 'Photo', 'อัปเดตรูปภาพล่าสุด', [{
+            name: file.name, 
+            type: file.type || 'image/jpeg',
+            url: uploadedData.url // 🌟 แนบ URL ใหม่เข้าไปใน Log ด้วย
+        }]);
 
-              // 2. บันทึก Log ว่ามีการอัปเดตรูป
-              addInvLog('Update Image', viewingItem.name, 'Photo', 'อัปเดตรูปภาพล่าสุด', [{name: result.name, type: 'image/jpeg'}]);
+        // 4. อัปเดตหน้าจอที่ดูอยู่
+        setViewingItem(updatedItem);
+        setPreviewImage(null); // Reset preview ให้โชว์รูปใหม่
+        
+        showToast('อัปเดตรูปภาพขึ้นระบบคลาวด์เรียบร้อย');
 
-              // 3. อัปเดตหน้าจอที่ดูอยู่
-              setViewingItem(updatedItem);
-              setPreviewImage(null); // Reset preview ให้โชว์รูปใหม่
-              
-              showToast('อัปเดตรูปภาพเรียบร้อย');
-
-          } catch (err) {
-              console.error(err);
-              showToast('อัปโหลดรูปภาพล้มเหลว', 'error');
-          } finally {
-              setIsLoading(false);
-          }
-      };
+    } catch (err) {
+        console.error(err);
+        showToast('อัปโหลดรูปภาพล้มเหลว', 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
 // --- LOGIC: VERIFICATION (FIXED & UPDATED) ---
 const openVerificationModal = (reqId, isChangeMode = false) => { // ⭐ รับ param เพิ่ม
@@ -6514,108 +6614,92 @@ const handleSuperRollbackConfirm = async () => {
 
 
 const handleSubmitPR = async () => { 
-        if (!prData.prNumber && !prData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
-        
-        setIsLoading(true); // เริ่มโหลด
-        let uploadedFile = null;
+    if (!prData.prNumber && !prData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
+    
+    setIsLoading(true); // เริ่มโหลด
+    let uploadedFile = null;
 
-        try {
-            // 1. อัปโหลดไฟล์ (ถ้ามี)
-            if (prData.file) {
-                const base64 = await fileToBase64(prData.file);
-                const result = await new Promise((resolve, reject) => {
-                    google.script.run
-                        .withSuccessHandler(resolve)
-                        .withFailureHandler(reject)
-                        .uploadFileToDrive(base64, prData.file.name);
-                });
-                
-                if (result.error) throw new Error(result.error);
-                uploadedFile = result; // ได้ object {name, url, id} กลับมา
-            }
-
-            const note = `PR: ${prData.prNumber}`;
-            
-            // 2. อัปเดตข้อมูล
-setRequests(prev => prev.map(r => {
-                if (r.id === prData.requestId) {
-                    const updatedReq = { 
-                        ...r, 
-                        status: 'PR Issued', 
-                        prFile: uploadedFile || r.prFile,
-                        prNumber: prData.prNumber,
-                        // ⭐ แก้ตรงนี้
-                        history: [...r.history, createLog('PR Issued', `${user.empId} ${user.firstName} ${user.lastName}`, note)] 
-                    };
-                    saveRequestToSheet(updatedReq);
-                    return updatedReq;
-                }
-                return r;
-            }));
-
-            setShowPRModal(false); 
-            showToast('บันทึกและอัปโหลด PR เรียบร้อย');
-
-        } catch (err) {
-            console.error(err);
-            showToast('เกิดข้อผิดพลาดในการอัปโหลด: ' + err.message, 'error');
-        } finally {
-            setIsLoading(false);
+    try {
+        // 🚀 1. อัปโหลดไฟล์ (ถ้ามี) ขึ้น Supabase
+        if (prData.file) {
+            const result = await uploadFileToSupabase(prData.file, 'documents');
+            if (!result || !result.url) throw new Error('อัปโหลดไฟล์ PR ล้มเหลว');
+            uploadedFile = result; // ได้ object {name, url, id} กลับมา
         }
-      };
 
-      const openPOModal = (id) => { setPoData({ requestId: id, file: null, poNumber: '' }); setShowPOModal(true); };
-
-// --- LOGIC: ISSUE PO (UPDATED: Upload File) ---
-      const handleSubmitPO = async () => { 
-        if (!poData.poNumber && !poData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
+        const note = `PR: ${prData.prNumber}`;
         
-        setIsLoading(true); // เริ่มโหลด
-        let uploadedFile = null;
-
-        try {
-            // 1. อัปโหลดไฟล์ (ถ้ามี)
-            if (poData.file) {
-                const base64 = await fileToBase64(poData.file);
-                const result = await new Promise((resolve, reject) => {
-                    google.script.run
-                        .withSuccessHandler(resolve)
-                        .withFailureHandler(reject)
-                        .uploadFileToDrive(base64, poData.file.name);
-                });
-
-                if (result.error) throw new Error(result.error);
-                uploadedFile = result; // ได้ object {name, url, id} กลับมา
+        // 2. อัปเดตข้อมูล
+        setRequests(prev => prev.map(r => {
+            if (r.id === prData.requestId) {
+                const updatedReq = { 
+                    ...r, 
+                    status: 'PR Issued', 
+                    prFile: uploadedFile || r.prFile,
+                    prNumber: prData.prNumber,
+                    history: [...r.history, createLog('PR Issued', `${user.empId} ${user.firstName} ${user.lastName}`, note)] 
+                };
+                saveRequestToSheet(updatedReq);
+                return updatedReq;
             }
+            return r;
+        }));
 
-            const note = `PO: ${poData.poNumber}`;
-            
-            // 2. อัปเดตข้อมูล
-setRequests(prev => prev.map(r => {
-                if (r.id === poData.requestId) {
-                    const updatedReq = { 
-                        ...r, 
-                        status: 'PO Issued', 
-                        poFile: uploadedFile || r.poFile,
-                        poNumber: poData.poNumber,
-                        // ⭐ แก้ตรงนี้
-                        history: [...r.history, createLog('PO Issued', `${user.empId} ${user.firstName} ${user.lastName}`, note)] 
-                    };
-                    saveRequestToSheet(updatedReq); 
-                    return updatedReq;
-                }
-                return r;
-}));
-            setShowPOModal(false); 
-            showToast('บันทึกและอัปโหลด PO เรียบร้อย');
+        setShowPRModal(false); 
+        showToast('บันทึกและอัปโหลด PR เรียบร้อย');
 
-        } catch (err) {
-            console.error(err);
-            showToast('เกิดข้อผิดพลาดในการอัปโหลด: ' + err.message, 'error');
-        } finally {
-            setIsLoading(false);
+    } catch (err) {
+        console.error(err);
+        showToast('เกิดข้อผิดพลาดในการอัปโหลด: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
+
+const openPOModal = (id) => { setPoData({ requestId: id, file: null, poNumber: '' }); setShowPOModal(true); };
+
+const handleSubmitPO = async () => { 
+    if (!poData.poNumber && !poData.file) { showToast('กรุณาระบุเลขที่หรือแนบไฟล์', 'error'); return; }
+    
+    setIsLoading(true); // เริ่มโหลด
+    let uploadedFile = null;
+
+    try {
+        // 🚀 1. อัปโหลดไฟล์ (ถ้ามี) ขึ้น Supabase
+        if (poData.file) {
+            const result = await uploadFileToSupabase(poData.file, 'documents');
+            if (!result || !result.url) throw new Error('อัปโหลดไฟล์ PO ล้มเหลว');
+            uploadedFile = result; // ได้ object {name, url, id} กลับมา
         }
-      };
+
+        const note = `PO: ${poData.poNumber}`;
+        
+        // 2. อัปเดตข้อมูล
+        setRequests(prev => prev.map(r => {
+            if (r.id === poData.requestId) {
+                const updatedReq = { 
+                    ...r, 
+                    status: 'PO Issued', 
+                    poFile: uploadedFile || r.poFile,
+                    poNumber: poData.poNumber,
+                    history: [...r.history, createLog('PO Issued', `${user.empId} ${user.firstName} ${user.lastName}`, note)] 
+                };
+                saveRequestToSheet(updatedReq); 
+                return updatedReq;
+            }
+            return r;
+        }));
+        
+        setShowPOModal(false); 
+        showToast('บันทึกและอัปโหลด PO เรียบร้อย');
+
+    } catch (err) {
+        console.error(err);
+        showToast('เกิดข้อผิดพลาดในการอัปโหลด: ' + err.message, 'error');
+    } finally {
+        setIsLoading(false);
+    }
+};
 
       // --- LOGIC: CONTRACT SIGNED (With File Upload) ---
 const openContractModal = (id) => { 
@@ -6626,17 +6710,12 @@ const openContractModal = (id) => {
 const handleSubmitContract = async () => {
     setIsLoading(true);
     let uploadedFile = null;
+    
     try {
-        // 1. อัปโหลดไฟล์ (ถ้ามี)
+        // 🚀 1. อัปโหลดไฟล์ (ถ้ามี) ขึ้น Supabase
         if (contractData.file) {
-            const base64 = await fileToBase64(contractData.file);
-            const result = await new Promise((resolve, reject) => {
-                google.script.run
-                    .withSuccessHandler(resolve)
-                    .withFailureHandler(reject)
-                    .uploadFileToDrive(base64, contractData.file.name);
-            });
-            if (result.error) throw new Error(result.error);
+            const result = await uploadFileToSupabase(contractData.file, 'documents');
+            if (!result || !result.url) throw new Error('อัปโหลดไฟล์สัญญาเช่าล้มเหลว');
             uploadedFile = result;
         }
 
@@ -6649,7 +6728,7 @@ const handleSubmitContract = async () => {
                 const updatedReq = { 
                     ...r, 
                     status: 'Contract Signed', 
-                    contractFile: uploadedFile || r.contractFile, // ⭐ เก็บข้อมูลไฟล์สัญญา
+                    contractFile: uploadedFile || r.contractFile, 
                     history: [...r.history, createLog('Contract Signed', userSignature, note)] 
                 };
                 saveRequestToSheet(updatedReq); 
@@ -6879,25 +6958,29 @@ const dashboardRequests = useMemo(() => {
 
           return { subJobData, matCodeData, projectSummary };
       }, [projects, requests, globalProjectFilter, assets]);
-// --- HELPER: แปลง Google Drive URL เป็น Image Link ---
-      const getDriveImageUrl = (src) => {
-          if (!src) return null;
-          // ถ้าเป็น Base64 ให้ใช้เลย
-          if (src.startsWith('data:') || src.startsWith('blob:')) return src;
-          
-          // ดึง ID จาก Google Drive URL
-          let id = null;
-          if (src.includes('/file/d/')) {
-              id = src.split('/file/d/')[1].split('/')[0];
-          } else if (src.includes('id=')) {
-              id = src.split('id=')[1].split('&')[0];
-          }
 
-          // ถ้าได้ ID ให้คืนค่าเป็นลิงก์ Thumbnail
-          if (id) return `https://drive.google.com/thumbnail?id=${id}&sz=w1000`;
-          
-          return src; // ถ้าไม่ใช่ Google Drive ให้คืนค่าเดิม
-      };
+const getDriveImageUrl = (src) => {
+    if (!src) return null;
+    
+    // ถ้าเป็น Base64 หรือ Blob ให้ใช้เลย
+    if (src.startsWith('data:') || src.startsWith('blob:')) return src;
+    
+    // ดึง ID จาก Google Drive URL
+    let id = null;
+    if (src.includes('/file/d/')) {
+        id = src.split('/file/d/')[1].split('/')[0];
+    } else if (src.includes('id=')) {
+        id = src.split('id=')[1].split('&')[0];
+    }
+
+    if (id) {
+        // ⭐ ใช้ lh3.googleusercontent.com/d/ ทะลุบล็อก Drive ได้ชัวร์ที่สุด
+        return `https://lh3.googleusercontent.com/d/${id}`;
+    }
+    
+    return src; 
+};
+
 
       // --- HELPER: แปลง Google Drive URL เป็น Download Link ---
       const getDownloadUrl = (url) => {
@@ -10020,10 +10103,18 @@ py-1 rounded text-xs font-bold ${
                       )}
                       
 
-                      <div> {/* 🟢 ลบ {newOrderMeta.type !== 'Borrow' && ( ออก */}
-    <label className="text-xs font-bold text-gray-500 mb-1 block">หมายเหตุ</label>
-    <input type="text" className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" placeholder="รายละเอียดเพิ่มเติม..." value={tempItem.note} onChange={e => setTempItem({...tempItem, note: e.target.value})} />
-</div> {/* 🟢 ลบ )} ปิดท้ายออก */}
+                      <div>
+    <label className="text-xs font-bold text-gray-500 mb-1 flex items-center gap-1">
+        หมายเหตุ <span className="text-red-500">*</span>
+    </label>
+    <input 
+        type="text" 
+        className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" 
+        placeholder="รายละเอียดเพิ่มเติม (จำเป็นต้องระบุ)..." 
+        value={tempItem.note} 
+        onChange={e => setTempItem({...tempItem, note: e.target.value})} 
+    />
+</div>
 
                       {/* Image Upload: แสดงเฉพาะ Local และ HO (Updated: Multi-Image UI) */}
                       {(newOrderMeta.type === 'Local' || newOrderMeta.type === 'HO') && (
@@ -10150,8 +10241,8 @@ py-1 rounded text-xs font-bold ${
                   </div>
               </div>
               
-              {/* Attachment for HO */}
-              {newOrderMeta.type === 'HO' && (
+              {/* Attachment for HO & Local */}
+              {(newOrderMeta.type === 'HO' || newOrderMeta.type === 'Local') && (
                   <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 mt-2 space-y-3">
                     <div>
                         <label className="block text-sm font-bold text-amber-800 mb-1 flex items-center gap-2"><AttachmentIcon className="w-4 h-4" /> 1. ไฟล์อีเมลอนุมัติ (Approval Email)</label>
@@ -10249,7 +10340,7 @@ py-1 rounded text-xs font-bold ${
                         src={getDriveImageUrl(img.url || img.base64)} 
                         alt="preview" 
                         className="w-full h-full object-cover hover:scale-110 transition-transform duration-300" 
-                        onError={(e) => e.target.style.display = 'none'}
+                        
                     />
                     {/* แสดงจำนวนรูปถ้ามีมากกว่า 1 */}
                     {getItemLatestImages(item).length > 1 && (
@@ -12793,7 +12884,7 @@ const relatedAssets = sourceAssets.filter(a =>
                             src={getDriveImageUrl(img.url || img.base64)} 
                             alt="preview" 
                             className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" 
-                            onError={(e) => e.target.style.display = 'none'}
+                            
                         />
                         
                         {/* Overlay เมื่อเอาเมาส์ชี้ */}
@@ -13123,15 +13214,21 @@ const relatedAssets = sourceAssets.filter(a =>
                 <ModalScrollButtons targetId="history-modal-scroll" />
                 {/* ⭐ ปุ่ม Load More แบบลอย (Floating Button) มุมซ้ายล่าง */}
           
-              <button 
-                  onClick={() => {
+<button 
+                  onClick={async () => {
                       if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
                       setIsLoading(true);
-                      google.script.run.withSuccessHandler((logs) => {
+                      try {
+                          // 🚀 เรียกใช้ฟังก์ชันยิงตรงเข้า Supabase
+                          const logs = await getRecentLogsDirectly(50000);
                           if (logs) setInvLogs(logs);
-                          setIsLoading(false);
                           showToast('โหลดประวัติครบถ้วนแล้ว');
-                      }).getRecentLogs(2000);
+                      } catch (error) {
+                          console.error(error);
+                          showToast('เกิดข้อผิดพลาดในการโหลดประวัติ', 'error');
+                      } finally {
+                          setIsLoading(false);
+                      }
                   }}
                   className="absolute bottom-6 left-6 z-[60] bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-600 hover:text-white px-4 py-3 rounded-full shadow-xl transition-all transform hover:scale-105 flex items-center gap-2 font-bold text-xs group no-print"
                   title="โหลดข้อมูลเก่าเพิ่ม"
@@ -13202,7 +13299,7 @@ const relatedAssets = sourceAssets.filter(a =>
                 if (img) {
                     return (
                         <>
-                            <img src={getDriveImageUrl(img.url || img.base64)} className="w-full h-full object-cover" onError={(e) => e.target.style.display = 'none'} />
+                            <img src={getDriveImageUrl(img.url || img.base64)} className="w-full h-full object-cover"  />
                             {allImages.length > 1 && <div className="absolute top-0 left-0 bg-black/60 text-white px-1 text-[9px] rounded-br">+{allImages.length - 1}</div>}
                             <div className="absolute bottom-0 right-0 bg-black/50 text-white p-0.5 rounded-tl-md"><ImageIcon className="w-3 h-3"/></div>
                         </>
@@ -14763,7 +14860,7 @@ const relatedAssets = sourceAssets.filter(a =>
                                             src={getDriveImageUrl(img.url || img.base64 || img.data)} 
                                             alt={item.name}
                                             className="max-w-[170mm] max-h-[150mm] object-contain"
-                                            onError={(e) => e.target.style.display = 'none'}
+                                            
                                         />
                                     </div>
                                     
@@ -15807,125 +15904,16 @@ const relatedAssets = sourceAssets.filter(a =>
                      <div className="p-6">
                          <div className="bg-white p-6 rounded-xl shadow-sm border space-y-6">
                   
-                             {/* Basic Info Header */}
-                             <div className="flex justify-between items-center border-b pb-2 mb-4">
-                                 <h4 className="font-bold text-gray-800 flex gap-2"><User size={18}/> ข้อมูลพื้นฐาน</h4>
-                                {/* ⭐ แก้ไข 1: ปุ่มบันทึก - ให้เฉพาะ SuperAdmin, Admin(2), Sub-Admin(3) เห็น */}
-                                {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) && (
-                                    <button 
-                                        onClick={async () => {
-                                            // ... (Logic การบันทึกเดิม คงไว้เหมือนเดิม) ...
-                                            // 1. ดึงข้อมูล User เดิม
-                                            const originalUser = allUsers.find(u => u.id === viewingUser.id);
-                                            if (!originalUser) return;
-
-                                            // Validation
-                                            if (!viewingUser.empId || !viewingUser.firstName || !viewingUser.lastName) {
-                                                showToast('กรุณากรอกข้อมูลให้ครบถ้วน (รหัส, ชื่อ, นามสกุล)', 'error');
-                                                return;
-                                            }
-
-                                            setIsLoading(true);
-                                            try {
-                                                const changeDetails = [];
-                                                let newSignatureUrl = viewingUser.signature;
-                                                let sigChanged = false;
-
-                                                // --- A. จัดการลายเซ็น ---
-                                                if (sigMode === 'Draw' && hasDrawn) {
-                                                    const canvas = sigCanvasRef.current;
-                                                    const dataUrl = canvas.toDataURL('image/png');
-                                                    const res = await new Promise((resolve, reject) => {
-                                                        google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-                                                            .uploadUserSignature(dataUrl, `SIG_${viewingUser.empId}_${Date.now()}.png`);
-                                                    });
-                                                    if (res.url) {
-                                                        newSignatureUrl = res.url;
-                                                        changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
-                                                        sigChanged = true;
-                                                    }
-                                                } else if (sigMode === 'Upload' && signatureFile) {
-                                                    const base64 = await fileToBase64(signatureFile);
-                                                    const res = await new Promise((resolve, reject) => {
-                                                        google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
-                                                            .uploadUserSignature(base64, `SIG_${viewingUser.empId}_${Date.now()}_${signatureFile.name}`);
-                                                    });
-                                                    if (res.url) {
-                                                        newSignatureUrl = res.url;
-                                                        changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
-                                                        sigChanged = true;
-                                                    }
-                                                }
-
-                                                // --- B. ตรวจสอบการเปลี่ยนแปลงข้อมูล ---
-                                                if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
-                                                if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
-                                                if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
-                                                
-                                                if (changeDetails.length === 0 && !sigChanged) {
-                                                    setIsLoading(false);
-                                                    showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
-                                                    return;
-                                                }
-
-                                                // เตรียมข้อมูลบันทึก
-                                                const userToSave = { ...viewingUser, signature: newSignatureUrl };
-                                                
-                                                // 1. บันทึกข้อมูลหลัก
-                                                const saveRes = await new Promise(resolve => {
-                                                    google.script.run.withSuccessHandler(resolve).saveUserData(userToSave);
-                                                });
-                                                
-                                                if (!saveRes.success) {
-                                                    setIsLoading(false);
-                                                    showToast(saveRes.message, 'error');
-                                                    return;
-                                                }
-
-                                                // 2. บันทึก Log
-                                                const logImages = sigChanged ? [{name: 'New Signature', type: 'image/png', url: newSignatureUrl}] : [];
-                                                await addInvLog('Edit Profile', `${viewingUser.empId} ${viewingUser.firstName}`, `Updated Profile`, `แก้ไขข้อมูล:\n- ${changeDetails.join('\n- ')}`, logImages, null, null);
-
-                                                // 3. Global Update (ถ้าชื่อ/รหัสเปลี่ยน)
-                                                const isIdentityChanged = (originalUser.empId !== viewingUser.empId) || (originalUser.firstName !== viewingUser.firstName) || (originalUser.lastName !== viewingUser.lastName);
-
-                                                if (isIdentityChanged) {
-                                                     const oldData = { empId: originalUser.empId, firstName: originalUser.firstName, lastName: originalUser.lastName };
-                                                     const newData = { empId: viewingUser.empId, firstName: viewingUser.firstName, lastName: viewingUser.lastName };
-                                                     const updateRes = await new Promise(r => google.script.run.withSuccessHandler(r).updateUserGlobalData(oldData, newData));
-                                                     showToast(updateRes.message);
-                                                } else {
-                                                     showToast('บันทึกข้อมูลเรียบร้อย');
-                                                }
-                                                
-                                                // 4. อัปเดตหน้าจอ
-                                                setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
-                                                setViewingUser(userToSave);
-                                                if (user.id === viewingUser.id) setUser(userToSave);
-                                                
-                                                if(sigCanvasRef.current) clearSignature();
-                                                setSignatureFile(null);
-                                                setHasDrawn(false);
-
-                                            } catch (err) {
-                                                console.error(err);
-                                                showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
-                                            } finally {
-                                                setIsLoading(false);
-                                            }
-                                        }}
-                                        className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
-                                    >
-                                        <Save size={14}/> บันทึกการแก้ไข
-                                    </button>
-                                )}
-                             </div>
+                            
+                            
+                               
+                             
 
       {/* Form Inputs */}
                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 {/* สร้างตัวแปรเช็คสิทธิ์แก้ไขข้อมูลพื้นฐาน (เฉพาะ Admin/Sub-Admin) */}
                                 {(() => {
-                                    const canEditBasicInfo = user.isSuperAdmin || hasPermission(2) || hasPermission(3);
+                                    const canEditBasicInfo = user?.isSuperAdmin || user?.role === 'Super Admin' || user?.role === 'Admin' || hasPermission(2) || hasPermission(3);
                                     
                                     return (
                                         <>
@@ -16032,9 +16020,110 @@ const relatedAssets = sourceAssets.filter(a =>
 
 {/* --- ส่วนลายเซ็น (Signature) --- */}
 <div className="col-span-1 md:col-span-2 border-t pt-4 mt-2">
-    <label className="text-sm font-bold text-gray-800 mb-2 flex items-center gap-2">
-        <PenTool size={16}/> ลายเซ็นดิจิทัล (Digital Signature)
-    </label>
+    
+    {/* ⭐ จัดให้อยู่บรรทัดเดียวกัน (Label ซ้าย, ปุ่มขวา) */}
+    <div className="flex justify-between items-center mb-2">
+        <label className="text-sm font-bold text-gray-800 flex items-center gap-2">
+            <PenTool size={16}/> ลายเซ็นดิจิทัล (Digital Signature)
+        </label>
+
+        {/* 🟢 ย้ายปุ่มบันทึกมาไว้ตรงนี้ */}
+        {(user?.id === viewingUser?.id || user?.isSuperAdmin || user?.role === 'Super Admin' || user?.role === 'Admin' || hasPermission(2) || hasPermission(3)) && (
+            <button 
+                onClick={async () => {
+                    const originalUser = allUsers.find(u => u.id === viewingUser.id);
+                    if (!originalUser) return;
+
+                    if (!viewingUser.empId || !viewingUser.firstName || !viewingUser.lastName) {
+                        showToast('กรุณากรอกข้อมูลให้ครบถ้วน (รหัส, ชื่อ, นามสกุล)', 'error');
+                        return;
+                    }
+
+                    setIsLoading(true);
+                    try {
+                        const changeDetails = [];
+                        let newSignatureUrl = viewingUser.signature;
+                        let sigChanged = false;
+
+                        if (sigMode === 'Draw' && hasDrawn) {
+                            const canvas = sigCanvasRef.current;
+                            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                            const file = new File([blob], `SIG_${viewingUser.empId}_${Date.now()}.png`, { type: 'image/png' });
+                            
+                            const res = await uploadFileToSupabase(file, 'signatures');
+                            if (res && res.url) {
+                                newSignatureUrl = res.url;
+                                changeDetails.push("อัปเดตลายเซ็น (วาดใหม่)");
+                                sigChanged = true;
+                            }
+                        } else if (sigMode === 'Upload' && signatureFile) {
+                            const res = await uploadFileToSupabase(signatureFile, 'signatures');
+                            if (res && res.url) {
+                                newSignatureUrl = res.url;
+                                changeDetails.push("อัปเดตลายเซ็น (อัปโหลดไฟล์)");
+                                sigChanged = true;
+                            }
+                        }
+
+                        if (originalUser.empId !== viewingUser.empId) changeDetails.push(`รหัส: ${originalUser.empId} -> ${viewingUser.empId}`);
+                        if (originalUser.firstName !== viewingUser.firstName) changeDetails.push(`ชื่อ: ${originalUser.firstName} -> ${viewingUser.firstName}`);
+                        if (originalUser.lastName !== viewingUser.lastName) changeDetails.push(`นามสกุล: ${originalUser.lastName} -> ${viewingUser.lastName}`);
+                        
+                        if (changeDetails.length === 0 && !sigChanged) {
+                            setIsLoading(false);
+                            showToast('ไม่มีข้อมูลเปลี่ยนแปลง');
+                            return;
+                        }
+
+                        const userToSave = { ...viewingUser, signature: newSignatureUrl };
+                        
+                        const saveRes = await new Promise(resolve => google.script.run.withSuccessHandler(resolve).saveUserData(userToSave));
+                        
+                        if (!saveRes.success) {
+                            setIsLoading(false);
+                            showToast(saveRes.message, 'error');
+                            return;
+                        }
+
+                        const logImages = sigChanged ? [{name: 'New Signature', type: 'image/png', url: newSignatureUrl}] : [];
+                        await addInvLog('Edit Profile', `${viewingUser.empId} ${viewingUser.firstName}`, `Updated Profile`, `แก้ไขข้อมูล:\n- ${changeDetails.join('\n- ')}`, logImages, null, null);
+
+                        const isIdentityChanged = (originalUser.empId !== viewingUser.empId) || (originalUser.firstName !== viewingUser.firstName) || (originalUser.lastName !== viewingUser.lastName);
+                        if (isIdentityChanged) {
+                             const oldData = { empId: originalUser.empId, firstName: originalUser.firstName, lastName: originalUser.lastName };
+const newData = { empId: viewingUser.empId, firstName: viewingUser.firstName, lastName: viewingUser.lastName };
+
+// 🚀 ยิงตรงเข้า Supabase โดยไม่ผ่าน Apps Script
+const updateMsg = await updateGlobalDataDirectly(oldData, newData);
+showToast(updateMsg);
+                        } else {
+                             showToast('บันทึกข้อมูลเรียบร้อย');
+                        }
+                        
+                        setAllUsers(prev => prev.map(u => u.id === viewingUser.id ? userToSave : u));
+                        setViewingUser(userToSave);
+                        if (user.id === viewingUser.id) {
+                            setUser(userToSave);
+                            localStorage.setItem('purchaseAppUser', JSON.stringify(userToSave));
+                        }
+                        
+                        if(sigCanvasRef.current) clearSignature();
+                        setSignatureFile(null);
+                        setHasDrawn(false);
+
+                    } catch (err) {
+                        console.error(err);
+                        showToast('เกิดข้อผิดพลาด: ' + err.message, 'error');
+                    } finally {
+                        setIsLoading(false);
+                    }
+                }}
+                className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 transition-all"
+            >
+                <Save size={14}/> บันทึกการแก้ไข
+            </button>
+        )}
+    </div>
     
     <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
         
@@ -16052,7 +16141,6 @@ const relatedAssets = sourceAssets.filter(a =>
         {/* ⭐ กรณีมีลายเซ็น: แสดงสถานะ/ปุ่มดูไฟล์ */}
         {viewingUser.signature && (
             <div className="mb-4 flex flex-col items-center animate-in fade-in">
-                {/* ปุ่มดูไฟล์ลายเซ็น - ให้ User, Admin(2), Sub-Admin(3) เห็น */}
                 {(user.id === viewingUser.id || user.isSuperAdmin || hasPermission(2) || hasPermission(3)) ? (
                     <div className="text-center">
                         <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-2 rounded-lg flex items-center gap-2 mb-3 shadow-sm mx-auto w-fit">
@@ -16069,7 +16157,6 @@ const relatedAssets = sourceAssets.filter(a =>
                         </button>
                     </div>
                 ) : (
-                    /* ถ้าเป็นคนอื่นดู (ที่ไม่ใช่ Admin/SubAdmin) ให้เห็นแค่สถานะ */
                     <>
                         <div className="bg-green-50 border border-green-200 text-green-700 px-6 py-3 rounded-xl flex items-center gap-3 shadow-sm">
                             <div className="bg-white p-1.5 rounded-full border border-green-100">
@@ -16580,22 +16667,28 @@ const relatedAssets = sourceAssets.filter(a =>
             <ModalScrollButtons targetId="user-modal-scroll" />
             {/* ⭐ ปุ่ม Load More แบบลอย (เฉพาะแท็บ History) */}
             {userDetailTab === 'history' && (
-                <button 
-                    onClick={() => {
-                        if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
-                        setIsLoading(true);
-                        google.script.run.withSuccessHandler((logs) => {
-                            if (logs) setInvLogs(logs);
-                            setIsLoading(false);
-                            showToast('โหลดประวัติทั้งหมดเรียบร้อย');
-                        }).getRecentLogs(2000);
-                    }}
-                    className="absolute bottom-6 left-6 z-[60] bg-white text-blue-600 border border-blue-200 hover:bg-blue-600 hover:text-white px-4 py-3 rounded-full shadow-xl transition-all transform hover:scale-105 flex items-center gap-2 font-bold text-xs group no-print"
-                    title="โหลดข้อมูลเก่าเพิ่ม"
-                >
-                    <RefreshCw size={16} className="group-hover:rotate-180 transition-transform duration-500"/> 
-                    <span>โหลดเพิ่ม (Load More)</span>
-                </button>
+<button 
+                  onClick={async () => {
+                      if(!confirm('การโหลดประวัติทั้งหมดอาจใช้เวลาสักครู่ ยืนยัน?')) return;
+                      setIsLoading(true);
+                      try {
+                          // 🚀 เรียกใช้ฟังก์ชันยิงตรงเข้า Supabase
+                          const logs = await getRecentLogsDirectly(50000);
+                          if (logs) setInvLogs(logs);
+                          showToast('โหลดประวัติครบถ้วนแล้ว');
+                      } catch (error) {
+                          console.error(error);
+                          showToast('เกิดข้อผิดพลาดในการโหลดประวัติ', 'error');
+                      } finally {
+                          setIsLoading(false);
+                      }
+                  }}
+                  className="absolute bottom-6 left-6 z-[60] bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-600 hover:text-white px-4 py-3 rounded-full shadow-xl transition-all transform hover:scale-105 flex items-center gap-2 font-bold text-xs group no-print"
+                  title="โหลดข้อมูลเก่าเพิ่ม"
+              >
+                  <RefreshCw size={16} className="group-hover:rotate-180 transition-transform duration-500"/> 
+                  <span>โหลดเพิ่ม (Load More)</span>
+              </button>
             )}
         </div>
     </div>
