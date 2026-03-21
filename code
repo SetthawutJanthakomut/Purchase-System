@@ -1,10 +1,9 @@
-
-
 // --- CONFIGURATION ---
-// ⭐ เปลี่ยนมาดึงจาก Script Properties แทนการใส่ URL ตรงๆ
 const SUPABASE_URL = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
-const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY');
-
+// 🟢 กุญแจชาวบ้าน (สำหรับยื่นให้ยามหน้าประตู API)
+const SUPABASE_ANON_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_ANON_KEY'); 
+// 🔴 กุญแจพระเจ้า (สำหรับเจาะทะลุ RLS บันทึกข้อมูล)
+const SUPABASE_KEY = PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); 
 
 function doGet(e) {
   // ตรวจสอบ Action จากอีเมล
@@ -13,7 +12,7 @@ function doGet(e) {
     
     // กรณี Bulk Reject: ต้องเปิดฟอร์มเพื่อถามเหตุผล (รวม)
     if (act === 'bulk_reject') {
-        return createBulkRejectForm(e); // สร้างฟอร์มใหม่สำหรับ Bulk
+        return createBulkRejectForm(e); 
     }
     
     // กรณี Approve All / Confirm Bulk Reject -> Process
@@ -38,13 +37,13 @@ function callSupabase(tableName, method, payload = null, params = '') {
   const options = {
     method: method,
     headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'apikey': SUPABASE_ANON_KEY,        // 🟢 ใช้ Anon Key ให้ยามหน้าด่านผ่าน
+      'Authorization': 'Bearer ' + SUPABASE_KEY, // 🔴 ใช้ Secret Key เจาะทะลุ RLS
       'Content-Type': 'application/json',
       'Prefer': 'return=minimal',
       'User-Agent': 'PurchaseHub-Script/1.0'
     },
-    muteHttpExceptions: true // ⭐ ต้องเปิดไว้เพื่อดึง Error Text จาก Server
+    muteHttpExceptions: true
   };
   
   if (payload) {
@@ -55,17 +54,15 @@ function callSupabase(tableName, method, payload = null, params = '') {
     const response = UrlFetchApp.fetch(url, options);
     const responseCode = response.getResponseCode();
     
-    // ⭐ ถ้าเจอ Error (เช่น 400, 404, 500) ให้ Throw ออกไปเลย
     if (responseCode >= 400) {
       const errorMsg = `Supabase Error (${responseCode}): ${response.getContentText()}`;
       console.error(errorMsg);
-      throw new Error(errorMsg); // 👈 ส่ง Error ไปให้ Frontend รับรู้
+      throw new Error(errorMsg);
     }
     
     return response.getContentText();
     
   } catch (e) {
-    // ดักจับ Error กรณีต่อเน็ตไม่ได้ (DNS Error, Timeout)
     console.error("❌ Connection Failed: " + e.toString());
     throw new Error("Connection Failed: " + e.toString());
   }
@@ -790,22 +787,20 @@ function getSheetData(sheetName, customQuery = '') {
 }
 
 function saveDataToSheet(sheetName, id, dataObj) {
-  // ใช้ UPSERT (ถ้ามี ID นี้แล้วให้ทับ ถ้าไม่มีให้สร้างใหม่)
   const record = {
-    id: id.toString(), // บังคับเป็น String
-    payload: dataObj   // เก็บข้อมูลก้อนใหญ่ใน jsonb
+    id: id.toString(),
+    payload: dataObj
   };
   
-  // การเรียกใช้แบบ POST พร้อม header Prefer: resolution=merge-duplicates คือการทำ Upsert ใน Supabase
   const table = sheetName.toLowerCase();
   const url = `${SUPABASE_URL}/rest/v1/${table}`;
   const options = {
     method: 'post',
     headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'apikey': SUPABASE_ANON_KEY,        // 🟢 ต้องเป็น ANON
+      'Authorization': 'Bearer ' + SUPABASE_KEY, // 🔴 ต้องเป็น SECRET (ในที่นี้คือตัวแปร SUPABASE_KEY)
       'Content-Type': 'application/json',
-      'Prefer': 'resolution=merge-duplicates' // ⭐ หัวใจสำคัญ: สั่งให้ทับถ้า ID ซ้ำ
+      'Prefer': 'resolution=merge-duplicates'
     },
     payload: JSON.stringify(record)
   };
@@ -1048,89 +1043,8 @@ function loadLoginData() {
   }
 }
 
-// ==========================================
-// ⭐ ฟังก์ชันโหลดข้อมูลหลัก (ดึงพร้อมกัน 6 ตารางแบบ Concurrent เร็วทะลุนรก!)
-// ==========================================
-function loadInitialData() {
-  // ไม่ใช้ Cache เพื่อให้ระบบ Real-time (Silent Refresh) ได้ข้อมูลล่าสุดเสมอ
-  const tables = ['settings', 'requests', 'inventory', 'assets', 'projects', 'users'];
-  
-  const fetchRequests = tables.map(table => {
-    let params = '?select=payload';
-    
-    // ⭐ ใช้ -%3E%3E แทน ->> เพื่อป้องกัน Error Invalid Argument
-    if (table === 'requests') params += '&payload-%3E%3Estatus=not.eq.Cancelled';
-    
-    return {
-      url: `${SUPABASE_URL}/rest/v1/${table}${params}`,
-      method: 'get',
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-      },
-      muteHttpExceptions: true
-    };
-  });
 
-  try {
-    // 🔥 ยิง Request ไปที่ Supabase พร้อมกัน 6 เส้นทีเดียว!
-    const responses = UrlFetchApp.fetchAll(fetchRequests);
-    
-    const parseData = (response) => {
-      if (response.getResponseCode() >= 400) return [];
-      try {
-        const data = JSON.parse(response.getContentText());
-        return Array.isArray(data) ? data.map(row => row.payload) : [];
-      } catch(e) { return []; }
-    };
 
-    const settingsData = parseData(responses[0]);
-    
-    const finalData = {
-      announcement: settingsData.find(s => s.id === 'ANNOUNCEMENT') || null,
-      requests: parseData(responses[1]),
-      inventory: parseData(responses[2]),
-      assets: parseData(responses[3]),
-      projects: parseData(responses[4]),
-      users: parseData(responses[5]),
-      logs: [] // ❌ ปิด Log ก้อนใหญ่ไว้เพื่อให้หน้าเว็บโหลดไว (ให้ดึงแยกทีหลัง)
-    };
-
-    return finalData;
-    
-  } catch (error) {
-    throw new Error("Failed to load initial data: " + error.toString());
-  }
-}
-
-// ค้นหาฟังก์ชัน getRecentLogs (ประมาณบรรทัด 2564) แล้วแทนที่ด้วยโค้ดนี้
-
-// ⭐ ปรับปรุง: เพิ่ม limit พื้นฐานเป็น 200 และลองเรียงตาม created_at ถ้าทำได้
-function getRecentLogs(limit = 200) {
-  // ลองเรียงตาม created_at (เวลาที่บันทึกเข้า Database จริง) จะแม่นยำกว่า id ที่เป็น string
-  // แต่ถ้าไม่มี created_at ให้ใช้ id.desc เหมือนเดิม
-  // หมายเหตุ: Supabase ปกติจะมี created_at ให้ถ้าตอนสร้างตารางติ๊กเลือกไว้
-  
-  // ใช้ id.desc ไปก่อนเพื่อความชัวร์ (เพราะ id คุณ gen จาก date string) 
-  // แต่เพิ่ม limit ให้เยอะขึ้นเพื่อโอกาสเจอข้อมูลล่าสุดจริง
-  const params = `?select=payload&order=created_at.desc&limit=${limit}`;
-  
-  const jsonResponse = callSupabase('logs', 'get', null, params);
-  
-  try {
-    const data = JSON.parse(jsonResponse);
-    if (Array.isArray(data)) {
-      return data.map(row => row.payload);
-    } else {
-      return [];
-    }
-  } catch (e) {
-    console.error("Error parsing logs: " + e.toString());
-    return [];
-  }
-}
 // 1. แก้ไขฟังก์ชันส่ง OTP ให้รับ empId มาเช็คด้วย
 function sendRegistrationOTP(email, username, empId) { // ⭐ รับพารามิเตอร์ empId เพิ่ม
   const users = getSheetData('Users');
@@ -1275,97 +1189,7 @@ function sendUsernameToEmail(email) {
 
 
 
-// ฟังก์ชันอัปเดตข้อมูลผู้ใช้ในทุก Sheet (Requests, Assets, Logs)
-// --- [Code.gs] ---
 
-// ⭐ ฟังก์ชันอัปเดตข้อมูลย้อนหลังทั่วทั้งระบบ (Global Update) - ฉบับ Supabase
-function updateUserGlobalData(oldData, newData) {
-  console.log(`[GlobalUpdate] Starting... from ${oldData.empId} to ${newData.empId}`);
-
-  // 1. เตรียมรูปแบบข้อมูลใหม่
-  const newFullSig = `${newData.empId} ${newData.firstName} ${newData.lastName}`;
-  const newShortName = `${newData.firstName} ${newData.lastName}`;
-
-  // 2. รูปแบบข้อมูลเก่าที่ต้องการค้นหา
-  const oldPatterns = [
-    `${oldData.empId} ${oldData.firstName} ${oldData.lastName}`,
-    `${oldData.empId} ${oldData.firstName} ${oldData.lastName} (Email)`,
-    `${oldData.firstName} ${oldData.lastName}`,
-    `${oldData.empId} ${oldData.firstName}`,
-    oldData.empId
-  ];
-
-  const isMatch = (value) => {
-    if (!value || typeof value !== 'string') return false;
-    const val = value.trim();
-    return oldPatterns.some(pattern => {
-      if (pattern === oldData.empId) return val.startsWith(pattern);
-      return val === pattern || val.replace(/\s+/g, ' ') === pattern;
-    });
-  };
-
-  let countReq = 0;
-  let countLog = 0;
-  let countAsset = 0;
-
-  // --- Helper ดึงข้อมูลพร้อม ID (เพราะ Logs ไม่มี ID ใน Payload) ---
-  const getTableData = (table) => {
-    const res = callSupabase(table, 'get', null, '?select=id,payload');
-    const data = JSON.parse(res);
-    return Array.isArray(data) ? data : [];
-  };
-
-  // --- 1. อัปเดตตาราง Requests ---
-  const requestRows = getTableData('Requests');
-  requestRows.forEach(row => {
-    let req = row.payload;
-    let changed = false;
-
-    // แก้ไขชื่อผู้ขอและผู้อนุมัติ
-    if (isMatch(req.requester)) { req.requester = newShortName; changed = true; }
-    if (isMatch(req.approverL1)) { req.approverL1 = newFullSig; changed = true; }
-    if (isMatch(req.approverL2)) { req.approverL2 = newFullSig; changed = true; }
-
-    // แก้ไขใน History
-    if (req.history && Array.isArray(req.history)) {
-      req.history.forEach(h => {
-        if (isMatch(h.user)) { h.user = newFullSig; changed = true; }
-      });
-    }
-
-    if (changed) {
-      saveDataToSheet('Requests', row.id, req);
-      countReq++;
-    }
-  });
-
-  // --- 2. อัปเดตตาราง Logs (ประวัติรวม) ---
-  const logRows = getTableData('Logs');
-  logRows.forEach(row => {
-    let log = row.payload;
-    if (isMatch(log.by)) {
-      log.by = newFullSig;
-      saveDataToSheet('Logs', row.id, log);
-      countLog++;
-    }
-  });
-
-  // --- 3. อัปเดตตาราง Assets (ผู้ถือครอง) ---
-  const assetRows = getTableData('Assets');
-  assetRows.forEach(row => {
-    let asset = row.payload;
-    if (isMatch(asset.holder)) {
-      asset.holder = newShortName;
-      saveDataToSheet('Assets', row.id, asset);
-      countAsset++;
-    }
-  });
-
-  return {
-    success: true,
-    message: `อัปเดตข้อมูลย้อนหลังสำเร็จ: เอกสาร(${countReq}), ประวัติ(${countLog}), ทรัพย์สิน(${countAsset})`
-  };
-}
 
 // [เพิ่ม/แก้ไข ฟังก์ชันใน Code.gs]
 
@@ -3253,31 +3077,6 @@ function getStockInfoHtml(itemName, project, currentReqId, allRequests, allInven
   return html;
 }
 
-
-function getAllLogsForItem(assetId) {
-  // ⭐ แก้ไข: เปลี่ยน ->> เป็น -%3E%3E (URL Encoded)
-  const params = `?select=payload&payload-%3E%3EassetId=eq.${encodeURIComponent(assetId)}&order=created_at.desc`;
-  
-  const jsonResponse = callSupabase('logs', 'get', null, params);
-  
-  try {
-    const data = JSON.parse(jsonResponse);
-    if (Array.isArray(data)) {
-      return data.map(row => row.payload);
-    } else {
-      return [];
-    }
-  } catch (e) {
-    console.error("Error getting all logs: " + e.toString());
-    return [];
-  }
-}
-
-
-
-
-
-
 // ==========================================
 // ฟังก์ชันส่งการแจ้งเตือนเข้ากลุ่ม LINE
 // ==========================================
@@ -3359,3 +3158,8 @@ function sendLineGroupNotification(req) {
     console.error("LINE Notify Error: " + error.toString());
   }
 }
+
+
+
+
+
