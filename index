@@ -3,11 +3,53 @@ import * as lucideReact from 'lucide-react';
 import './index.css';
 import { createClient } from '@supabase/supabase-js';
 
-// ⭐ ใส่ URL และ Key ของคุณ (ใช้ Anon/Public Key นะครับ ไม่ใช่ Service Role Key) ของ Test
-const SUPABASE_URL = 'https://zaugfyldiqcpfhfaxapc.supabase.co'; 
-const SUPABASE_ANON_KEY = '';
-
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL; 
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+console.log("Check Supabase:", SUPABASE_URL);
+
+
+// ==========================================
+// 🧠 ระบบ AI: Text Embedding (แปลงคำเป็น Vector)
+// ==========================================
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+const getTextEmbedding = async (text) => {
+    if (!text) return null;
+    
+    try {
+        // ⭐ 1. เปลี่ยน URL อ้างอิงไปที่โมเดลรุ่นใหม่ (gemini-embedding-001)
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${GEMINI_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    // ⭐ 2. ระบุชื่อโมเดลตัวใหม่
+                    model: 'models/gemini-embedding-001',
+                    content: {
+                        parts: [{ text: text }]
+                    },
+                    // ⭐ 3. สำคัญมาก: บังคับให้ AI บีบอัดตัวเลขเหลือ 768 ตัว เพื่อให้ยัดลงตาราง Supabase ได้พอดีเป๊ะ
+                    outputDimensionality: 768 
+                })
+            }
+        );
+
+        if (!response.ok) {
+            throw new Error(`Google API Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        return data.embedding.values; 
+
+    } catch (error) {
+        console.error("❌ AI Embedding Error:", error);
+        return null;
+    }
+};
 
 // =================================================================
 // 1. จำลองสภาพแวดล้อม google.script.run (ทำให้รันทดสอบบนคอมได้ไม่ Error)
@@ -340,6 +382,7 @@ const handleTabChange = (tabId) => {
       const [inventory, setInventory] = useState([]);
       const [assets, setAssets] = useState([]);
       const [invLogs, setInvLogs] = useState([]);
+      const [isBackgroundLoading, setIsBackgroundLoading] = useState(false);
       const [isLoading, setIsLoading] = useState(false);
       const [uploadFiles, setUploadFiles] = useState({ email: null, quotation: null });
       // --- STATE: Image Preview Modal ---
@@ -364,6 +407,9 @@ const [auditSearch, setAuditSearch] = useState('');
 const [showSuperRollbackModal, setShowSuperRollbackModal] = useState(false);
 const [rollbackTarget, setRollbackTarget] = useState('');
 const [rollbackReason, setRollbackReason] = useState('');
+
+const [allBackgroundLogs, setAllBackgroundLogs] = useState([]);
+
 
   
 
@@ -1856,190 +1902,97 @@ const data = rows.slice(1).filter(row => row.length > 1 && row[1]?.trim() !== ''
 };
 
 
-
-
-// --- LOGIC: CONFIRM IMPORT INVENTORY (BATCH + CHUNKING VERSION) ---
 const confirmImportInventory = async () => {
     if (importInvData.length === 0) return;
-
-    // 1. Validation Loop (ตรวจสอบข้อมูลเหมือนเดิม)
     for (let i = 0; i < importInvData.length; i++) {
         const item = importInvData[i];
         if (!item.name) { showToast(`รายการที่ ${i+1}: ขาดชื่อสินค้า`, 'error'); return; }
         if (!item.project) { showToast(`รายการที่ ${i+1}: ขาดชื่อโครงการ`, 'error'); return; }
-        const projectExists = projects.some(p => p.name === item.project);
-        if (!projectExists) { showToast(`รายการที่ ${i+1}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error'); return; }
+        if (!projects.some(p => p.name === item.project)) { showToast(`รายการที่ ${i+1}: ไม่พบโครงการ "${item.project}" ในระบบ`, 'error'); return; }
     }
 
-    setIsLoading(true); // เริ่มหมุน Loading
+    setIsLoading(true); 
+    showToast("ระบบกำลังสร้างข้อมูล AI และนำเข้า กรุณารอสักครู่...", "info"); 
     const date = new Date().toLocaleString('th-TH');
     
-    // เตรียมข้อมูลสำหรับคำนวณและบันทึก
     let currentInvList = [...inventory];
     let runNoCount = inventory.length;
-    
-    // ⭐ ตะกร้าเก็บข้อมูลที่จะส่งไปบันทึก (เตรียมไว้ให้ครบก่อนค่อยซอยส่ง)
     let batchItems = [];
     let batchLogs = [];
 
-    // 2. Loop Processing (คำนวณ Logic การ Merge/New Item)
     for (const item of importInvData) {
         const currentType = item.stockType || 'System';
+        const aiVector = await getTextEmbedding(item.name); // 🧠 1. ขอตัวเลข AI
 
-        // เช็คว่ามีของเดิมหรือไม่
-        const existingIndex = currentInvList.findIndex(inv => 
-            inv.name === item.name && 
-            inv.project === item.project &&
-            (inv.stockType === currentType || (!inv.stockType && currentType === 'System'))
-        );
-const logNote = (item.note || '') + (item.supplier ? ` | ร้านค้า: ${item.supplier}` : '');
-
-if (existingIndex !== -1) {
-            // ✅ MERGE (อัปเดตของเดิม)
+        const existingIndex = currentInvList.findIndex(inv => inv.name === item.name && inv.project === item.project && (inv.stockType === currentType || (!inv.stockType && currentType === 'System')));
+        if (existingIndex !== -1) {
             const existingItem = currentInvList[existingIndex];
-
-            // ⭐ [เพิ่มใหม่เหมือนหน้าหน้ารับของ] ตรวจสอบรหัสวัสดุ (Mat Code) ขัดแย้ง
             const existingBaseId = getDisplayId(existingItem.id);
             if (item.id && item.id.trim() !== '' && item.id !== existingBaseId) {
-                showToast(`รายการที่ ${importInvData.indexOf(item) + 1} ขัดแย้งกัน: สินค้า "${item.name}" มีอยู่ในระบบแล้ว แต่รหัสไม่ตรงกัน (รหัสที่ถูกต้องคือ: ${existingBaseId}) กรุณาแก้ไขรหัสในไฟล์ CSV หรือปล่อยช่องรหัสเว้นว่างไว้`, 'error');
-                setIsLoading(false);
-                return; // หยุดทำงานทั้งหมดทันที
+                showToast(`รายการที่ ${importInvData.indexOf(item) + 1} ขัดแย้งกัน: รหัสไม่ตรง (รหัสที่ถูกคือ: ${existingBaseId})`, 'error');
+                setIsLoading(false); return; 
             }
 
-            // ⭐ ย้ายการสร้างข้อความ Note มารวมไว้ตรงนี้ (ก่อนเอาไปใช้) เพื่อแก้ Error "Cannot access before init"
-            const supplierTxt = item.supplier ? ` | ร้านค้า: ${item.supplier}` : '';
-            const baseNote = item.note || 'CSV Import'; 
-            const finalLogNote = `${baseNote}${supplierTxt}`; 
-
+            const finalLogNote = `${item.note || 'CSV Import'}${item.supplier ? ` | ร้านค้า: ${item.supplier}` : ''}`; 
             const updatedItem = {
-                ...existingItem,
-                id: existingItem.id, 
-                qty: existingItem.qty + item.qty,
-                price: item.price > 0 ? item.price : existingItem.price,
-                note: finalLogNote, // ⭐ ใช้ finalLogNote ที่ประกาศแล้วด้านบน
-                lastUpdated: date,
-                supplier: item.supplier || existingItem.supplier
+                ...existingItem, qty: existingItem.qty + item.qty, price: item.price > 0 ? item.price : existingItem.price,
+                note: finalLogNote, lastUpdated: date, supplier: item.supplier || existingItem.supplier,
+                embedding: aiVector // 🧠 2. ยัด AI ไปกับของเก่า 
             };
             
-            // อัปเดตใน List หน้าบ้าน (เพื่อรอแสดงผลเมื่อจบงาน)
             currentInvList[existingIndex] = updatedItem;
-            
-            // ใส่ตะกร้าสินค้าที่จะบันทึก
             const { images, ...itemForServer } = updatedItem;
             batchItems.push(itemForServer);
             
-            // สร้าง Log ใส่ตะกร้า
-            batchLogs.push({
-                date: date,
-                action: 'Import Merge',
-                item: updatedItem.name,
-                change: `+${item.qty}`,
-                note: finalLogNote, // ⭐ ใช้ finalLogNote ที่ประกาศแล้วด้านบน
-                images: [],
-                requestId: null,
-                assetId: updatedItem.id,
-                by: `${user.empId} ${user.firstName}`,
-                supplier: item.supplier
-            });
-            
+            batchLogs.push({ date: date, action: 'Import Merge', item: updatedItem.name, change: `+${item.qty}`, note: finalLogNote, images: [], requestId: null, assetId: updatedItem.id, by: `${user.empId} ${user.firstName}`, supplier: item.supplier });
         } else {
-         
-            // ✅ NEW (สร้างใหม่)
             let baseId = item.id;
             if (!baseId) {
-                runNoCount++;
-                baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
-                while (currentInvList.some(inv => getDisplayId(inv.id) === baseId)) {
-                    runNoCount++;
-                    baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
-                }
+                runNoCount++; baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
+                while (currentInvList.some(inv => getDisplayId(inv.id) === baseId)) { runNoCount++; baseId = `INV-${String(runNoCount).padStart(3, '0')}`; }
             }
-
             let finalId = `${baseId}|${item.project}|${currentType}`;
             let counter = 1;
-            while (currentInvList.some(i => i.id === finalId)) {
-                finalId = `${baseId}|${item.project}|${currentType}|${counter}`;
-                counter++;
-            }
+            while (currentInvList.some(i => i.id === finalId)) { finalId = `${baseId}|${item.project}|${currentType}|${counter}`; counter++; }
 
             const newItem = {
-                id: finalId,
-                name: item.name,
-                stockType: currentType,
-                qty: item.qty,
-                unit: item.unit || 'ชิ้น',
-                minStock: item.minStock || 0,
-                price: item.price || 0,
-                lastUpdated: date,
-                image: null,
-                images: [],
-                note: item.note,
-                supplier: item.supplier || '',
-                project: item.project
+                id: finalId, name: item.name, stockType: currentType, qty: item.qty, unit: item.unit || 'ชิ้น', minStock: item.minStock || 0, price: item.price || 0, lastUpdated: date, image: null, images: [], note: item.note, supplier: item.supplier || '', project: item.project,
+                embedding: aiVector // 🧠 2. ยัด AI ไปกับของใหม่
             };
             
             currentInvList.push(newItem);
-            
             const { images, ...itemForServer } = newItem;
             batchItems.push(itemForServer);
 
-            const typeLabel = currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
-            const supplierTxt = item.supplier ? ` | ร้านค้า: ${item.supplier}` : '';
-            const logNote = `โครงการ: ${item.project} [${typeLabel}] | CSV New Item${supplierTxt}`;
-            batchLogs.push({
-                date: date, 
-                action: 'Import New',
-                item: newItem.name,
-                change: `Start: ${newItem.qty}`,
-                note: logNote,
-                images: [],
-                requestId: null,
-                assetId: finalId,
-                by: `${user.empId} ${user.firstName}`,
-                supplier: item.supplier
-            });
+            const logNote = `โครงการ: ${item.project} [${currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]'}] | CSV New Item${item.supplier ? ` | ร้านค้า: ${item.supplier}` : ''}`;
+            batchLogs.push({ date: date, action: 'Import New', item: newItem.name, change: `Start: ${newItem.qty}`, note: logNote, images: [], requestId: null, assetId: finalId, by: `${user.empId} ${user.firstName}`, supplier: item.supplier });
         }
     }
 
-    // ⭐⭐ 3. เริ่มส่งข้อมูลแบบแบ่งส่วน (Chunking Logic) ⭐⭐
-    const CHUNK_SIZE = 100; // กำหนดขนาดก้อนข้อมูล (แนะนำ 50-100 รายการ)
+    const CHUNK_SIZE = 100; 
     const totalChunks = Math.ceil(batchItems.length / CHUNK_SIZE);
 
     try {
         for (let i = 0; i < batchItems.length; i += CHUNK_SIZE) {
-            // ตัดแบ่งข้อมูล Items และ Logs ให้ตรงกัน
             const chunkItems = batchItems.slice(i, i + CHUNK_SIZE);
             const chunkLogs = batchLogs.slice(i, i + CHUNK_SIZE);
-            
             const currentChunk = Math.floor(i / CHUNK_SIZE) + 1;
-            
-            // แสดง Toast บอกความคืบหน้า
             showToast(`กำลังบันทึกชุดที่ ${currentChunk}/${totalChunks} (${chunkItems.length} รายการ)...`, 'info');
 
-            // ส่งก้อนนี้ไปบันทึก (รอจนเสร็จค่อยส่งก้อนต่อไป)
             await new Promise((resolve, reject) => {
-                google.script.run
-                    .withSuccessHandler(resolve)
-                    .withFailureHandler((err) => reject(new Error(`Batch ${currentChunk} failed: ${err.message}`)))
-                    .batchImportInventory(chunkItems, chunkLogs); // ใช้ฟังก์ชันเดิมได้เลย
+                google.script.run.withSuccessHandler(resolve).withFailureHandler((err) => reject(new Error(`Batch ${currentChunk} failed: ${err.message}`))).batchImportInventory(chunkItems, chunkLogs); 
             });
+            // ❌ ไม่ต้องมี for (const item of chunkItems) await supabase... แล้ว! Backend ดึงไปจัดการให้เอง
         }
 
-        // 4. เมื่อวนลูปครบทุกก้อนแล้วค่อยอัปเดตหน้าจอทีเดียว
         setInventory(currentInvList); 
-        
-        setIsLoading(false);
-        setShowImportInvModal(false);
-        setImportInvData([]);
-        setImportInvFileName('');
-        showToast(`นำเข้าข้อมูล ${batchItems.length} รายการ เสร็จสิ้น!`);
-        
+        setIsLoading(false); setShowImportInvModal(false); setImportInvData([]); setImportInvFileName('');
+        showToast(`นำเข้าและสอน AI สำเร็จ ${batchItems.length} รายการ!`);
     } catch (error) {
-        setIsLoading(false);
-        console.error(error);
-        showToast("Error saving batch: " + error.message, 'error');
+        setIsLoading(false); console.error(error); showToast("Error saving batch: " + error.message, 'error');
     }
 };
+
 
 
       // --- LOGIC: DELETE & RESTORE ---
@@ -2290,6 +2243,19 @@ const handleUpdateInventory = async () => {
         });
 
         const { images, newImages, originalId, originalName, originalProject, ...itemForServer } = updatedItem;
+        
+        // ⭐ [NEW] ถ้ามีการแก้ "ชื่อสินค้า" ให้สอน AI ใหม่ด้วย
+        if (oldItem && oldItem.name !== updatedItem.name) {
+             try {
+                 const newAiVector = await getTextEmbedding(updatedItem.name);
+                 if (newAiVector) {
+                     itemForServer.embedding = newAiVector; // แอบยัดสมอง AI ก้อนใหม่เข้าไปก่อนเซฟ
+                 }
+             } catch (e) {
+                 console.log("AI Embedding update failed, skipping...", e);
+             }
+        }
+
         await saveInventoryToSheet(itemForServer);
 
         const logAttachments = newUploadedFiles;
@@ -2562,9 +2528,27 @@ if (editingId) {
             }
 
             // ถ้าสำเร็จ
-            const newRequest = result.request; 
-            setRequests(prev => [newRequest, ...prev]);
-            if (selectedRequest) setSelectedRequest(newRequest);
+            // ถ้าสำเร็จ
+    const newRequest = result.request; 
+    
+    // ⭐ ป้องกันภาพลวงตา (UI Ghosting): เช็คก่อนว่ามี ID นี้ใน State แล้วหรือยัง?
+    setRequests(prev => {
+        const isExist = prev.some(r => r.id === newRequest.id);
+        if (isExist) {
+            // ถ้ามีแล้ว (อาจจะมาจากการ Sync Real-time) ให้เอาไปทับของเดิม
+            return prev.map(r => r.id === newRequest.id ? newRequest : r);
+        } else {
+            // ถ้ายังไม่มี ค่อยเอาไปแทรกไว้หัวแถว
+            return [newRequest, ...prev];
+        }
+    });
+
+    // อัปเดตรายการที่กำลังเลือกอยู่ (ถ้ามี)
+    if (selectedRequest && selectedRequest.id === newRequest.id) {
+        setSelectedRequest(newRequest);
+    } else if (!selectedRequest) {
+        setSelectedRequest(newRequest); // ถ้าเพิ่งสร้างใบแรก ให้เลือกใบนี้เลย
+    }
         }
 
         // =================================================================
@@ -2633,9 +2617,9 @@ const handleRefresh = async () => {
 
 // --- จุดโหลดเริ่มต้นตอนเปิดเว็บ (useEffect) ---
 useEffect(() => {
+    // ฟังก์ชันที่ 1: โหลดข้อมูลหลักที่จำเป็นต้องใช้ทันที
     const fetchStartupData = async () => {
         try {
-            // 1. ดึงข้อมูลก้อนแรกแบบยิงตรง 🚀
             const data = await loadInitialDataDirectly();
             if(data.requests) setRequests(data.requests);
             if(data.inventory) setInventory(data.inventory);
@@ -2650,17 +2634,62 @@ useEffect(() => {
                 setAnnouncement(null);
                 setAnnounceForm({ title: '', detail: '' });
             }
-
-            // 2. แอบไปดึงประวัติ (Logs) ตามมาเงียบๆ แบบยิงตรง 🚀
-            const logs = await getRecentLogsDirectly(200);
-            if (logs && logs.length > 0) setInvLogs(logs);
-
         } catch (error) {
             console.error("Pre-fetch Error:", error);
+            setIsError(true);
+            setErrorMessage(error.message);
         }
     };
 
+    // ฟังก์ชันที่ 2: แอบโหลดประวัติ 50,000 แถวเบื้องหลัง
+    const fetchLogsInBackground = async () => {
+        setIsBackgroundLoading(true);
+        let allData = [];
+        const pageSize = 1000; // ทยอยดึงทีละ 1,000 แถว
+        const maxLimit = 50000; 
+        let start = 0;
+        let keepFetching = true;
+
+        try {
+            console.log("🚀 เริ่มแอบโหลด Logs เบื้องหลังทันทีที่เข้าเว็บ...");
+            
+            while (keepFetching && allData.length < maxLimit) {
+                const end = Math.min(start + pageSize - 1, maxLimit - 1);
+
+                const { data, error } = await supabase
+                    .from('logs') 
+                    .select('payload')
+                    .order('created_at', { ascending: false })
+                    .range(start, end);
+
+                if (error) throw error;
+
+                if (data && data.length > 0) {
+                    const parsedData = data.map(row => row.payload);
+                    allData = [...allData, ...parsedData];
+                    start += pageSize;
+                    
+                    // อัปเดตตารางให้งอกขึ้นเรื่อยๆ
+                    setInvLogs(allData); 
+                } else {
+                    keepFetching = false;
+                }
+
+                // พัก 500ms ให้หน้าเว็บไม่ค้าง
+                await new Promise(resolve => setTimeout(resolve, 500)); 
+            }
+            console.log(`✅ แอบโหลด Logs สำเร็จ! ได้มาทั้งหมด ${allData.length} รายการ`);
+        } catch (error) {
+            console.error("เกิดข้อผิดพลาดตอนแอบโหลด Logs:", error);
+        } finally {
+            setIsBackgroundLoading(false);
+        }
+    };
+
+    // 🚀 สั่งให้ทั้ง 2 ฟังก์ชันเริ่มทำงานพร้อมกันทันทีที่เปิดเว็บ!
     fetchStartupData();
+    fetchLogsInBackground();
+
 }, []);
 
 
@@ -2808,6 +2837,56 @@ useEffect(() => {
       const [filterReqType, setFilterReqType] = useState('All');
       const [invSearch, setInvSearch] = useState('');
       const [assetSearch, setAssetSearch] = useState('');
+      // ==========================================
+    // 🧠 AI Search State สำหรับหน้าคลังและทรัพย์สิน
+    // ==========================================
+    const [useAiSearchInv, setUseAiSearchInv] = useState(false); 
+    const [aiInvScores, setAiInvScores] = useState({});
+
+    const [useAiSearchAst, setUseAiSearchAst] = useState(false); 
+    const [aiAstScores, setAiAstScores] = useState({});
+
+    // 🤖 Effect: ค้นหาด้วย AI สำหรับหน้าคลัง (Inventory)
+    useEffect(() => {
+        let timeoutId;
+        if (useAiSearchInv && invSearch && invSearch.trim().length > 1) {
+            timeoutId = setTimeout(async () => {
+                try {
+                    const queryVector = await getTextEmbedding(invSearch);
+                    if (!queryVector) return;
+                    const { data } = await supabase.rpc('search_inventory', { query_embedding: queryVector, match_threshold: 0.5, match_count: 30 });
+                    const scores = {};
+                    if (data) data.forEach(m => scores[m.id] = m.similarity);
+                    setAiInvScores(scores);
+                } catch (e) { console.error("AI Search Inv Error:", e); }
+            }, 500); // หน่วง 0.5 วิ
+        } else {
+            setAiInvScores({});
+        }
+        return () => clearTimeout(timeoutId);
+    }, [invSearch, useAiSearchInv]);
+
+    // 🤖 Effect: ค้นหาด้วย AI สำหรับหน้าทรัพย์สิน (Assets)
+    useEffect(() => {
+        let timeoutId;
+        if (useAiSearchAst && assetSearch && assetSearch.trim().length > 1) {
+            timeoutId = setTimeout(async () => {
+                try {
+                    const queryVector = await getTextEmbedding(assetSearch);
+                    if (!queryVector) return;
+                    const { data } = await supabase.rpc('search_assets', { query_embedding: queryVector, match_threshold: 0.5, match_count: 30 });
+                    const scores = {};
+                    if (data) data.forEach(m => scores[m.id] = m.similarity);
+                    setAiAstScores(scores);
+                } catch (e) { console.error("AI Search Ast Error:", e); }
+            }, 500);
+        } else {
+            setAiAstScores({});
+        }
+        return () => clearTimeout(timeoutId);
+    }, [assetSearch, useAiSearchAst]);
+
+
       const [historySearch, setHistorySearch] = useState('');
       const [historyFilterItem, setHistoryFilterItem] = useState(null);
       const [invSort, setInvSort] = useState({ key: 'id', direction: 'asc' });
@@ -3145,6 +3224,38 @@ const [tempItem, setTempItem] = useState({ name: '', qty: 1, unitPrice: 0, unit:
       const [stockSuggestion, setStockSuggestion] = useState(null);
       const [foundSuggestions, setFoundSuggestions] = useState([]);
       const [selectionSearch, setSelectionSearch] = useState('');
+      // 🧠 1. State เก็บกระดาษคำตอบจาก AI
+    const [aiSelectionScores, setAiSelectionScores] = useState({});
+
+    // 🧠 2. Effect ให้ AI แอบค้นหาเบื้องหลังเมื่อมีการพิมพ์หาของ
+    useEffect(() => {
+        let timeoutId;
+        // ทำงานเมื่อพิมพ์ค้นหาเกิน 1 ตัวอักษร
+        if (selectionSearch && selectionSearch.trim().length > 1) {
+            timeoutId = setTimeout(async () => {
+                try {
+                    const queryVector = await getTextEmbedding(selectionSearch);
+                    if (!queryVector) return;
+
+                    // ค้นหาทั้งในคลังและทรัพย์สิน
+                    const { data: invMatches } = await supabase.rpc('search_inventory', { query_embedding: queryVector, match_threshold: 0.5, match_count: 15 });
+                    const { data: astMatches } = await supabase.rpc('search_assets', { query_embedding: queryVector, match_threshold: 0.5, match_count: 15 });
+
+                    // รวบรวมคะแนนความแม่นยำใส่ Object เดียว
+                    const scores = {};
+                    if (invMatches) invMatches.forEach(m => scores[m.id] = m.similarity);
+                    if (astMatches) astMatches.forEach(m => scores[m.id] = m.similarity);
+                    
+                    setAiSelectionScores(scores); // ส่งกระดาษคำตอบให้หน้าระบบ
+                } catch (e) {
+                    console.error("AI Search Error:", e);
+                }
+            }, 500); // หน่วงเวลา 0.5 วิ ให้ผู้ใช้พิมพ์เสร็จก่อน (ประหยัด API)
+        } else {
+            setAiSelectionScores({}); // ล้างกระดาษคำตอบเมื่อลบคำค้นหา
+        }
+        return () => clearTimeout(timeoutId);
+    }, [selectionSearch]);
 
       const [prData, setPrData] = useState({ requestId: null, file: null, prNumber: '' });
       const [poData, setPoData] = useState({ requestId: null, file: null, poNumber: '' });
@@ -3569,129 +3680,69 @@ const handleFileImport = (e) => {
     reader.readAsText(file);
 };
 
-// --- LOGIC: CONFIRM IMPORT ASSETS (BATCH + CHUNKING VERSION) ---
 const confirmImportAssets = async () => {
     if (importData.length === 0) return;
-
-    // 1. Validation Loop (ตรวจสอบข้อมูลเหมือนเดิม)
     for (let i = 0; i < importData.length; i++) {
         const item = importData[i];
-        const line = i + 1;
-
-        if (!item.name) { showToast(`รายการที่ ${line}: ขาดชื่อรายการ`, 'error'); return; }
-        if (!item.serial) { showToast(`รายการที่ ${line}: ขาด Serial No.`, 'error'); return; }
-        // ... (Validation อื่นๆ คงเดิม) ...
-        
-        // เช็ค ID ซ้ำในระบบ
-        if (item.id && assets.some(a => a.id === item.id)) {
-            showToast(`รายการที่ ${line}: รหัสทรัพย์สิน "${item.id}" มีอยู่ในระบบแล้ว`, 'error'); return;
-        }
+        if (!item.name) { showToast(`รายการที่ ${i+1}: ขาดชื่อรายการ`, 'error'); return; }
+        if (!item.serial) { showToast(`รายการที่ ${i+1}: ขาด Serial No.`, 'error'); return; }
+        if (item.id && assets.some(a => a.id === item.id)) { showToast(`รายการที่ ${i+1}: รหัสทรัพย์สิน "${item.id}" ซ้ำในระบบ`, 'error'); return; }
     }
 
-    // เริ่มขั้นตอนการเตรียมข้อมูล
-    setIsLoading(true); // หมุน Loading
+    setIsLoading(true); 
+    showToast("ระบบกำลังสร้างข้อมูล AI และเตรียมนำเข้าทรัพย์สิน...", "info");
     const date = new Date().toLocaleString('th-TH');
     
-    // เตรียมตัวแปรสำหรับ Batch
     const newAssets = [];
     const batchLogs = [];
     let currentRunNo = assets.length; 
     
-    // 2. Process Data (เตรียมข้อมูลใส่ Array ใหญ่ไว้ก่อน)
     for (const item of importData) {
+        const aiVector = await getTextEmbedding(item.name); // 🧠 1. ขอตัวเลข AI
+
         let finalId = item.id;
-        
-        // Auto Gen ID Logic
         if (!finalId) {
             currentRunNo++;
             const prefix = item.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
-            const runNo = String(currentRunNo).padStart(3, '0');
+            let runNo = String(currentRunNo).padStart(3, '0');
             finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
-            
             while (assets.some(a => a.id === finalId) || newAssets.some(a => a.id === finalId)) {
-                currentRunNo++;
-                const nextRunNo = String(currentRunNo).padStart(3, '0');
-                finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${nextRunNo}`;
+                currentRunNo++; runNo = String(currentRunNo).padStart(3, '0');
+                finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
             }
         }
 
         const newAsset = {
-            id: finalId,
-            name: item.name,
-            serial: item.serial,
-            ownerType: item.ownerType,
-            status: item.status,
-            price: item.ownerType === 'Company' ? item.price : 0,
-            rentalPrice: item.ownerType === 'Rent' ? item.price : 0,
-            rentalUnit: item.rentalUnit, 
-            rentalStart: item.rentalStart || null,
-            rentalEnd: item.rentalEnd || null,
-            condition: 'Good',
-            holder: item.holder,
-            currentRequestId: null,
-            lastUpdated: date,
-            image: null,
-            note: item.note,
-            supplier: item.supplier || '',
-            project: item.project 
+            id: finalId, name: item.name, serial: item.serial, ownerType: item.ownerType, status: item.status, price: item.ownerType === 'Company' ? item.price : 0, rentalPrice: item.ownerType === 'Rent' ? item.price : 0, rentalUnit: item.rentalUnit, rentalStart: item.rentalStart || null, rentalEnd: item.rentalEnd || null, condition: 'Good', holder: item.holder, currentRequestId: null, lastUpdated: date, image: null, note: item.note, supplier: item.supplier || '', project: item.project,
+            embedding: aiVector // 🧠 2. ยัด AI ลงไป
         };
 
         newAssets.push(newAsset);
-        
-       const logNote = `โครงการ: ${item.project}` + (item.note ? ` | ${item.note}` : '') + (item.supplier ? ` | ร้านค้า: ${item.supplier}` : '');
-        batchLogs.push({
-            date: date,
-            action: 'Import Assets',
-            item: newAsset.name,
-            change: 'New',
-            note: logNote,
-            images: [],
-            requestId: null,
-            supplier: item.supplier,
-            assetId: newAsset.id,
-            by: `${user.empId} ${user.firstName}`
-        });
+        batchLogs.push({ date: date, action: 'Import Assets', item: newAsset.name, change: 'New', note: `โครงการ: ${item.project}` + (item.note ? ` | ${item.note}` : '') + (item.supplier ? ` | ร้านค้า: ${item.supplier}` : ''), images: [], requestId: null, supplier: item.supplier, assetId: newAsset.id, by: `${user.empId} ${user.firstName}` });
     }
 
-    // ⭐⭐ 3. เริ่มส่งข้อมูลแบบแบ่งส่วน (Chunking Logic) ⭐⭐
-    const CHUNK_SIZE = 100; // กำหนดขนาดก้อนข้อมูล เช่น ส่งทีละ 100 รายการ
+    const CHUNK_SIZE = 50; 
     const totalChunks = Math.ceil(newAssets.length / CHUNK_SIZE);
 
     try {
         for (let i = 0; i < newAssets.length; i += CHUNK_SIZE) {
-            // ตัดแบ่งข้อมูล
             const chunkAssets = newAssets.slice(i, i + CHUNK_SIZE);
             const chunkLogs = batchLogs.slice(i, i + CHUNK_SIZE);
-            
-            // คำนวณเลขชุดปัจจุบันเพื่อแสดงผล
             const currentChunk = Math.floor(i / CHUNK_SIZE) + 1;
             
-            // (Optional) แสดง Toast บอกความคืบหน้า เพื่อให้ User รู้ว่าไม่ได้ค้าง
-            showToast(`กำลังบันทึกชุดที่ ${currentChunk}/${totalChunks} (${chunkAssets.length} รายการ)...`, 'info');
+            showToast(`กำลังบันทึกทรัพย์สินชุดที่ ${currentChunk}/${totalChunks} (${chunkAssets.length} รายการ)...`, 'info');
 
-            // ส่งก้อนนี้ไปบันทึก
             await new Promise((resolve, reject) => {
-                google.script.run
-                    .withSuccessHandler(resolve)
-                    .withFailureHandler((err) => reject(new Error(`Batch ${currentChunk} failed: ${err.message}`)))
-                    .batchImportAssets(chunkAssets, chunkLogs); // เรียกฟังก์ชัน backend ตัวใหม่
+                google.script.run.withSuccessHandler(resolve).withFailureHandler((err) => reject(new Error(`Batch ${currentChunk} failed: ${err.message}`))).batchImportAssets(chunkAssets, chunkLogs); 
             });
+            // ❌ ไม่ต้องมี for (const asset of chunkAssets) await supabase... แล้ว! Backend ดึงไปจัดการให้เอง
         }
 
-        // 4. เมื่อวนลูปครบทุกก้อนแล้วค่อยอัปเดตหน้าจอทีเดียว
         setAssets(prev => [...prev, ...newAssets]);
-        
-        setIsLoading(false);
-        setShowImportAssetModal(false);
-        setImportData([]);
-        setImportFileName('');
-        showToast(`นำเข้าสำเร็จทั้งหมด ${newAssets.length} รายการ`);
-
+        setIsLoading(false); setShowImportAssetModal(false); setImportData([]); setImportFileName('');
+        showToast(`นำเข้าและสอน AI เรียบร้อยทั้งหมด ${newAssets.length} รายการ`);
     } catch (error) {
-        setIsLoading(false);
-        console.error(error);
-        showToast("เกิดข้อผิดพลาดในการบันทึก: " + error.message, 'error');
-        // หมายเหตุ: กรณี Error กลางคัน รายการก่อนหน้านี้อาจถูกบันทึกไปแล้ว (Partial Success)
+        setIsLoading(false); console.error(error); showToast("เกิดข้อผิดพลาดในการบันทึก: " + error.message, 'error');
     }
 };
 
@@ -4033,8 +4084,8 @@ const loadInitialDataDirectly = async () => {
     }
 };
 
-// 2. โหลดประวัติล่าสุด (จำกัด 200 รายการ)
-const getRecentLogsDirectly = async (limit = 200) => {
+
+const getRecentLogsDirectly = async (limit = 50000) => {
     try {
         const { data, error } = await supabase
             .from('logs')
@@ -4337,93 +4388,92 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
          return filteredRequests.filter(r => !['Completed', 'Rejected', 'Returned', 'Draft'].includes(r.status)).length;
       }, [filteredRequests]);
 
-// --- LOGIC: Filter & Process Inventory (Updated with Combined IDs) ---
+// --- LOGIC: Filter & Process Inventory (Updated with Combined IDs + AI Sort 🧠) ---
       const filteredInventory = useMemo(() => {
           let data = [...inventory];
 
-          // กรอง Project (Global)
-          if (globalProjectFilter !== 'All') {
-              data = data.filter(i => i.project === globalProjectFilter);
-          }
+          if (globalProjectFilter !== 'All') data = data.filter(i => i.project === globalProjectFilter);
+          if (inventoryProjectFilter !== 'All') data = data.filter(i => i.project === inventoryProjectFilter);
 
-          // ระบบค้นหา Inventory แบบ Smart Search
           if (invSearch) {
                 const searchTerms = invSearch.toLowerCase().trim().split(/\s+/);
                 data = data.filter(i => {
                     const fullText = `${i.name} ${i.id} ${i.project || ''} ${i.note || ''} ${i.stockType || ''} ${i.supplier || ''}`.toLowerCase();
-                    return searchTerms.every(term => fullText.includes(term));
+                    const isTextMatch = searchTerms.every(term => fullText.includes(term));
+                    
+                    if (useAiSearchInv) {
+                        const aiScore = aiInvScores[i.id] || 0;
+                        i.searchScore = isTextMatch ? 1 : aiScore;
+                        i.isExactMatch = isTextMatch; // ⭐ แอบเก็บสถานะความเป๊ะไว้โชว์
+                        return isTextMatch || aiScore > 0.5; 
+                    } else {
+                        return isTextMatch;
+                    }
                 });
-            }
-
-          if (inventoryProjectFilter !== 'All') {
-              data = data.filter(i => i.project === inventoryProjectFilter);
           }
 
-          // 2. Tab Logic
           if (invTabMode === 'Summary') {
-              // ⭐ [แก้ไข] Logic การรวม: เก็บรายละเอียด ในระบบ/นอกระบบ และ โครงการ
               const grouped = data.reduce((acc, item) => {
                   let existingItem = acc.find(x => x.name === item.name);
-                  
                   if (!existingItem) {
                       existingItem = { 
-                          ...item, 
-                          id: `SUM-${item.name}`, 
-                          isSummary: true,
-                          combinedIds: [item.id],
-                          // เริ่มต้นตัวนับใหม่
-                          qty: 0, 
-                          systemQty: 0,
-                          nonSystemQty: 0,
-                          projectBreakdown: {}
+                          ...item, id: `SUM-${item.name}`, isSummary: true, combinedIds: [item.id],
+                          qty: 0, systemQty: 0, nonSystemQty: 0, projectBreakdown: {},
+                          searchScore: item.searchScore || 0, isExactMatch: item.isExactMatch // ⭐ ส่งต่อคะแนน
                       };
                       acc.push(existingItem);
                   } else {
                       existingItem.combinedIds.push(item.id);
+                      existingItem.searchScore = Math.max(existingItem.searchScore || 0, item.searchScore || 0); // เอาคะแนนสูงสุด
+                      if (item.isExactMatch) existingItem.isExactMatch = true;
                   }
-
-                  // บวกยอดรวม
                   existingItem.qty += item.qty;
-                  
-                  // แยกประเภท
                   if (item.stockType === 'NonSystem') existingItem.nonSystemQty += item.qty;
                   else existingItem.systemQty += item.qty;
-
-                  // แยกโครงการ
                   const projName = item.project || 'ส่วนกลาง';
                   existingItem.projectBreakdown[projName] = (existingItem.projectBreakdown[projName] || 0) + item.qty;
-
                   return acc;
               }, []);
+              
+              // ⭐ บังคับเรียงตามคะแนน AI (ข้ามการเรียงปกติ)
+              if (useAiSearchInv && invSearch) return grouped.sort((a, b) => (b.searchScore || 0) - (a.searchScore || 0));
               return getSortedData(grouped, invSort);
           } else {
-              // โหมดแยกประเภท: System / NonSystem
               data = data.filter(i => (i.stockType || 'System') === invTabMode);
+              
+              // ⭐ บังคับเรียงตามคะแนน AI 
+              if (useAiSearchInv && invSearch) return data.sort((a, b) => (b.searchScore || 0) - (a.searchScore || 0));
               return getSortedData(data, invSort);
           }
 
-      }, [inventory, invSearch, invSort, invTabMode, globalProjectFilter, inventoryProjectFilter]);
+      }, [inventory, invSearch, invSort, invTabMode, globalProjectFilter, inventoryProjectFilter, useAiSearchInv, aiInvScores]);
 
 
-// --- LOGIC: Filter & Sort Assets (UPDATED: Show Both Alerts) ---
+      // --- LOGIC: Filter & Sort Assets (UPDATED: Show Both Alerts + AI Sort 🧠) ---
       const filteredAssets = useMemo(() => {
           let data = assets;
           
-          if (globalProjectFilter !== 'All') { data = data.filter(a => a.project === globalProjectFilter); }
+          if (globalProjectFilter !== 'All') data = data.filter(a => a.project === globalProjectFilter);
+          if (assetProjectFilter !== 'All') data = data.filter(a => a.project === assetProjectFilter);
           
-          // ระบบค้นหา Assets แบบ Smart Search
           if (assetSearch) {
             const searchTerms = assetSearch.toLowerCase().trim().split(/\s+/);
             data = data.filter(a => {
                 const fullText = `${a.name} ${a.id} ${a.serial || ''} ${a.holder || ''} ${a.project || ''} ${a.note || ''} ${a.supplier || ''}`.toLowerCase();
-                return searchTerms.every(term => fullText.includes(term));
+                const isTextMatch = searchTerms.every(term => fullText.includes(term));
+
+                if (useAiSearchAst) {
+                    const aiScore = aiAstScores[a.id] || 0;
+                    a.searchScore = isTextMatch ? 1 : aiScore;
+                    a.isExactMatch = isTextMatch; // ⭐ แอบเก็บสถานะความเป๊ะไว้โชว์
+                    return isTextMatch || aiScore > 0.5;
+                } else {
+                    return isTextMatch;
+                }
             });
           }
 
-          if (assetProjectFilter !== 'All') { data = data.filter(a => a.project === assetProjectFilter); }
-
           if (assetTabMode === 'Summary') {
-              // ... (Summary Logic เดิม ไม่ต้องแก้) ...
               const grouped = data.reduce((acc, item) => {
                   const existing = acc.find(g => g.name === item.name);
                   if (existing) {
@@ -4431,71 +4481,51 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
                       if (item.ownerType === 'Company') existing.companyQty++;
                       if (item.ownerType === 'Rent') existing.rentQty++;
                       existing.items.push(item);
+                      existing.searchScore = Math.max(existing.searchScore || 0, item.searchScore || 0); // เอาคะแนนสูงสุด
+                      if (item.isExactMatch) existing.isExactMatch = true;
                   } else {
-                      acc.push({ id: `GRP-${item.name}`, name: item.name, totalQty: 1, companyQty: item.ownerType === 'Company' ? 1 : 0, rentQty: item.ownerType === 'Rent' ? 1 : 0, items: [item], isSummary: true });
+                      acc.push({ id: `GRP-${item.name}`, name: item.name, totalQty: 1, companyQty: item.ownerType === 'Company' ? 1 : 0, rentQty: item.ownerType === 'Rent' ? 1 : 0, items: [item], isSummary: true, searchScore: item.searchScore || 0, isExactMatch: item.isExactMatch });
                   }
                   return acc;
               }, []);
+              
+              // ⭐ บังคับเรียงตามคะแนน AI
+              if (useAiSearchAst && assetSearch) return grouped.sort((a, b) => (b.searchScore || 0) - (a.searchScore || 0));
               return grouped.sort((a, b) => a.name.localeCompare(b.name));
           } else {
-            // Normal Logic
             data = data.filter(a => a.ownerType === assetTabMode);
-            
             const today = new Date();
             today.setHours(0,0,0,0);
 
             const processedData = data.map(asset => {
-                let alertType = null; 
-                let priority = 0;
-                let daysLeft = null;
+                let alertType = null; let priority = 0; let daysLeft = null; let isOverdue = false; let overdueDays = 0;
                 
-                // ⭐ เพิ่มตัวแปรเช็ค Overdue แยกต่างหาก
-                let isOverdue = false;
-                let overdueDays = 0;
-                
-                // 1. เช็ควันหมดสัญญา
                 if (asset.ownerType === 'Rent' && asset.rentalEnd) {
                     const endDate = new Date(asset.rentalEnd);
-                    const diffTime = endDate - today;
-                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                    const diffDays = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
                     daysLeft = diffDays;
-
-                    if (diffDays < 0) { 
-                        alertType = 'expired'; 
-                        priority = 3; 
-                    } else if (diffDays <= 30) { 
-                        alertType = 'expiring'; 
-                        priority = 2; 
-                    }
+                    if (diffDays < 0) { alertType = 'expired'; priority = 3; } 
+                    else if (diffDays <= 30) { alertType = 'expiring'; priority = 2; }
                 }
 
-                // 2. เช็คยืมเกินกำหนด (Borrowed Overdue)
                 if (asset.status === 'Borrowed' && asset.lastUpdated) {
                      const borrowDate = parseThaiDate(asset.lastUpdated);
                      if (borrowDate) {
-                         const diffTime = Math.abs(today - borrowDate);
-                         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                         
+                         const diffDays = Math.ceil(Math.abs(today - borrowDate) / (1000 * 60 * 60 * 24));
                          const isSnoozed = asset.snoozeUntil && new Date(asset.snoozeUntil) > today;
-
                          if (diffDays > 7 && !isSnoozed) { 
-                             // ⭐ ตั้งค่า Flag เป็นจริง
-                             isOverdue = true;
-                             overdueDays = diffDays;
-                             priority = Math.max(priority, 1); 
-                             
-                             // ถ้ายังไม่มี alertType (ไม่ติดสัญญา) ให้ตั้งเป็น overdue
-                             // แต่ถ้ามี (เช่น expired/expiring) ก็ปล่อยไว้ เพื่อให้แสดงผลคู่กันได้
+                             isOverdue = true; overdueDays = diffDays; priority = Math.max(priority, 1); 
                              if (!alertType) alertType = 'overdue';
                          }
                      }
                 }
-            
                 return { ...asset, alertType, priority, daysLeft, isOverdue, overdueDays };
             });
 
-            // Sort: เรียงตาม Priority (มากไปน้อย)
             return processedData.sort((a, b) => {
+                // ⭐ บังคับเรียงคะแนน AI ขึ้นก่อนเงื่อนไขอื่นทั้งหมด!
+                if (useAiSearchAst && assetSearch) return (b.searchScore || 0) - (a.searchScore || 0); 
+                
                 if (b.priority !== a.priority) return b.priority - a.priority;
                 if (a.daysLeft !== null && b.daysLeft !== null && a.daysLeft !== b.daysLeft) return a.daysLeft - b.daysLeft;
                 if (a[assetSort.key] < b[assetSort.key]) return assetSort.direction === 'asc' ? -1 : 1;
@@ -4503,66 +4533,103 @@ const addInvLog = async (action, item, change, note = '', images = [], relatedRe
                 return 0;
             });
           }
-      }, [assets, assetSearch, assetSort, assetTabMode, globalProjectFilter, assetProjectFilter]);
-
+      }, [assets, assetSearch, assetSort, assetTabMode, globalProjectFilter, assetProjectFilter, useAiSearchAst, aiAstScores]);
       // --- Functions & Handlers (Logic from original file) ---
       
 
-// --- ส่วนค้นหา Suggestion ---
+// --- ส่วนค้นหา Suggestion (อัปเกรดความฉลาดเป็น AI แต่คงการจัดกลุ่มแบบเดิม) ---
 useEffect(() => {
     let timeoutId;
     setFoundSuggestions([]);
     
-  if (tempItem.name && tempItem.name.length > 2 && ['Local', 'HO'].includes(newOrderMeta.type)) {
-        timeoutId = setTimeout(() => {
-            const lowerName = tempItem.name.toLowerCase();
-            let matches = [];
+    if (tempItem.name && tempItem.name.trim().length > 2 && ['Local', 'HO'].includes(newOrderMeta.type)) {
+        
+        timeoutId = setTimeout(async () => {
+            try {
+                // 🧠 1. ขอตัวเลข AI จาก Google Gemini
+                const queryVector = await getTextEmbedding(tempItem.name);
+                if (!queryVector) return;
 
-            // 🟢 1. ค้นหาในคลัง (Inventory) -> แนะนำให้เบิก (แยกยอด ในระบบ / นอกระบบ ออกจากกัน)
-            const groupedInv = {};
-            
-            inventory.forEach(inv => {
-                // กรองชื่อและจำนวนที่มี
-                if (inv.name.toLowerCase().includes(lowerName) && inv.qty > 0) {
-                    const currentStockType = inv.stockType || 'System'; // ถ้าไม่มีค่าถือเป็น System
-                    
-                    // ⭐ สร้าง Key สำหรับรวมกลุ่ม: "ชื่อสินค้า|ชื่อโครงการ|ประเภทสต็อก"
-                    const key = `${inv.name}|${inv.project || 'ส่วนกลาง'}|${currentStockType}`;
+                let matches = [];
 
-                    if (!groupedInv[key]) {
-                        groupedInv[key] = {
-                            ...inv, 
-                            qty: 0, // รีเซ็ตยอดรวมเพื่อคำนวณใหม่
-                            type: 'Material', 
-                            matchType: 'Withdraw',
-                            stockType: currentStockType, // เก็บประเภทไว้ใช้ตอนกดเลือก
-                            sourceLabel: `คลังวัสดุ (${currentStockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ'})`
-                        };
-                    }
+                // 📦 2. ถาม Supabase ให้หาของที่ความหมายใกล้เคียง (เอาแม่นยำ > 50%)
+                const { data: aiInvMatches } = await supabase.rpc('search_inventory', {
+                    query_embedding: queryVector,
+                    match_threshold: 0.5, 
+                    match_count: 5 
+                });
 
-                    // บวกยอดรวมในกลุ่มเดียวกัน
-                    groupedInv[key].qty += inv.qty;
-                }
-            });
+                // 🖥️ 3. ถาม Supabase ให้หาทรัพย์สิน (เอาแม่นยำ > 50%)
+                const { data: aiAstMatches } = await supabase.rpc('search_assets', {
+                    query_embedding: queryVector,
+                    match_threshold: 0.5,
+                    match_count: 3 
+                });
 
-            // แปลง Object กลับเป็น Array เพื่อนำไปแสดงผล
-            Object.values(groupedInv).forEach(item => {
-                matches.push(item);
-            });
+                // 🟢 4. จัดการ Inventory (คง Logic จัดกลุ่มของคุณไว้เหมือนเดิม)
+                const groupedInv = {};
+                
+                if (aiInvMatches) {
+                    aiInvMatches.forEach(match => {
+                        // หาข้อมูลเต็มจาก State (รองรับทั้ง id และ raw_id)
+                        const inv = inventory.find(i => i.id === match.id || i.raw_id === match.id);
+                        
+                        if (inv && inv.qty > 0) {
+                            const currentStockType = inv.stockType || 'System';
+                            const key = `${inv.name}|${inv.project || 'ส่วนกลาง'}|${currentStockType}`;
 
-            // 🔵 2. ค้นหาในทะเบียน (Assets) -> แนะนำให้ยืม (เหมือนเดิม)
-            assets.forEach(ast => {
-                if (ast.name.toLowerCase().includes(lowerName) && ast.status === 'Available') {
-                    matches.push({ 
-                        ...ast, 
-                        type: 'Asset', 
-                        matchType: 'Borrow',
-                        sourceLabel: 'ทะเบียนทรัพย์สิน'
+                            if (!groupedInv[key]) {
+                                groupedInv[key] = {
+                                    ...inv, 
+                                    qty: 0, 
+                                    type: 'Material', 
+                                    matchType: 'Withdraw',
+                                    stockType: currentStockType, 
+                                    // โชว์ % AI ต่อท้าย Label เดิมของคุณ
+                                    sourceLabel: `คลังวัสดุ (${currentStockType === 'NonSystem' ? 'นอกระบบ' : 'ในระบบ'}) - AI: ${(match.similarity * 100).toFixed(0)}%`,
+                                    similarity: match.similarity // เก็บค่าแม่นยำไว้เรียงลำดับ
+                                };
+                            }
+
+                            // บวกยอดรวมในกลุ่มเดียวกัน
+                            groupedInv[key].qty += inv.qty;
+                            
+                            // ถ้ามีของชื่อเดียวกัน ให้จำค่าความแม่นยำที่สูงที่สุดไว้
+                            groupedInv[key].similarity = Math.max(groupedInv[key].similarity || 0, match.similarity);
+                        }
+                    });
+
+                    // แปลงกลับเป็น Array
+                    Object.values(groupedInv).forEach(item => {
+                        matches.push(item);
                     });
                 }
-            });
 
-            setFoundSuggestions(matches);
+                // 🔵 5. จัดการ Assets (คง Logic ของคุณไว้เหมือนเดิม)
+                if (aiAstMatches) {
+                    aiAstMatches.forEach(match => {
+                        const ast = assets.find(a => a.id === match.id);
+                        
+                        if (ast && ast.status === 'Available') {
+                            matches.push({ 
+                                ...ast, 
+                                type: 'Asset', 
+                                matchType: 'Borrow',
+                                sourceLabel: `ทะเบียนทรัพย์สิน - AI: ${(match.similarity * 100).toFixed(0)}%`,
+                                similarity: match.similarity
+                            });
+                        }
+                    });
+                }
+
+                // ⭐ 6. เรียงลำดับผลลัพธ์ทั้งหมดตามความแม่นยำ (Similarity) จากมากไปน้อย
+                matches.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
+
+                setFoundSuggestions(matches);
+                
+            } catch (error) {
+                console.error("❌ AI Search Error:", error);
+            }
         }, 500);
     }
     return () => clearTimeout(timeoutId);
@@ -4735,7 +4802,7 @@ const getItemLatestImages = (item) => {
 
 
 
-// --- LOGIC: Filter Selection Items (Updated) ---
+// --- LOGIC: Filter Selection Items (Updated + AI Brain 🧠) ---
 const getSelectionItems = () => {
     const type = newOrderMeta.type;
     const targetProject = newOrderMeta.job;
@@ -4743,11 +4810,10 @@ const getSelectionItems = () => {
     if (!targetProject) return [];
     let items = [];
 
-    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> กรองตามประเภทที่เลือก (System / NonSystem)
+    // 🟢 กรณี 1: เบิกวัสดุ (Withdraw) -> กรองตามประเภทที่เลือก
     if (type === 'Withdraw') {
-        const currentType = newOrderMeta.withdrawStockType || 'System'; // ค่าที่ผู้ใช้เลือก
+        const currentType = newOrderMeta.withdrawStockType || 'System'; 
 
-        // 1. หาบิลจองค้าง
         const activeRequests = requests.filter(r => 
             r.id !== editingId &&
             !['Draft', 'Completed', 'Rejected', 'Returned', 'Cancelled'].includes(r.status) &&
@@ -4755,7 +4821,6 @@ const getSelectionItems = () => {
             r.type === 'Withdraw'
         );
 
-        // 2. คำนวณยอดจอง โดยนับเฉพาะ Type เดียวกัน
         const reservesByName = {};
         activeRequests.forEach(req => {
             req.items.forEach(item => {
@@ -4766,19 +4831,14 @@ const getSelectionItems = () => {
             });
         });
 
-        // 3. กรองและคำนวณยอดคงเหลือ
         items = inventory
             .filter(i => i.project === targetProject && (i.stockType || 'System') === currentType)
             .map(item => {
                 const reserved = reservesByName[item.name] || 0;
                 const realAvailable = Math.max(0, item.qty - reserved);
-                return {
-                    ...item,
-                    qty: realAvailable, // โชว์ยอดว่าง
-                    reserved: reserved
-                };
+                return { ...item, qty: realAvailable, reserved: reserved };
             })
-            .filter(i => i.qty > 0); // ซ่อนของหมด
+            .filter(i => i.qty > 0); 
     } 
     // 🔵 กรณี 2: ยืม (Borrow) หรือ ซื้อ (Local/HO)
     else {
@@ -4795,7 +4855,7 @@ const getSelectionItems = () => {
         const projectAssets = assets.filter(a => {
             if (a.project !== targetProject) return false;
             if (a.status !== 'Available') return false; 
-            if (pendingAssetIds.includes(a.id)) return false; // หักติดจอง
+            if (pendingAssetIds.includes(a.id)) return false; 
 
             if (a.ownerType === 'Rent' && a.rentalEnd) {
                 const endDate = new Date(a.rentalEnd);
@@ -4812,13 +4872,27 @@ const getSelectionItems = () => {
         else if (type === 'Borrow') items = projectAssets;
     }
 
- // ระบบค้นหาตอนเลือกสินค้าเข้าตะกร้า แบบ Smart Search
+    // 🧠 ระบบค้นหาอัจฉริยะ (Text Search + AI Semantic Search)
     if (selectionSearch) {
         const searchTerms = selectionSearch.toLowerCase().trim().split(/\s+/);
+        
         items = items.filter(i => {
+            // 1. ค้นหาแบบธรรมดา (พิมพ์ตรงตัว)
             const fullText = `${i.name} ${i.id || ''} ${i.serial || ''} ${i.project || ''}`.toLowerCase();
-            return searchTerms.every(term => fullText.includes(term));
+            const isTextMatch = searchTerms.every(term => fullText.includes(term));
+            
+            // 2. เช็คคะแนนความแม่นยำจาก AI (ดึงจาก State)
+            const aiScore = aiSelectionScores[i.id] || aiSelectionScores[i.raw_id] || 0;
+            
+            // ⭐ เก็บค่าคะแนนไว้ในตัวแปรชั่วคราวเพื่อเอาไปเรียงลำดับ
+            i.searchScore = isTextMatch ? 1 : aiScore; 
+
+            // แสดงผลเมื่อ: พิมพ์ข้อความตรงเป๊ะ หรือ AI ให้คะแนนความแม่นยำเกิน 50%
+            return isTextMatch || aiScore > 0.5;
         });
+
+        // 3. จัดเรียง: เอาของที่แม่นยำที่สุดขึ้นก่อนเสมอ
+        items.sort((a, b) => (b.searchScore || 0) - (a.searchScore || 0));
     }
     
     return items;
@@ -5097,32 +5171,22 @@ const handleCancelOrder = (req) => {
           }));
       };
 
-// --- LOGIC: ADD NEW PRODUCT (Robust Auto Gen & Composite ID) ---
 const handleAddNewProduct = async () => {
-    // 1. Validation
     if (!newStockItem.name) { showToast('กรุณาระบุชื่อสินค้า', 'error'); return; }
     if (!newStockItem.project) { showToast('กรุณาระบุโครงการ', 'error'); return; }
     if (newStockItem.qty < 0) { showToast('จำนวนเริ่มต้นต้องไม่ต่ำกว่า 0', 'error'); return; }
     
     const currentType = newStockItem.stockType || 'System';
+    const existingInv = inventory.find(i => i.name === newStockItem.name && i.project === newStockItem.project && (i.stockType === currentType || (!i.stockType && currentType === 'System')));
 
-    // 2. เช็คว่ามีของเดิมหรือไม่
-    const existingInv = inventory.find(i => 
-        i.name === newStockItem.name && 
-        i.project === newStockItem.project && 
-        (i.stockType === currentType || (!i.stockType && currentType === 'System'))
-    );
-
-    // ⭐ [Rule 4] ตรวจสอบรหัสวัสดุ
     if (existingInv && !newStockItem.isAutoId && newStockItem.id && newStockItem.id.trim() !== '') {
         const existingBaseId = getDisplayId(existingInv.id);
         if (newStockItem.id !== existingBaseId) {
-            alert(`⚠️ ขัดแย้งกัน: สินค้า "${newStockItem.name}" มีอยู่ในระบบแล้ว แต่รหัสไม่ตรงกัน\n\n- รหัสที่ถูกต้องในระบบ: ${existingBaseId}\n- รหัสที่คุณกรอก: ${newStockItem.id}\n\nกรุณาแก้ไขรหัสวัสดุให้ตรงกัน หรือติ๊ก Auto Gen เพื่อให้ระบบดึงรหัสเดิมให้`);
+            alert(`⚠️ ขัดแย้งกัน: สินค้า "${newStockItem.name}" มีอยู่ในระบบแล้ว แต่รหัสไม่ตรงกัน\n\n- รหัสที่ถูกต้องในระบบ: ${existingBaseId}\n- รหัสที่คุณกรอก: ${newStockItem.id}\n\nกรุณาแก้ไขรหัสให้ตรงกัน หรือติ๊ก Auto Gen`);
             return; 
         }
     }
     
-    // 3. เตรียม Base ID
     let baseId = newStockItem.id;
     if (newStockItem.isAutoId) {
         let runNoCount = inventory.length + 1;
@@ -5131,44 +5195,30 @@ const handleAddNewProduct = async () => {
             runNoCount++;
             baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
         }
-    } else {
-        if (!baseId || baseId.trim() === '') { showToast('กรุณาระบุรหัสสินค้า', 'error'); return; }
-    }
+    } else if (!baseId || baseId.trim() === '') { showToast('กรุณาระบุรหัสสินค้า', 'error'); return; }
 
-    // ⭐ 4. สร้าง Real ID
-    let finalId = '';
-    if (existingInv) {
-        finalId = existingInv.id; 
-    } else {
-        finalId = `${baseId}|${newStockItem.project}|${currentType}`;
+    let finalId = existingInv ? existingInv.id : `${baseId}|${newStockItem.project}|${currentType}`;
+    if (!existingInv) {
         let counter = 1;
-        while (inventory.some(i => i.id === finalId)) {
-            finalId = `${baseId}|${newStockItem.project}|${currentType}|${counter}`;
-            counter++;
-        }
+        while (inventory.some(i => i.id === finalId)) { finalId = `${baseId}|${newStockItem.project}|${currentType}|${counter}`; counter++; }
     }
 
     setIsLoading(true);
     try {
-        // 🚀 ส่วน Upload Image (เปลี่ยนมาใช้ Supabase)
+        // 🧠 1. ขอตัวเลข AI
+        const aiVector = await getTextEmbedding(newStockItem.name);
+
         let uploadedFiles = [];
         if (newStockItem.images && newStockItem.images.length > 0) {
-            const uploadPromises = newStockItem.images.map(imgObj => {
-                if (imgObj.file) {
-                    return uploadFileToSupabase(imgObj.file, 'items');
-                }
-                return Promise.resolve(imgObj);
-            });
+            const uploadPromises = newStockItem.images.map(imgObj => imgObj.file ? uploadFileToSupabase(imgObj.file, 'items') : Promise.resolve(imgObj));
             const results = await Promise.all(uploadPromises);
             uploadedFiles = results.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
         const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].url : (existingInv ? existingInv.image : null);
         const date = new Date().toLocaleString('th-TH');
-        
         const supplierTxt = newStockItem.supplier ? ` | ร้านค้า: ${newStockItem.supplier}` : '';
         
         if (existingInv) {
-            // ✅ MERGE (ของเดิม)
             const updatedItem = {
                 ...existingInv,
                 qty: existingInv.qty + newStockItem.qty,
@@ -5176,75 +5226,47 @@ const handleAddNewProduct = async () => {
                 note: newStockItem.note ? (existingInv.note ? `${existingInv.note} | ${newStockItem.note}` : newStockItem.note) : existingInv.note,
                 lastUpdated: date,
                 image: mainImageName,
-                supplier: newStockItem.supplier || existingInv.supplier 
+                supplier: newStockItem.supplier || existingInv.supplier,
+                embedding: aiVector // 🧠 2. ยัด AI ใส่ไปเลย เดี๋ยวหลังบ้านจัดการแยกคอลัมน์ให้เอง
             };
             setInventory(prev => prev.map(i => i.id === existingInv.id ? updatedItem : i));
-            
-            await saveInventoryToSheet(updatedItem);
-            
-            const logAttachments = uploadedFiles;
-            await addInvLog('Add Stock (Merge)', updatedItem.name, `+${newStockItem.qty}`, `โครงการ: ${updatedItem.project} (${currentType})${supplierTxt}`, logAttachments, null, finalId, { supplier: newStockItem.supplier });
-            
+            await saveInventoryToSheet(updatedItem); 
+            await addInvLog('Add Stock (Merge)', updatedItem.name, `+${newStockItem.qty}`, `โครงการ: ${updatedItem.project} (${currentType})${supplierTxt}`, uploadedFiles, null, finalId, { supplier: newStockItem.supplier });
             showToast(`เพิ่มยอดสินค้าเดิมเรียบร้อย (${updatedItem.qty})`);
-            
         } else {
- // ✅ NEW
             const newItem = {
-                ...newStockItem, // 👈 1. เอาค่าจากฟอร์มมากางก่อน (id ตอนนี้คือค่าว่าง)
-                id: finalId,     // 👈 2. เอารหัสที่ Gen เสร็จแล้ว มาเซฟทับค่าว่าง! (สำคัญมากต้องอยู่ใต้ ...)
-                supplier: newStockItem.supplier || '',
-                stockType: currentType,
-                lastUpdated: date,
-                image: mainImageName
+                ...newStockItem, id: finalId, supplier: newStockItem.supplier || '', stockType: currentType, lastUpdated: date, image: mainImageName,
+                embedding: aiVector // 🧠 2. ยัด AI ใส่ไปเลย
             };
             const { images, isAutoId, ...itemForServer } = newItem;
-            
             setInventory(prev => [...prev, newItem]);
             await saveInventoryToSheet(itemForServer);
-            
-            const logAttachments = uploadedFiles;
             const typeLabel = currentType === 'NonSystem' ? '[นอกระบบ]' : '[ในระบบ]';
-            await addInvLog('Add New Item', newItem.name, `Start: ${newItem.qty}`, `โครงการ: ${newItem.project} | ${typeLabel}${supplierTxt}`, logAttachments, null, finalId, { supplier: newItem.supplier });
+            await addInvLog('Add New Item', newItem.name, `Start: ${newItem.qty}`, `โครงการ: ${newItem.project} | ${typeLabel}${supplierTxt}`, uploadedFiles, null, finalId, { supplier: newItem.supplier });
             showToast('บันทึกสินค้าใหม่เรียบร้อย');
         }
 
-        setIsLoading(false);
-        setShowAddInvModal(false);
+        setIsLoading(false); setShowAddInvModal(false);
         setNewStockItem({ name: '', qty: 0, unit: 'ชิ้น', minStock: 0, price: 0, images: [], note: '', stockType: 'System', project: globalProjectFilter !== 'All' ? globalProjectFilter : '', id: '', isAutoId: true, supplier: '' });
-
     } catch (error) {
-        setIsLoading(false);
-        console.error(error);
-        showToast("Error: " + error.message, 'error');
+        setIsLoading(false); showToast("Error: " + error.message, 'error');
     }
 };
 
-// --- LOGIC: ADD ASSET (UPDATED: Check Holder & Supabase) ---
 const handleAddAsset = async () => {
-    // Validation
     if (!newAssetItem.ownerType) { showToast('กรุณาเลือกประเภททรัพย์สิน', 'error'); return; }
     if (!newAssetItem.isAutoId && !newAssetItem.id) { showToast('กรุณาระบุรหัสทรัพย์สิน', 'error'); return; }
     if (!newAssetItem.name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return; }
     if (!newAssetItem.isAutoId && assets.some(a => a.id === newAssetItem.id)) { showToast('รหัสทรัพย์สินซ้ำ', 'error'); return; }
     
-    // ตรวจสอบชื่อคนยืม
     if (newAssetItem.status === 'Borrowed') {
-        if (!newAssetItem.holder || newAssetItem.holder.trim() === '') {
-            showToast('กรุณาระบุชื่อผู้ยืม', 'error');
-            return;
-        }
-        const isValidUser = allUsers.some(u => `${u.firstName} ${u.lastName}` === newAssetItem.holder);
-        if (!isValidUser) {
-            showToast('ชื่อผู้ยืมไม่ถูกต้อง (กรุณาเลือกจากรายชื่อที่มีในระบบ)', 'error');
-            return;
-        }
+        if (!newAssetItem.holder || newAssetItem.holder.trim() === '') { showToast('กรุณาระบุชื่อผู้ยืม', 'error'); return; }
+        if (!allUsers.some(u => `${u.firstName} ${u.lastName}` === newAssetItem.holder)) { showToast('ชื่อผู้ยืมไม่ถูกต้อง', 'error'); return; }
     }
 
     setIsLoading(true);
-
     try {
         const date = new Date().toLocaleString('th-TH');
-        
         let finalId = newAssetItem.id;
         if (newAssetItem.isAutoId) {
             const prefix = newAssetItem.ownerType === 'Rent' ? 'AST-R' : 'AST-C';
@@ -5252,54 +5274,37 @@ const handleAddAsset = async () => {
             finalId = `${prefix}-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${runNo}`;
         }
 
-        // 🚀 Upload Images (เปลี่ยนมาใช้ Supabase)
+        const aiVector = await getTextEmbedding(newAssetItem.name); // 🧠 1. ขอตัวเลข AI
+
         let uploadedFiles = [];
         if (newAssetItem.images && newAssetItem.images.length > 0) {
-            const uploadPromises = newAssetItem.images.map(imgObj => {
-                if (imgObj.file) {
-                    return uploadFileToSupabase(imgObj.file, 'items');
-                }
-                return Promise.resolve(imgObj);
-            });
+            const uploadPromises = newAssetItem.images.map(imgObj => imgObj.file ? uploadFileToSupabase(imgObj.file, 'items') : Promise.resolve(imgObj));
             const results = await Promise.all(uploadPromises);
             uploadedFiles = results.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
         }
 
-        const mainImageName = uploadedFiles.length > 0 ? uploadedFiles[0].url : null;
-
-        const finalHolder = newAssetItem.status === 'Borrowed' ? newAssetItem.holder : '-';
-
         const newAsset = { 
-            currentRequestId: null, 
-            lastUpdated: date,
-            ...newAssetItem, 
-            holder: finalHolder,
-            id: finalId,     
-            image: mainImageName,
-            supplier: newAssetItem.supplier || '', 
-            images: [] 
+            currentRequestId: null, lastUpdated: date, ...newAssetItem, 
+            holder: newAssetItem.status === 'Borrowed' ? newAssetItem.holder : '-',
+            id: finalId, image: uploadedFiles.length > 0 ? uploadedFiles[0].url : null, supplier: newAssetItem.supplier || '', images: [],
+            embedding: aiVector // 🧠 2. ยัด AI ใส่ไปเลย 
         };
         
         const { images, ...assetForServer } = newAsset;
         saveAssetToSheet(assetForServer); 
         setAssets(prev => [...prev, newAsset]);
         
-        const logAttachments = uploadedFiles;
-        
         let logAction = `รับเข้าโครงการ ${newAssetItem.project || 'ไม่ระบุ'} - เพิ่มทรัพย์สินใหม่ ${finalId} (${newAssetItem.status})`;
-        if (newAssetItem.status === 'Borrowed') logAction += ` ผู้ยืม: ${finalHolder}`;
+        if (newAssetItem.status === 'Borrowed') logAction += ` ผู้ยืม: ${newAsset.holder}`;
         if (newAssetItem.supplier) logAction += ` | ร้านค้า: ${newAssetItem.supplier}`;
 
-        addInvLog('Add Asset', newAssetItem.name, 'New', logAction, logAttachments, null, null, { supplier: newAssetItem.supplier });
+        addInvLog('Add Asset', newAssetItem.name, 'New', logAction, uploadedFiles, null, null, { supplier: newAssetItem.supplier });
         
-        setIsLoading(false);
-        setShowAssetModal(false);
+        setIsLoading(false); setShowAssetModal(false);
         setNewAssetItem({ id: '', isAutoId: false, name: '', serial: '', status: 'Available', condition: 'Good', ownerType: '', price: 0, rentalPrice: 0, rentalUnit: 'Month', images: [], note: '', holder: '' });
         showToast(`เพิ่มทรัพย์สินเรียบร้อย`);
-
     } catch (error) {
-        setIsLoading(false);
-        showToast("Error: " + error.message, 'error');
+        setIsLoading(false); showToast("Error: " + error.message, 'error');
     }
 };
 
@@ -5504,7 +5509,20 @@ const handleUpdateAsset = async (e) => {
         });
         
         const { images, newImages, originalId, ...assetForServer } = updatedAsset;
-        saveAssetToSheet(assetForServer); 
+        
+        // ⭐ [NEW] ถ้ามีการแก้ "ชื่อทรัพย์สิน" ให้สอน AI ใหม่ด้วย
+        if (originalAsset && originalAsset.name !== updatedAsset.name) {
+             try {
+                 const newAiVector = await getTextEmbedding(updatedAsset.name);
+                 if (newAiVector) {
+                     assetForServer.embedding = newAiVector; // แอบยัดสมอง AI ก้อนใหม่เข้าไปก่อนเซฟ
+                 }
+             } catch (e) {
+                 console.log("AI Embedding update failed, skipping...", e);
+             }
+        }
+
+        await new Promise(r => google.script.run.withSuccessHandler(r).syncAsset(assetForServer)); // อัปเดตให้รองรับ await เพื่อความชัวร์
 
         const logAttachments = newUploadedFiles;
         await addInvLog('Edit Asset', updatedAsset.name, 'Edit', changeLog, logAttachments, null, updatedAsset.id);
@@ -5927,291 +5945,143 @@ const existingInv = inventory.find(inv => inv.name === item.name && inv.project 
       setShowReceiveGoodsModal(true);
   };
 
+
+
 const handleConfirmReceive = async () => {
     if (!selectedRequest) return;
 
-    // ⭐ 3.1 เพิ่ม Validation ตรงนี้ (ก่อนบรรทัด setIsLoading)
     const isPartialReceive = receiveItems.some(i => i.receivedQty < (i.qty - i.receivedSoFar));
-    if (isPartialReceive && isForceClose) {
-        if (!forceCloseReason || !forceCloseReason.trim()) {
-            showToast('กรุณาระบุเหตุผลที่ต้องการปิดงาน (Force Close)', 'error');
-            return; // หยุดการทำงานถ้าไม่กรอกเหตุผล
-        }
+    if (isPartialReceive && isForceClose && (!forceCloseReason || !forceCloseReason.trim())) {
+        showToast('กรุณาระบุเหตุผลที่ต้องการปิดงาน (Force Close)', 'error'); return; 
     }
 
     setIsLoading(true);
     try {
         const date = new Date().toLocaleString('th-TH');
         const project = selectedRequest.job;
-        
-        // ⭐ เตรียม List ชั่วคราวสำหรับเช็คเลขรัน (เหมือน Import)
         let currentInvList = [...inventory];
         let runNoCount = inventory.length;
-        
-        // ⭐ ประกาศตัวแปรนับ Asset ไว้ข้างนอก Loop เพื่อให้รันเลขต่อเนื่องกันได้ถูกต้อง
         let currentAssetCount = assets.length;
 
         for (const item of receiveItems) {
-            // ⭐ [เพิ่มใหม่] ตรวจสอบว่าต้องระบุร้านค้า
             if (item.receivedQty > 0 && !item.supplier) {
-                alert(`กรุณาระบุ "ร้านค้า" สำหรับรายการ: ${item.name}`);
-                setIsLoading(false);
-                return;
+                alert(`กรุณาระบุ "ร้านค้า" สำหรับรายการ: ${item.name}`); setIsLoading(false); return;
             }
             
             const qtyToReceive = item.receivedQty;
+            let aiVector = qtyToReceive > 0 ? await getTextEmbedding(item.name) : null; // 🧠 1. ขอตัวเลข AI
 
             if (item.targetType === 'Inventory') {
-                
-                // --- ส่วน Upload Image (Inventory) ---
                 let logImages = [];
                 if (item.receiveImages && item.receiveImages.length > 0) {
-                    const uploadPromises = item.receiveImages.map(imgObj => {
-                        return new Promise((resolve, reject) => {
-                           google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
-                        });
-                    });
+                    const uploadPromises = item.receiveImages.map(imgObj => imgObj.file ? uploadFileToSupabase(imgObj.file, 'receive_items') : Promise.resolve(imgObj));
                     const uploaded = await Promise.all(uploadPromises);
-                    logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                    logImages = uploaded.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
                 }
 
-                // const qtyToReceive = item.receivedQty; // ❌ ลบบรรทัดนี้ออก (เพราะประกาศข้างบนแล้ว)
-                const targetType = 'System'; // รับของ = System เสมอ
-
-                // 2. เช็คของเดิม
-                const existingIndex = currentInvList.findIndex(inv => 
-                    inv.name === item.name && 
-                    inv.project === project && 
-                    (inv.stockType === targetType || (!inv.stockType && targetType === 'System'))
-                );
-
+                const existingIndex = currentInvList.findIndex(inv => inv.name === item.name && inv.project === project && (inv.stockType === 'System' || !inv.stockType));
                 const existing = existingIndex !== -1 ? currentInvList[existingIndex] : null;
                 const mainImageName = logImages.length > 0 ? logImages[0].name : (existing ? existing.image : null);
 
                 if (existing) {
-
-                // ⭐ [Rule 4] ตรวจสอบรหัสวัสดุ (Mat Code)
                     const existingBaseId = getDisplayId(existing.id);
                     if (item.inventoryId && item.inventoryId.trim() !== '' && item.inventoryId !== existingBaseId) {
-                        alert(`⚠️ ขัดแย้งกัน: สินค้า "${item.name}" มีอยู่ในระบบแล้ว แต่รหัสไม่ตรงกัน\n\n- รหัสที่ถูกต้องในระบบ: ${existingBaseId}\n- รหัสที่คุณกรอก: ${item.inventoryId}\n\nกรุณาแก้ไขรหัสวัสดุให้ตรงกัน หรือเว้นว่างไว้ระบบจะดึงรหัสเดิมให้อัตโนมัติ`);
-                        setIsLoading(false);
-                        return; // หยุดการทำงานทันที
+                        alert(`⚠️ ขัดแย้งกัน: สินค้า "${item.name}" มีอยู่ในระบบแล้ว แต่รหัสไม่ตรงกัน`); setIsLoading(false); return; 
                     }
-                    // ✅ MERGE (อัปเดตของเดิม)
                     const updatedInv = { 
-                        ...existing, 
-                        id: existing.id, 
-                        qty: existing.qty + qtyToReceive, 
-                        lastUpdated: date, 
-                        image: mainImageName 
+                        ...existing, id: existing.id, qty: existing.qty + qtyToReceive, lastUpdated: date, image: mainImageName,
+                        embedding: aiVector // 🧠 2. ยัด AI ลงไป 
                     };
-                    
-                    // อัปเดต List ชั่วคราว และบันทึก
                     currentInvList[existingIndex] = updatedInv;
                     await saveInventoryToSheet(updatedInv);
                     
                     const fullNote = `รับเข้าโครงการ ${project} (System) | ร้านค้า: ${item.supplier}`;
-
-    await addInvLog(
-        'Stock In (Merge)', 
-        item.name, 
-        `+${qtyToReceive}`, 
-        fullNote, // ใช้ Note ใหม่ที่รวมชื่อร้าน
-        logImages, 
-        selectedRequest.id, 
-        existing.id,
-        { supplier: item.supplier } // เพิ่ม parameter นี้
-    );
-
+                    await addInvLog('Stock In (Merge)', item.name, `+${qtyToReceive}`, fullNote, logImages, selectedRequest.id, existing.id, { supplier: item.supplier });
                  } else {
-                    // ✅ NEW ITEM (สร้างใหม่ ต้อง Gen ID)
-                    let baseId = item.inventoryId; // ลองดูว่ามีรหัสกรอกมาไหม
-                    
+                    let baseId = item.inventoryId; 
                     if (item.isInvAutoId || !baseId) {
-                        runNoCount++;
-                        baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
-                        // เช็คซ้ำใน List ชั่วคราว
-                        while (currentInvList.some(inv => getDisplayId(inv.id) === baseId)) {
-                            runNoCount++;
-                            baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
-                        }
+                        runNoCount++; baseId = `INV-${String(runNoCount).padStart(3, '0')}`;
+                        while (currentInvList.some(inv => getDisplayId(inv.id) === baseId)) { runNoCount++; baseId = `INV-${String(runNoCount).padStart(3, '0')}`; }
                     }
 
-                    // ⭐ [แก้ไข] สร้าง ID เต็ม และเพิ่ม Logic ป้องกัน ID ทับกันในฐานข้อมูล
-                    let finalInvId = `${baseId}|${project}|${targetType}`;
+                    let finalInvId = `${baseId}|${project}|System`;
                     let counter = 1;
-                    
-                    // ถ้ารหัสเต็มบังเอิญซ้ำเป๊ะๆ (เช่น จงใจใช้รหัสซ้ำกับสินค้าอื่นที่ชื่อต่างกัน) ให้ดันเลข Counter ขึ้น
-                    while (currentInvList.some(inv => inv.id === finalInvId)) {
-                        finalInvId = `${baseId}|${project}|${targetType}|${counter}`;
-                        counter++;
-                    }
+                    while (currentInvList.some(inv => inv.id === finalInvId)) { finalInvId = `${baseId}|${project}|System|${counter}`; counter++; }
 
                     const newInv = { 
-                        id: finalInvId,
-                        name: item.name, 
-                        qty: qtyToReceive, 
-                        unit: item.unit || 'หน่วย', 
-                        minStock: 0, 
-                        price: item.actualPrice, 
-                        lastUpdated: date, 
-                        image: mainImageName,
-                        project: project,
-                        stockType: targetType
+                        id: finalInvId, name: item.name, qty: qtyToReceive, unit: item.unit || 'หน่วย', minStock: 0, price: item.actualPrice, 
+                        lastUpdated: date, image: mainImageName, project: project, stockType: 'System',
+                        embedding: aiVector // 🧠 2. ยัด AI ลงไป 
                     };
-                    
-                    currentInvList.push(newInv); // เพิ่มเข้า List
+                    currentInvList.push(newInv); 
                     await saveInventoryToSheet(newInv);
 
-
                     const fullNote = `โครงการ ${project} (System) | ร้านค้า: ${item.supplier}`;
-
-    await addInvLog(
-        'Stock In (New)', 
-        item.name, 
-        `Start: ${qtyToReceive}`, 
-        fullNote, // ใช้ Note ใหม่
-        logImages, 
-        selectedRequest.id, 
-        finalInvId,
-        { supplier: item.supplier } // เพิ่ม parameter นี้
-    );
+                    await addInvLog('Stock In (New)', item.name, `Start: ${qtyToReceive}`, fullNote, logImages, selectedRequest.id, finalInvId, { supplier: item.supplier });
                 }
-            }
-             else {
-                // --- กรณี Asset (ทรัพย์สิน) ---
-                // ตอนนี้ qtyToReceive มีค่าแล้ว โค้ดส่วนนี้จะทำงานได้ถูกต้อง
+            } else {
                 const assetsToProcess = item.assetsToRegister.slice(0, qtyToReceive);
-                
                 for (const assetReg of assetsToProcess) {
-                    currentAssetCount++; // เพิ่มเลขรัน
-                    
+                    currentAssetCount++; 
                     let assetLogImages = [];
-                    // ... (Image Upload Logic สำหรับ Asset) ...
                     if (assetReg.images && assetReg.images.length > 0) {
-                        const uploadPromises = assetReg.images.map(imgObj => {
-                            return new Promise((resolve, reject) => {
-                                google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
-                            });
-                        });
+                        const uploadPromises = assetReg.images.map(imgObj => new Promise((resolve, reject) => {
+                            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
+                        }));
                         const uploaded = await Promise.all(uploadPromises);
                         assetLogImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
                     }
 
-                    const assetId = assetReg.isAutoId 
-                        ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(currentAssetCount).padStart(3,'0')}` 
-                        : assetReg.id;
-                    const mainImageName = assetLogImages.length > 0 ? assetLogImages[0].name : null;
-                    
+                    const assetId = assetReg.isAutoId ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(currentAssetCount).padStart(3,'0')}` : assetReg.id;
+                    let assetAiVector = aiVector; 
+                    if (assetReg.name !== item.name) assetAiVector = await getTextEmbedding(assetReg.name); // 🧠 1. ขอตัวเลข AI กรณีชื่อเปลี่ยน
+
                     const newAsset = { 
-                        id: assetId,
-                        name: assetReg.name,
-                        serial: assetReg.serial,
-                        status: 'Available',
-                        condition: 'Good',
-                        holder: '-',
-                        currentRequestId: selectedRequest.id,
-                        price: item.isRent ? 0 : assetReg.price,
-                        image: mainImageName,
-                        lastUpdated: date,
-                        ownerType: item.isRent ? 'Rent' : 'Company',
-                        rentalStart: assetReg.rentalStart || null,
-                        rentalEnd: assetReg.rentalEnd || null,
-                        rentalPrice: assetReg.rentalPrice || 0,
-                        rentalUnit: assetReg.rentalUnit || 'Month',
-                        duration: item.isRent ? (assetReg.duration || 1) : 1,
-                        note: assetReg.note,
-                        project: project // ⭐ ระบุโครงการ
+                        id: assetId, name: assetReg.name, serial: assetReg.serial, status: 'Available', condition: 'Good', holder: '-',
+                        currentRequestId: selectedRequest.id, price: item.isRent ? 0 : assetReg.price, image: assetLogImages.length > 0 ? assetLogImages[0].name : null,
+                        lastUpdated: date, ownerType: item.isRent ? 'Rent' : 'Company', rentalStart: assetReg.rentalStart || null, rentalEnd: assetReg.rentalEnd || null,
+                        rentalPrice: assetReg.rentalPrice || 0, rentalUnit: assetReg.rentalUnit || 'Month', duration: item.isRent ? (assetReg.duration || 1) : 1,
+                        note: assetReg.note, project: project,
+                        embedding: assetAiVector // 🧠 2. ยัด AI ลงไป 
                     };
                     setAssets(prev => [...prev, newAsset]);
                     saveAssetToSheet(newAsset);
 
-
                     const logAction = `ลงทะเบียนเข้าโครงการ ${project} | ร้านค้า: ${item.supplier}`;
-
-        addInvLog(
-            'Register Asset', 
-            newAsset.name, 
-            'New', 
-            logAction, // ใช้ Action note ใหม่
-            assetLogImages, 
-            selectedRequest.id, 
-            assetId,
-            { supplier: item.supplier } // เพิ่ม parameter นี้
-        );
+                    addInvLog('Register Asset', newAsset.name, 'New', logAction, assetLogImages, selectedRequest.id, assetId, { supplier: item.supplier });
                 }
             }
         } 
 
-const updatedItems = selectedRequest.items.map(originalItem => {
-    const receivingItem = receiveItems.find(ri => ri.originalName === originalItem.name);
-    if (receivingItem && receivingItem.receivedQty > 0) {
-            
-            // 1. สร้าง Object ประวัติย่อย
-            const newLog = {
-                date: new Date().toLocaleString('th-TH'),
-                qty: receivingItem.receivedQty,
-                price: receivingItem.actualPrice,
-                duration: receivingItem.duration || 1
-            };
+        const updatedItems = selectedRequest.items.map(originalItem => {
+            const receivingItem = receiveItems.find(ri => ri.originalName === originalItem.name);
+            if (receivingItem && receivingItem.receivedQty > 0) {
+                const newLog = { date: new Date().toLocaleString('th-TH'), qty: receivingItem.receivedQty, price: receivingItem.actualPrice, duration: receivingItem.duration || 1 };
+                const prevLogs = originalItem.receivedLog || [];
+                return { ...originalItem, receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty, receivedLog: [...prevLogs, newLog] };
+            }
+            return originalItem;
+        });
 
-            // 2. ดึงประวัติเดิมมาต่อท้าย
-            const prevLogs = originalItem.receivedLog || [];
-
-            return { 
-                ...originalItem, 
-                receivedTotal: (originalItem.receivedTotal || 0) + receivingItem.receivedQty,
-                receivedLog: [...prevLogs, newLog] // ✅ เพิ่มบรรทัดนี้เพื่อบันทึก Log ลง Item
-            };
-    }
-    return originalItem;
-});
-
-const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
+        const allComplete = updatedItems.every(item => (item.receivedTotal || 0) >= item.qty);
         let newStatus = 'Completed';
         if (!allComplete && !isForceClose) newStatus = 'Partially Received';
+        if (['Pending Head', 'Pending PM'].includes(selectedRequest.status)) newStatus = selectedRequest.status;
 
-        let isSpecialMode = ['Pending Head', 'Pending PM'].includes(selectedRequest.status);
-        if (isSpecialMode) {
-            newStatus = selectedRequest.status;
-        }
+        const logTitle = ['Pending Head', 'Pending PM'].includes(selectedRequest.status) ? 'Special Receive' : (STATUS_LABELS[newStatus] || newStatus);
+        let logDesc = ['Pending Head', 'Pending PM'].includes(selectedRequest.status) ? `รับของพิเศษ (Local Bypass) - หมายเหตุ: ${selectedRequest.specialReceiveNote || '-'}` : `รับของเพิ่ม (สถานะ: ${newStatus})`;
+        if (!allComplete && isForceClose) logDesc += `\n⚠️ ปิดงาน (Force Close) เหตุผล: ${forceCloseReason}`;
 
-        const logTitle = isSpecialMode ? 'Special Receive' : (STATUS_LABELS[newStatus] || newStatus);
-        
-        // ⭐ 3.2 ปรับปรุงการสร้างข้อความ Log ให้แนบเหตุผลไปด้วย
-        let logDesc = isSpecialMode
-            ? `รับของพิเศษ (Local Bypass) - หมายเหตุ: ${selectedRequest.specialReceiveNote || '-'}`
-            : `รับของเพิ่ม (สถานะ: ${newStatus})`;
-
-        // ถ้ารับของไม่ครบ และกด Force Close ให้เติมเหตุผลลงไป
-        if (!allComplete && isForceClose) {
-            logDesc += `\n⚠️ ปิดงาน (Force Close) เหตุผล: ${forceCloseReason}`;
-        }
-
-        const updatedReq = { 
-             ...selectedRequest, 
-             items: updatedItems,
-             status: newStatus,
-             isSpecialReceived: isSpecialMode ? true : selectedRequest.isSpecialReceived, 
-             history: [...selectedRequest.history, createLog(logTitle, `${user.empId} ${user.firstName}`, logDesc)]
-        };
-        
-        // ลบ Note ชั่วคราวออกก่อนบันทึกลง Database
+        const updatedReq = { ...selectedRequest, items: updatedItems, status: newStatus, isSpecialReceived: ['Pending Head', 'Pending PM'].includes(selectedRequest.status) ? true : selectedRequest.isSpecialReceived, history: [...selectedRequest.history, createLog(logTitle, `${user.empId} ${user.firstName}`, logDesc)] };
         delete updatedReq.specialReceiveNote;
-
+        
         await saveRequestToSheet(updatedReq);
-
-
         setRequests(prev => prev.map(r => r.id === updatedReq.id ? updatedReq : r));
-        setInventory(currentInvList); // อัปเดต Inventory State ล่าสุด
+        setInventory(currentInvList); 
 
-        setIsLoading(false);
-        setShowReceiveGoodsModal(false);
-        showToast('บันทึกการรับของเรียบร้อย');
+        setIsLoading(false); setShowReceiveGoodsModal(false); showToast('บันทึกการรับของเรียบร้อย');
     } catch (error) {
-        setIsLoading(false);
-        console.error(error);
-        showToast("Error: " + error.message, 'error');
+        setIsLoading(false); showToast("Error: " + error.message, 'error');
     }
 };
       // --- Helper: จัดการรูปภาพในหน้ารับของ (เพิ่ม/ลบ) ---
@@ -6416,15 +6286,21 @@ const handleConfirmDisburse = async () => {
     try {
         // Upload Images
         let logImages = [];
-        if (disburseData.images && disburseData.images.length > 0) {
-            const uploadPromises = disburseData.images.map(imgObj => {
-                return new Promise((resolve, reject) => {
-                    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
-                });
-            });
-            const uploaded = await Promise.all(uploadPromises);
-            logImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+if (disburseData.images && disburseData.images.length > 0) {
+    const uploadPromises = disburseData.images.map(imgObj => {
+        // ⭐ เปลี่ยนมาใช้ uploadFileToSupabase สำหรับบันทึกหลักฐานการจ่าย
+        if (imgObj.file) {
+            return uploadFileToSupabase(imgObj.file, 'disburse_proof');
         }
+        return Promise.resolve(imgObj);
+    });
+    const uploaded = await Promise.all(uploadPromises);
+    logImages = uploaded.filter(u => u && u.url).map(u => ({ 
+        name: u.name, 
+        type: 'image/jpeg', 
+        url: u.url 
+    }));
+}
 
         let logDetails = [];
 
@@ -7126,6 +7002,8 @@ if (!user) {
                <p className="text-sm font-medium">{notification.message}</p>
             </div>
           )}
+
+
 
     
           {/* Sidebar */}
@@ -8660,9 +8538,9 @@ if (isOwner && canRecall) return (
                          
                          {/* Middle: Tabs Selection */}
                          <div className="flex bg-gray-200 p-1 rounded-lg">
-                            <button onClick={() => { setInvTabMode('System'); setSelectedInventory([]); }} className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${invTabMode === 'System' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>ของในระบบ</button>
-                            <button onClick={() => { setInvTabMode('NonSystem'); setSelectedInventory([]); }} className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${invTabMode === 'NonSystem' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>ของนอกระบบ</button>
-                            <button onClick={() => { setInvTabMode('Summary'); setSelectedInventory([]); }} className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${invTabMode === 'Summary' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>รวม (Summary)</button>
+                            <button onClick={() => { setInvTabMode('System'); setSelectedInventory([]); }} className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${invTabMode === 'System' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>ในระบบ</button>
+                            <button onClick={() => { setInvTabMode('NonSystem'); setSelectedInventory([]); }} className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${invTabMode === 'NonSystem' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>นอกระบบ</button>
+                            <button onClick={() => { setInvTabMode('Summary'); setSelectedInventory([]); }} className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${invTabMode === 'Summary' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>รวม</button>
                          </div>
 
                          {/* Right: Search & Actions */}
@@ -8671,6 +8549,14 @@ if (isOwner && canRecall) return (
                                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
                                 <input type="text" className="w-full pl-10 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm outline-none" placeholder="ค้นหาสินค้า..." value={invSearch} onChange={e => setInvSearch(e.target.value)}/>
                            </div>
+                           <label className="flex items-center gap-1.5 cursor-pointer bg-white px-2 py-1.5 rounded-lg border shadow-sm hover:bg-gray-50 transition-colors" title="เปิดใช้งาน AI เพื่อค้นหาด้วยความหมาย (Semantic Search)">
+        <div className="relative">
+            <input type="checkbox" className="sr-only" checked={useAiSearchInv} onChange={(e) => setUseAiSearchInv(e.target.checked)} />
+            <div className={`block w-7 h-4 rounded-full transition-colors ${useAiSearchInv ? 'bg-blue-500' : 'bg-gray-300'}`}></div>
+            <div className={`dot absolute left-[2px] top-[2px] bg-white w-3 h-3 rounded-full transition-transform ${useAiSearchInv ? 'transform translate-x-3' : ''}`}></div>
+        </div>
+        <span className={`text-[10px] font-bold ${useAiSearchInv ? 'text-blue-600' : 'text-gray-500'}`}>AI</span>
+    </label>
                            <button onClick={() => openGeneralHistory()} className="text-gray-600 text-sm font-medium flex items-center gap-1 hover:bg-gray-100 px-3 py-1.5 rounded"><ClipboardList className="w-4 h-4"/> ประวัติ</button>
 
 
@@ -8930,6 +8816,14 @@ if (isOwner && canRecall) return (
                         <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400"/>
                         <input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="ค้นหารหัส, ชื่อ..." value={assetSearch} onChange={e => setAssetSearch(e.target.value)}/>
                     </div>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white px-2 py-1.5 rounded-lg border shadow-sm hover:bg-gray-50 transition-colors" title="เปิดใช้งาน AI เพื่อค้นหาด้วยความหมาย (Semantic Search)">
+        <div className="relative">
+            <input type="checkbox" className="sr-only" checked={useAiSearchAst} onChange={(e) => setUseAiSearchAst(e.target.checked)} />
+            <div className={`block w-7 h-4 rounded-full transition-colors ${useAiSearchAst ? 'bg-indigo-500' : 'bg-gray-300'}`}></div>
+            <div className={`dot absolute left-[2px] top-[2px] bg-white w-3 h-3 rounded-full transition-transform ${useAiSearchAst ? 'transform translate-x-3' : ''}`}></div>
+        </div>
+        <span className={`text-[10px] font-bold ${useAiSearchAst ? 'text-indigo-600' : 'text-gray-500'}`}>AI</span>
+    </label>
                  </div>
 
                  {/* Right: Actions & Tabs */}
@@ -10063,14 +9957,16 @@ py-1 rounded text-xs font-bold ${
     </label>
     
     <div className="flex gap-2">
-        {/* ช่องกรอกตัวเลขราคา */}
-        <input 
-            type="number" min="0" 
-            disabled={newOrderMeta.type === 'Withdraw'} 
-            className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" 
-            value={tempItem.unitPrice} 
-            onChange={e => setTempItem({...tempItem, unitPrice: parseFloat(e.target.value) || 0})} 
-        />
+{/* ช่องกรอกตัวเลขราคา */}
+<input 
+    type="number" min="0" step="any" 
+    disabled={newOrderMeta.type === 'Withdraw'} 
+    className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" 
+    placeholder="0.00"
+    value={tempItem.unitPrice === 0 ? '' : tempItem.unitPrice} 
+    onChange={e => setTempItem({...tempItem, unitPrice: e.target.value === '' ? '' : e.target.value})} 
+    onBlur={e => setTempItem({...tempItem, unitPrice: parseFloat(e.target.value) || 0})}
+/>
         
         {/* Dropdown หน่วยเวลา (แสดงเฉพาะ HO Rent) */}
         {newOrderMeta.type === 'HO' && newOrderMeta.purchaseType === 'Rent' && (
@@ -10360,11 +10256,20 @@ py-1 rounded text-xs font-bold ${
 </div>
 
                  <div className="flex-1 min-w-0">
-   <h4 
-    className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors"
+<h4 
+    className="font-bold text-gray-900 text-sm truncate group-hover:text-blue-600 transition-colors flex items-center gap-2"
     title={item.name} 
 >
-    {item.name}
+    <span className="truncate">{item.name}</span>
+    
+    {/* ⭐ โชว์ป้ายเปอร์เซ็นต์ AI (แสดงเฉพาะตอนที่พิมพ์ค้นหา) */}
+    {selectionSearch && item.searchScore > 0 && (
+        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold shrink-0 ${
+            item.searchScore === 1 ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+        }`}>
+            {item.searchScore === 1 ? 'ตรงเป๊ะ' : `AI: ${Math.round(item.searchScore * 100)}%`}
+        </span>
+    )}
 </h4>
     {/* ⭐ ใช้ getDisplayId ตรงนี้ */}
     <p className="text-xs text-gray-500 truncate font-mono">{getDisplayId(item.id) || item.serial || '-'}</p>          
@@ -12390,16 +12295,23 @@ const relatedAssets = sourceAssets.filter(a =>
                         </div>
                     </div>
 
-                    {/* Min Stock & Price */}
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1.5">Min Stock (จุดสั่งซื้อ)</label>
-                            <input type="number" min="0" className="w-full p-2.5 border rounded-xl text-sm" value={newStockItem.minStock} onChange={e => setNewStockItem({...newStockItem, minStock: parseInt(e.target.value)||0})}/>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1.5">ราคาต่อหน่วย (บาท)</label>
-                            <input type="number" min="0" className="w-full p-2.5 border rounded-xl text-sm" value={newStockItem.price} onChange={e => setNewStockItem({...newStockItem, price: parseFloat(e.target.value)||0})}/>
-                        </div>
+                   {/* Min Stock & Price */}
+<div className="grid grid-cols-2 gap-4">
+    <div>
+        <label className="block text-sm font-bold text-gray-700 mb-1.5">Min Stock (จุดสั่งซื้อ)</label>
+        <input type="number" min="0" className="w-full p-2.5 border rounded-xl text-sm" value={newStockItem.minStock} onChange={e => setNewStockItem({...newStockItem, minStock: parseInt(e.target.value)||0})}/>
+    </div>
+    <div>
+        <label className="block text-sm font-bold text-gray-700 mb-1.5">ราคาต่อหน่วย (บาท)</label>
+        <input 
+            type="number" min="0" step="any" placeholder="0.00" className="w-full p-2.5 border rounded-xl text-sm" 
+            value={newStockItem.price === 0 ? '' : newStockItem.price} 
+            onChange={e => setNewStockItem({...newStockItem, price: e.target.value === '' ? '' : e.target.value})}
+            onBlur={e => setNewStockItem({...newStockItem, price: parseFloat(e.target.value)||0})}
+        />
+    </div>
+
+                    
                     </div>
 
                    <div>
@@ -12559,22 +12471,45 @@ const relatedAssets = sourceAssets.filter(a =>
                         </div>
 
                     {/* Price & Rent Details */}
-                    <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                        {newAssetItem.ownerType === 'Company' ? (
-                            <div><label className="block text-sm font-bold text-gray-700 mb-1.5">ราคาซื้อ</label><input type="number" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.price} onChange={e => setNewAssetItem({...newAssetItem, price: parseFloat(e.target.value)||0})}/></div>
-                        ) : (
-                            <>
-                                <div className="grid grid-cols-2 gap-3 mb-3">
-                                    <div><label className="block text-sm font-bold text-gray-700 mb-1.5">ราคาเช่า</label><input type="number" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.rentalPrice} onChange={e => setNewAssetItem({...newAssetItem, rentalPrice: parseFloat(e.target.value)||0})}/></div>
-                                    <div><label className="block text-sm font-bold text-gray-700 mb-1.5">หน่วย</label><select className="w-full p-2.5 border rounded-xl text-sm bg-gray-50" value={newAssetItem.rentalUnit} onChange={e => setNewAssetItem({...newAssetItem, rentalUnit: e.target.value})}><option value="Day">บาท / วัน</option><option value="Month">บาท / เดือน</option><option value="Year">บาท / ปี</option></select></div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-dashed">
-                                    <div><label className="block text-sm font-bold text-gray-700 mb-1.5">วันเริ่มสัญญา</label><input type="date" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.rentalStart || ''} onChange={e => setNewAssetItem({...newAssetItem, rentalStart: e.target.value})}/></div>
-                                    <div><label className="block text-sm font-bold text-gray-700 mb-1.5">วันสิ้นสุด</label><input type="date" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.rentalEnd || ''} onChange={e => setNewAssetItem({...newAssetItem, rentalEnd: e.target.value})}/></div>
-                                </div>
-                            </>
-                        )}
-                    </div>
+<div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+    {newAssetItem.ownerType === 'Company' ? (
+        <div>
+            <label className="block text-sm font-bold text-gray-700 mb-1.5">ราคาซื้อ</label>
+            <input 
+                type="number" step="any" placeholder="0.00" className="w-full p-2.5 border rounded-xl text-sm" 
+                value={newAssetItem.price === 0 ? '' : newAssetItem.price} 
+                onChange={e => setNewAssetItem({...newAssetItem, price: e.target.value === '' ? '' : e.target.value})} 
+                onBlur={e => setNewAssetItem({...newAssetItem, price: parseFloat(e.target.value)||0})}
+            />
+        </div>
+    ) : (
+        <>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1.5">ราคาเช่า</label>
+                    <input 
+                        type="number" step="any" placeholder="0.00" className="w-full p-2.5 border rounded-xl text-sm" 
+                        value={newAssetItem.rentalPrice === 0 ? '' : newAssetItem.rentalPrice} 
+                        onChange={e => setNewAssetItem({...newAssetItem, rentalPrice: e.target.value === '' ? '' : e.target.value})} 
+                        onBlur={e => setNewAssetItem({...newAssetItem, rentalPrice: parseFloat(e.target.value)||0})}
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1.5">หน่วย</label>
+                    <select className="w-full p-2.5 border rounded-xl text-sm bg-gray-50" value={newAssetItem.rentalUnit} onChange={e => setNewAssetItem({...newAssetItem, rentalUnit: e.target.value})}>
+                        <option value="Day">บาท / วัน</option>
+                        <option value="Month">บาท / เดือน</option>
+                        <option value="Year">บาท / ปี</option>
+                    </select>
+                </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-dashed">
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5">วันเริ่มสัญญา</label><input type="date" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.rentalStart || ''} onChange={e => setNewAssetItem({...newAssetItem, rentalStart: e.target.value})}/></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5">วันสิ้นสุด</label><input type="date" className="w-full p-2.5 border rounded-xl text-sm" value={newAssetItem.rentalEnd || ''} onChange={e => setNewAssetItem({...newAssetItem, rentalEnd: e.target.value})}/></div>
+            </div>
+        </>
+    )}
+</div>
 
                     {/* Status & Images */}
                     <div className="grid grid-cols-2 gap-4">
@@ -13589,7 +13524,14 @@ const relatedAssets = sourceAssets.filter(a =>
                         <div><label className="text-xs font-bold text-gray-500 mb-1 block">Min Stock</label><input type="number" className="w-full p-2 border rounded" value={editingStockItem.minStock} onChange={e => setEditingStockItem({...editingStockItem, minStock: parseInt(e.target.value)||0})}/></div>
                        
                        
-                        <div><label className="text-xs font-bold text-gray-500 mb-1 block">ราคาต่อหน่วย</label><input type="number" className="w-full p-2 border rounded" value={editingStockItem.price} onChange={e => setEditingStockItem({...editingStockItem, price: parseFloat(e.target.value)||0})}/></div>
+                       <div>
+    <label className="text-xs font-bold text-gray-500 mb-1 block">ราคาต่อหน่วย</label>
+    <input type="number" step="any" placeholder="0.00" className="w-full p-2 border rounded" 
+           value={editingStockItem.price === 0 ? '' : editingStockItem.price} 
+           onChange={e => setEditingStockItem({...editingStockItem, price: e.target.value === '' ? '' : e.target.value})}
+           onBlur={e => setEditingStockItem({...editingStockItem, price: parseFloat(e.target.value)||0})}
+    />
+</div>
                       </div>
 
 {/* Image Upload for Edit (UPDATED: Remove Current Image) */}
@@ -13684,11 +13626,12 @@ const relatedAssets = sourceAssets.filter(a =>
             <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">ราคาเช่า</label>
                 <input 
-                    type="number" 
-                    className="w-full p-2 border rounded-lg text-sm" 
-                    value={editingAssetItem.rentalPrice} 
-                    onChange={e => setEditingAssetItem({...editingAssetItem, rentalPrice: parseFloat(e.target.value)||0})}
-                />
+    type="number" step="any" placeholder="0.00" 
+    className="w-full p-2 border rounded-lg text-sm" 
+    value={editingAssetItem.rentalPrice === 0 ? '' : editingAssetItem.rentalPrice} 
+    onChange={e => setEditingAssetItem({...editingAssetItem, rentalPrice: e.target.value === '' ? '' : e.target.value})}
+    onBlur={e => setEditingAssetItem({...editingAssetItem, rentalPrice: parseFloat(e.target.value)||0})}
+/>
             </div>
             <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">หน่วย</label>
@@ -13730,11 +13673,12 @@ const relatedAssets = sourceAssets.filter(a =>
     <div>
         <label className="block text-xs font-bold text-gray-500 mb-1">ราคาซื้อ</label>
         <input 
-            type="number" 
-            className="w-full p-2 border rounded-lg text-sm" 
-            value={editingAssetItem.price} 
-            onChange={e => setEditingAssetItem({...editingAssetItem, price: parseFloat(e.target.value)||0})}
-        />
+    type="number" step="any" placeholder="0.00" 
+    className="w-full p-2 border rounded-lg text-sm" 
+    value={editingAssetItem.price === 0 ? '' : editingAssetItem.price} 
+    onChange={e => setEditingAssetItem({...editingAssetItem, price: e.target.value === '' ? '' : e.target.value})}
+    onBlur={e => setEditingAssetItem({...editingAssetItem, price: parseFloat(e.target.value)||0})}
+/>
     </div>
 )}
                        </div>
@@ -15166,7 +15110,13 @@ const relatedAssets = sourceAssets.filter(a =>
                                 </td>
 
                                 {/* Price */}
-                                <td className="px-2 py-1"><input type="number" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" value={row.price} onChange={e => { const newData = [...importData]; newData[idx].price = parseFloat(e.target.value) || 0; setImportData(newData); }}/></td>
+                                <td className="px-2 py-1">
+    <input type="number" step="any" placeholder="0.00" className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-right font-mono" 
+           value={row.price === 0 ? '' : row.price} 
+           onChange={e => { const newData = [...importData]; newData[idx].price = e.target.value === '' ? '' : e.target.value; setImportData(newData); }}
+           onBlur={e => { const newData = [...importData]; newData[idx].price = parseFloat(e.target.value) || 0; setImportData(newData); }}
+    />
+</td>
                                 
                                 {/* Unit */}
                                 <td className="px-2 py-1">
