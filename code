@@ -786,19 +786,32 @@ function getSheetData(sheetName, customQuery = '') {
   }
 }
 
+
 function saveDataToSheet(sheetName, id, dataObj) {
+  // ⭐ แยกร่าง! ดึงสมอง AI (embedding) ออกมาก่อนเซฟลง payload
+  let aiVector = null;
+  if (dataObj && dataObj.embedding) {
+    aiVector = dataObj.embedding;
+    delete dataObj.embedding; // ลบออกจากข้อมูล จะได้ไม่ไปรกใน payload
+  }
+
   const record = {
     id: id.toString(),
     payload: dataObj
   };
+  
+  // ⭐ เอาสมอง AI ไปหยอดใส่คอลัมน์ embedding แยกต่างหาก
+  if (aiVector) {
+    record.embedding = aiVector;
+  }
   
   const table = sheetName.toLowerCase();
   const url = `${SUPABASE_URL}/rest/v1/${table}`;
   const options = {
     method: 'post',
     headers: {
-      'apikey': SUPABASE_ANON_KEY,        // 🟢 ต้องเป็น ANON
-      'Authorization': 'Bearer ' + SUPABASE_KEY, // 🔴 ต้องเป็น SECRET (ในที่นี้คือตัวแปร SUPABASE_KEY)
+      'apikey': SUPABASE_ANON_KEY,        
+      'Authorization': 'Bearer ' + SUPABASE_KEY, // 🔴 เจาะทะลุ RLS
       'Content-Type': 'application/json',
       'Prefer': 'resolution=merge-duplicates'
     },
@@ -810,7 +823,6 @@ function saveDataToSheet(sheetName, id, dataObj) {
 
   return true;
 }
-
 
 
 function deleteDataFromSheet(sheetName, id) {
@@ -1830,128 +1842,53 @@ function updateLogItemId(oldId, newId) {
 }
 
 
-// --- ปรับปรุงฟังก์ชันบันทึกข้อมูลนำเข้าแบบกลุ่ม (Bulk Upsert) ---
+// --- ฟังก์ชันบันทึกข้อมูลนำเข้าวัสดุแบบกลุ่ม (Bulk Upsert + AI) ---
 function batchImportInventory(items, logs) {
+  // 1. บันทึกรายการสินค้า (Inventory)
   if (items && items.length > 0) {
-    // แปลงข้อมูลให้อยู่ในรูปแบบ record สำหรับ Supabase
-    const records = items.map(item => ({
-      id: item.id.toString(),
-      payload: item
-    }));
+    const records = items.map(item => {
+      // ⭐ แยกร่าง AI (embedding) ออกจากข้อมูล JSON
+      let emb = item.embedding || null;
+      if (item.embedding) delete item.embedding;
+      
+      let rec = {
+        id: item.id.toString(),
+        payload: item
+      };
+      // ถ้ามีค่า AI ให้ยัดใส่คอลัมน์ embedding แยกต่างหาก
+      if (emb) rec.embedding = emb; 
+      
+      return rec;
+    });
     
-    // ส่งข้อมูลก้อนใหญ่ไป Upsert ทีเดียว (Bulk)
-    const table = 'inventory';
-    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const url = `${SUPABASE_URL}/rest/v1/inventory`;
     const options = {
       method: 'post',
       headers: {
         'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY, // 🔴 ใช้สิทธิ์พระเจ้าเจาะ RLS
         'Content-Type': 'application/json',
         'Prefer': 'resolution=merge-duplicates' // ทับข้อมูลเดิมถ้า ID ซ้ำ
       },
       payload: JSON.stringify(records)
     };
-    UrlFetchApp.fetch(url, options);
-  }
-  
-  // บันทึก Logs แบบ Bulk (ถ้า Supabase รองรับตาราง Logs แบบ JSON)
-  if (logs && logs.length > 0) {
-    const logRecords = logs.map(log => {
-      if (!log.date) log.date = new Date().toLocaleString('th-TH');
-      const logId = log.date + '_' + Math.floor(Math.random() * 1000);
-      return { id: logId, payload: log };
-    });
-    // เรียก fetch แบบเดียวกับด้านบนไปยังตาราง logs
-  }
-  
-  return { success: true };
-}
-
-// --- ฟังก์ชันบันทึกข้อมูลนำเข้าแบบรวดเร็ว (Batch Save) ---
-function batchImportInventory(items, logs) {
-  // 1. บันทึกรายการสินค้า
-  if (items && items.length > 0) {
-    items.forEach(item => {
-      try {
-        syncInventory(item); 
-      } catch (e) {
-        console.error("Error saving item: " + item.id, e);
-      }
-    });
-  }
-  
-  // 2. บันทึก Logs (แก้ไขให้สร้าง ID ตามรูปแบบเดิม)
-  if (logs && logs.length > 0) {
-    logs.forEach(log => {
-      try {
-        // เติมวันที่ถ้ายังไม่มี
-        if (!log.date) log.date = new Date().toLocaleString('th-TH');
-
-        // ⭐ สร้าง ID ตามรูปแบบเดิม: วันที่_เลขสุ่ม
-        const logId = log.date + '_' + Math.floor(Math.random() * 1000);
-
-        // บันทึกโดยใช้ ID นี้
-        saveDataToSheet('Logs', logId, log); 
-      } catch (e) {
-         console.error("Error saving log", e);
-      }
-    });
-  }
-  
-  return { success: true };
-}
-
-
-// --- ฟังก์ชันบันทึกข้อมูลทรัพย์สินแบบกลุ่ม (Bulk Upsert) ---
-function batchImportAssets(assets, logs) {
-  // 1. บันทึกทรัพย์สิน (Assets) แบบ Bulk
-  if (assets && assets.length > 0) {
-    // เตรียมข้อมูลให้อยู่ในรูปแบบที่ Supabase ต้องการ ({ id, payload })
-    const assetRecords = assets.map(asset => ({
-      id: asset.id.toString(),
-      payload: asset
-    }));
-
-    const url = `${SUPABASE_URL}/rest/v1/assets`;
-    const options = {
-      method: 'post',
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates' // ทับข้อมูลเดิมถ้า ID ซ้ำ
-      },
-      payload: JSON.stringify(assetRecords)
-    };
-
-    try {
-      const response = UrlFetchApp.fetch(url, options);
-      if (response.getResponseCode() >= 400) {
-        console.error("❌ Bulk Asset Error: " + response.getContentText());
-        throw new Error("Failed to save assets: " + response.getContentText());
-      }
-    } catch (e) {
-      console.error("❌ Bulk Asset Exception: " + e.toString());
-      return { success: false, message: e.toString() };
+    
+    try { 
+        UrlFetchApp.fetch(url, options); 
+    } catch(e) { 
+        console.error("❌ Bulk Inv Error:", e); 
     }
   }
-
-  // 2. บันทึกประวัติ (Logs) แบบ Bulk
+  
+  // 2. บันทึก Logs แบบ Bulk ทีเดียวรวดเร็ว
   if (logs && logs.length > 0) {
     const logRecords = logs.map(log => {
-      // เติมวันที่ถ้ายังไม่มี
       if (!log.date) log.date = new Date().toLocaleString('th-TH');
-      
-      // สร้าง Log ID
+      // สร้าง ID แบบสุ่มไม่ให้ซ้ำกันชัวร์ๆ
       const logId = log.date + '_' + Math.floor(Math.random() * 10000) + '_' + Math.random().toString(36).substr(2, 5);
-
-      return {
-        id: logId,
-        payload: log
-      };
+      return { id: logId, payload: log };
     });
-
+    
     const logUrl = `${SUPABASE_URL}/rest/v1/logs`;
     const logOptions = {
       method: 'post',
@@ -1963,15 +1900,72 @@ function batchImportAssets(assets, logs) {
       },
       payload: JSON.stringify(logRecords)
     };
-
-    try {
-      UrlFetchApp.fetch(logUrl, logOptions);
-    } catch (e) {
-      console.error("❌ Bulk Log Exception: " + e.toString());
-      // Log error ไม่ควรทำให้ process หลักหยุดชะงัก จึงแค่ console.error ไว้
+    
+    try { 
+        UrlFetchApp.fetch(logUrl, logOptions); 
+    } catch(e) {
+        console.error("❌ Bulk Log Error:", e);
     }
   }
   
+  return { success: true };
+}
+
+
+// --- ฟังก์ชันบันทึกข้อมูลนำเข้าทรัพย์สินแบบกลุ่ม (Bulk Upsert + AI) ---
+function batchImportAssets(assets, logs) {
+  if (assets && assets.length > 0) {
+    const assetRecords = assets.map(asset => {
+      // ⭐ แยกร่าง AI
+      let emb = asset.embedding || null;
+      if (asset.embedding) delete asset.embedding;
+      
+      let rec = {
+        id: asset.id.toString(),
+        payload: asset
+      };
+      if (emb) rec.embedding = emb; // แยกใส่คอลัมน์
+      return rec;
+    });
+
+    const url = `${SUPABASE_URL}/rest/v1/assets`;
+    const options = {
+      method: 'post',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      payload: JSON.stringify(assetRecords)
+    };
+
+    try {
+      UrlFetchApp.fetch(url, options);
+    } catch (e) {
+      console.error("❌ Bulk Asset Exception: " + e.toString());
+    }
+  }
+
+  if (logs && logs.length > 0) {
+    const logRecords = logs.map(log => {
+      if (!log.date) log.date = new Date().toLocaleString('th-TH');
+      const logId = log.date + '_' + Math.floor(Math.random() * 10000) + '_' + Math.random().toString(36).substr(2, 5);
+      return { id: logId, payload: log };
+    });
+    const logUrl = `${SUPABASE_URL}/rest/v1/logs`;
+    const logOptions = {
+      method: 'post',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      payload: JSON.stringify(logRecords)
+    };
+    try { UrlFetchApp.fetch(logUrl, logOptions); } catch (e) {}
+  }
   return { success: true };
 }
 
@@ -2562,7 +2556,9 @@ if (pendingList.length > 0) {
 }
 
 function sendSummaryEmailToUser(user, items, allRequests, allInventory, allAssets) {
-  const scriptUrl = ScriptApp.getService().getUrl();
+  
+  const scriptUrl = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');
+
   const approverEmail = user.email;
   const allIds = items.map(i => i.id).join(',');
   
@@ -2789,7 +2785,7 @@ function createBulkRejectForm(e) {
 
 
 /**
- * ฟังก์ชัน Rollback ระดับ Super Admin (ฉบับแก้ไข: Encode URL Parameter)
+ * ฟังก์ชัน Rollback ระดับ Super Admin (ฉบับแก้ไข: ป้องกัน Rollback ซ้ำซ้อน)
  */
 function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
   var lock = LockService.getScriptLock();
@@ -2801,15 +2797,18 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
     var inventory = getSheetData('Inventory');
     var assets = getSheetData('Assets');
     
-    // ⭐ [แก้ไขจุดที่ Error] เปลี่ยน ->> เป็น -%3E%3E เพื่อให้ UrlFetchApp ทำงานได้
-    // เดิม: var relatedLogs = getSheetData('Logs', '&payload->>relatedRequestId=eq.' + requestId);
-    var relatedLogs = getSheetData('Logs', '&payload-%3E%3ErelatedRequestId=eq.' + requestId);
+    // ⭐ [แก้ไข] ดึง Logs มาทั้งก้อนแบบเอา id มาด้วย (เพื่อใช้อัปเดตกลับลง Supabase)
+    var logsRes = callSupabase('Logs', 'get', null, '?select=id,payload&payload-%3E%3ErelatedRequestId=eq.' + requestId);
+    var rawLogs = [];
+    try { rawLogs = JSON.parse(logsRes); } catch(e){}
 
     var reqIndex = requests.findIndex(function(r) { return r.id === requestId; });
     if (reqIndex === -1) throw new Error("ไม่พบเอกสาร ID: " + requestId);
     var req = requests[reqIndex];
 
     var logsToSave = [];
+    var logsToUpdate = []; // ⭐ [NEW] ตัวแปรสำหรับเก็บ Log เดิมที่ต้องแปะป้าย (Reverted)
+    
     var inventoryUpdates = new Map(); 
     var assetsToUpdate = new Map();
     var assetsToDelete = new Set(); 
@@ -2820,10 +2819,13 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
     // 2. 🔄 PROCESS ROLLBACK BASED ON LOGS
     // -------------------------------------------------------------------------
     
-    if (relatedLogs && relatedLogs.length > 0) {
-      relatedLogs.forEach(function(log) {
+    if (rawLogs && rawLogs.length > 0) {
+      rawLogs.forEach(function(row) {
+        var log = row.payload;
         // ข้าม Log ที่ถูก Revert ไปแล้ว
         if (log.action.includes('(Reverted)')) return;
+
+        var isProcessed = false;
 
         // --- A. กรณีรับของเข้า (Stock In) -> ต้องดึงออก ---
         if (log.action.includes('Stock In') && log.assetId) {
@@ -2844,6 +2846,7 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
                        note: 'Rollback: ดึงยอดรับของคืน (Ref Log: ' + log.date + ')',
                        by: adminInfo, relatedRequestId: requestId, assetId: inv.id
                    });
+                   isProcessed = true;
                }
            }
         }
@@ -2852,13 +2855,13 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
         else if ((log.action.includes('Register Asset') || log.action.includes('Add Asset')) && log.assetId) {
             if (log.relatedRequestId === requestId) {
                 assetsToDelete.add(log.assetId);
+                isProcessed = true;
             }
         }
 
         // --- C. กรณีเบิกออก (Withdraw) -> ต้องคืนยอดเข้า ---
         else if (log.action.includes('Withdraw') && log.assetId) {
             var qty = 0;
-            // เช็คว่าเป็นตัวเลขติดลบหรือไม่ เช่น "-5"
             if (log.change.includes('-')) qty = Math.abs(parseInt(log.change));
             
             if (qty > 0) {
@@ -2874,8 +2877,15 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
                        note: 'Rollback: คืนยอดเบิกกลับคลัง (Ref Log: ' + log.date + ')',
                        by: adminInfo, relatedRequestId: requestId, assetId: inv.id
                    });
+                   isProcessed = true;
                }
             }
+        }
+
+        // ⭐⭐⭐ ถ้า Log นี้ถูกดึงยอดไปแล้ว ให้แปะป้าย (Reverted) ป้องกันดึงซ้ำ!
+        if (isProcessed) {
+            log.action = log.action + ' (Reverted)';
+            logsToUpdate.push({ id: row.id, payload: log });
         }
       });
     }
@@ -2884,7 +2894,6 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
     // 3. 🧹 FALLBACK CLEANUP (เก็บตก)
     // -------------------------------------------------------------------------
     
-    // Fallback: ลบทรัพย์สินที่ยังผูกกับ Request นี้ (เผื่อ Log หาย)
     if (['Local', 'HO'].includes(req.type)) {
         var linkedAssets = assets.filter(function(a) { return a.currentRequestId === req.id; });
         linkedAssets.forEach(function(asset) {
@@ -2894,7 +2903,6 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
         });
     }
 
-    // Fallback: ปลดสถานะการยืม (Borrow)
     if (req.type === 'Borrow') {
         var borrowedAssets = assets.filter(function(a) { return a.currentRequestId === req.id && a.status === 'Borrowed'; });
         borrowedAssets.forEach(function(asset) {
@@ -2919,7 +2927,6 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
     // 4. 💾 SAVE CHANGES
     // -------------------------------------------------------------------------
 
-    // 4.1 Update Inventory
     if (inventoryUpdates.size > 0) {
         var invRecords = [];
         inventoryUpdates.forEach(function(value) { invRecords.push({ id: value.id, payload: value }); });
@@ -2931,7 +2938,6 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
         UrlFetchApp.fetch(urlInv, optInv);
     }
 
-    // 4.2 Update Assets
     if (assetsToUpdate.size > 0) {
         var astRecords = [];
         assetsToUpdate.forEach(function(value) { astRecords.push({ id: value.id, payload: value }); });
@@ -2943,7 +2949,6 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
         UrlFetchApp.fetch(urlAst, optAst);
     }
 
-    // 4.3 Delete Assets (วนลบทีละรายการเพื่อความชัวร์)
     if (assetsToDelete.size > 0) {
         assetsToDelete.forEach(function(assetId) {
             deleteDataFromSheet('Assets', assetId);
@@ -2985,21 +2990,33 @@ function processSuperAdminRollback(requestId, targetStatus, reason, adminInfo) {
     });
     saveDataToSheet('Requests', req.id, req);
 
-    // 7. Save Logs
+    // 7. Save Logs (⭐ อัปเดตทั้ง Log ใหม่ และแก้ไข Log เดิม)
+    var allLogRecordsToUpsert = [];
+    
+    // 7.1 Log ใหม่
     if (logsToSave.length > 0) {
-        var logRecords = logsToSave.map(function(log) {
-             var logId = log.date + '_' + Math.floor(Math.random() * 10000);
-             return { id: logId, payload: log };
+        logsToSave.forEach(function(log) {
+             var logId = log.date + '_' + Math.floor(Math.random() * 100000);
+             allLogRecordsToUpsert.push({ id: logId, payload: log });
         });
+    }
+    // 7.2 Log เดิมที่ต้องแปะป้าย (Reverted)
+    if (logsToUpdate.length > 0) {
+        logsToUpdate.forEach(function(rec) {
+             allLogRecordsToUpsert.push(rec);
+        });
+    }
+
+    if (allLogRecordsToUpsert.length > 0) {
         var urlLog = SUPABASE_URL + '/rest/v1/logs';
         var optLog = {
             method: 'post', headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
-            payload: JSON.stringify(logRecords)
+            payload: JSON.stringify(allLogRecordsToUpsert)
         };
         UrlFetchApp.fetch(urlLog, optLog);
     }
 
-    return { success: true, message: 'Rollback เสร็จสิ้น! ระบบดึงข้อมูลคืนตามประวัติการทำรายการเรียบร้อยแล้ว', request: req };
+    return { success: true, message: 'Rollback เสร็จสิ้น! ระบบดึงข้อมูลคืนและอัปเดตประวัติเรียบร้อยแล้ว', request: req };
 
   } catch (e) {
     console.error(e);
@@ -3077,87 +3094,6 @@ function getStockInfoHtml(itemName, project, currentReqId, allRequests, allInven
   return html;
 }
 
-// ==========================================
-// ฟังก์ชันส่งการแจ้งเตือนเข้ากลุ่ม LINE
-// ==========================================
-const LINE_ACCESS_TOKEN = 'xCgwPyQbRcCviUcp4eKylr6u1x0guUPxfjbL/xcFuq237DrUFgyFPcciv3PKseYq1UJlE5l/At3CPpjY1eRKFo7vf+6Dam6EMojOVVoC2Q3+ANpYj1l9uDjPw2TMHXRj5bS23a2jycoQLdSWgd9UcgdB04t89/1O/w1cDnyilFU=';
-const LINE_GROUP_APPROVE = 'Caddbe38f8930c12f37fc29c5f76861b9'; // กลุ่มรออนุมัติ
-const LINE_GROUP_STORE = 'Cad7fbfbfc9ab9bee4c2f027694e38b9e';   // กลุ่มสโตร์ (รอตัดจ่าย)
-
-function sendLineGroupNotification(req) {
-  let targetGroupId = '';
-  let displayStatus = '';
-  let headerText = '';
-
-  // 1. ตรวจสอบสถานะเพื่อกำหนดกลุ่มเป้าหมายและข้อความ
-  if (req.status === 'Pending Head') {
-    targetGroupId = LINE_GROUP_APPROVE;
-    headerText = '🔔 มีคำขอใหม่ต้องการการอนุมัติ!';
-    
-    // แยกชื่อสถานะตามประเภทเอกสาร
-    if (req.type === 'Withdraw' || req.type === 'Borrow') {
-      displayStatus = 'รออนุมัติ Level 1 / Level 2';
-    } else {
-      displayStatus = 'รออนุมัติ Level 1';
-    }
-
-  } else if (req.status === 'Ready to Disburse') {
-    targetGroupId = LINE_GROUP_STORE;
-    headerText = '📦 มีรายการรอจ่ายของ / ตัดสต็อก!';
-    displayStatus = 'รอจ่ายของ (เบิก/ยืม)';
-    
-  } else {
-    // ถ้านอกเหนือจาก 2 สถานะนี้ จะไม่ส่ง LINE ออกไป
-    return;
-  }
-
-  // 2. แปลงประเภท (Type) ให้เป็นภาษาไทยเพื่อให้อ่านง่าย
-  let displayType = req.type;
-  if (req.type === 'Local') displayType = 'สั่งซื้อ Local';
-  else if (req.type === 'HO') displayType = req.purchaseType === 'Rent' ? 'สั่งซื้อ HO (เช่า)' : 'สั่งซื้อ HO (ซื้อขาด)';
-  else if (req.type === 'Withdraw') displayType = 'เบิกวัสดุ';
-  else if (req.type === 'Borrow') displayType = 'ยืมทรัพย์สิน';
-
-  // 3. สรุปรายการสินค้า (แสดงสูงสุด 5 รายการแรก เพื่อไม่ให้ข้อความยาวเกินไป)
-  let itemsList = req.items.slice(0, 5).map((item, i) => `  ${i+1}. ${item.name} (${item.qty} ${item.unit})`).join('\n');
-  if (req.items.length > 5) {
-    itemsList += `\n  ... และอื่นๆ อีก ${req.items.length - 5} รายการ`;
-  }
-  
-  // 4. จัดรูปแบบข้อความที่จะส่ง
-  const messageText = `${headerText}\n\n` +
-                      `📌 สถานะ: ${displayStatus}\n` +
-                      `📄 เลขที่: ${req.docNumber || req.id}\n` +
-                      `🏢 โครงการ: ${req.job}\n` +
-                      `👤 ผู้ขอ: ${req.requester}\n` +
-                      `🏷️ ประเภท: ${displayType}\n` +
-                      `\n📦 รายการ:\n${itemsList}\n` +
-                      `\n👉 กรุณาเข้าสู่ระบบเพื่อตรวจสอบและดำเนินการครับ`;
-
-  // 5. ข้อมูลสำหรับยิง API
-  const url = 'https://api.line.me/v2/bot/message/push';
-  const payload = {
-    to: targetGroupId,
-    messages: [{ type: 'text', text: messageText }]
-  };
-  
-  const options = {
-    method: 'post',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + LINE_ACCESS_TOKEN
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  try {
-    const res = UrlFetchApp.fetch(url, options);
-    console.log("LINE Notify Response: " + res.getContentText());
-  } catch (error) {
-    console.error("LINE Notify Error: " + error.toString());
-  }
-}
 
 
 
