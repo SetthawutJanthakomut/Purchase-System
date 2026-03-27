@@ -3179,4 +3179,49 @@ function sendLineGroupNotification(req) {
   }
 }
 
+function runUltimateMigration() {
+  const urlBase = SUPABASE_URL; 
+  const key = SUPABASE_KEY; 
+
+  // ⚠️ อย่าลืมใส่ ID โฟลเดอร์ให้ครบทั้ง 3 อันเหมือนเดิมนะครับ
+  const FOLDER_MAIN = '1bLG6dp7SJVEMvDudKKZnoCpriUPrJyOU';
+  const FOLDER_ASSET = '1rld-ZhQQUOpO4S2_QHRVJ46nAHURAmRf';
+  const FOLDER_SIG = '1nodI1mSwZxVN8yOWf4ycr115f8Md3Ywf';
+
+  uploadDoubleToSupabase(FOLDER_MAIN, 'purchase-hub', 'documents', urlBase, key);
+  uploadDoubleToSupabase(FOLDER_ASSET, 'purchase-hub', 'items', urlBase, key);
+  uploadDoubleToSupabase(FOLDER_SIG, 'purchase-hub', 'signatures', urlBase, key);
+}
+
+function uploadDoubleToSupabase(driveFolderId, bucketName, targetFolder, urlBase, key) {
+  if (!driveFolderId || driveFolderId.includes('ใส่_ID')) return;
+  const folder = DriveApp.getFolderById(driveFolderId);
+  const files = folder.getFiles();
+  let countId = 0, countName = 0;
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const blob = file.getBlob();
+    const options = {
+      method: 'post',
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': file.getMimeType() },
+      payload: blob,
+      muteHttpExceptions: true
+    };
+
+    // 🟢 แบบที่ 1: เซฟด้วย "รหัส ID" (อุดรอยรั่วตารางคำขอ/Logs)
+    const fileId = file.getId();
+    const url1 = `${urlBase}/storage/v1/object/${bucketName}/${targetFolder}/${fileId}`;
+    const res1 = UrlFetchApp.fetch(url1, options);
+    if (res1.getResponseCode() === 200 || res1.getResponseCode() === 201) countId++;
+
+    // 🔵 แบบที่ 2: เซฟด้วย "ชื่อไฟล์" (อุดรอยรั่วตารางทรัพย์สิน/สต็อก)
+    const encodedName = encodeURIComponent(file.getName());
+    const url2 = `${urlBase}/storage/v1/object/${bucketName}/${targetFolder}/${encodedName}`;
+    const res2 = UrlFetchApp.fetch(url2, options);
+    if (res2.getResponseCode() === 200 || res2.getResponseCode() === 201) countName++;
+  }
+  Logger.log(`✅ โฟลเดอร์ /${targetFolder} -> อัปด้วย ID: ${countId} | อัปด้วยชื่อ: ${countName}`);
+}
+
 
