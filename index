@@ -5334,18 +5334,12 @@ const confirmReturnAsset = async () => {
         let uploadedFiles = [];
         if (returnAssetData.images && returnAssetData.images.length > 0) {
             const uploadPromises = returnAssetData.images.map(file => {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.readAsDataURL(file);
-                    reader.onload = () => {
-                        google.script.run
-                            .withSuccessHandler(resolve)
-                            .withFailureHandler(reject)
-                            .uploadAssetImage(reader.result, file.name);
-                    };
-                });
-            });
-            uploadedFiles = await Promise.all(uploadPromises);
+    // 🚀 ยิงตรงเข้า Supabase โฟลเดอร์ items เลย (หรือจะเปลี่ยนชื่อเป็น 'returns' ก็ได้)
+    return uploadFileToSupabase(file, 'items'); 
+});
+const results = await Promise.all(uploadPromises);
+// กรองเอาเฉพาะที่อัปโหลดสำเร็จ
+uploadedFiles = results.filter(u => u && u.url);
         }
         
         const logAttachments = uploadedFiles.map(f => ({ name: f.name, type: 'image/jpeg', url: f.url }));
@@ -6025,11 +6019,14 @@ const handleConfirmReceive = async () => {
                     currentAssetCount++; 
                     let assetLogImages = [];
                     if (assetReg.images && assetReg.images.length > 0) {
-                        const uploadPromises = assetReg.images.map(imgObj => new Promise((resolve, reject) => {
-                            google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).uploadAssetImage(imgObj.base64, imgObj.name);
-                        }));
-                        const uploaded = await Promise.all(uploadPromises);
-                        assetLogImages = uploaded.map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
+                       const uploadPromises = assetReg.images.map(imgObj => {
+    if (imgObj.file) {
+        return uploadFileToSupabase(imgObj.file, 'items'); // เอาไปไว้โฟลเดอร์ items
+    }
+    return Promise.resolve(imgObj);
+});
+const uploaded = await Promise.all(uploadPromises);
+assetLogImages = uploaded.filter(u => u && u.url).map(u => ({ name: u.name, type: 'image/jpeg', url: u.url }));
                     }
 
                     const assetId = assetReg.isAutoId ? `AST-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${String(currentAssetCount).padStart(3,'0')}` : assetReg.id;
@@ -6835,23 +6832,37 @@ const dashboardRequests = useMemo(() => {
           return { subJobData, matCodeData, projectSummary };
       }, [projects, requests, globalProjectFilter, assets]);
 
-const getDriveImageUrl = (src) => {
+const getDriveImageUrl = (src, type = 'item') => {
     if (!src) return null;
     
-    // ถ้าเป็น Base64 หรือ Blob ให้ใช้เลย
+    // 1. ไฟล์เพิ่งอัปโหลดสดๆ ร้อนๆ
     if (src.startsWith('data:') || src.startsWith('blob:')) return src;
     
-    // ดึง ID จาก Google Drive URL
-    let id = null;
-    if (src.includes('/file/d/')) {
-        id = src.split('/file/d/')[1].split('/')[0];
-    } else if (src.includes('id=')) {
-        id = src.split('id=')[1].split('&')[0];
+    // 2. เป็นลิงก์ Supabase อยู่แล้ว
+    if (src.includes('supabase.co')) return src;
+
+    const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://cgrmoykqhqopxexkuzto.supabase.co';
+    const BUCKET_NAME = 'purchase-hub'; 
+    
+    let folderPath = 'items';
+    if (type === 'signature') folderPath = 'signatures';
+    else if (type === 'document') folderPath = 'documents';
+
+    // 3. 🟢 ถ้าเป็นลิงก์ Google Drive เก่า -> ดึงรหัส ID มาใช้ (ไม่ต้อง Encode)
+    if (src.includes('drive.google.com') || src.includes('/file/d/') || src.includes('id=')) {
+        let fileId = src;
+        if (src.includes('/file/d/')) {
+            fileId = src.split('/file/d/')[1].split('/')[0];
+        } else if (src.includes('id=')) {
+            fileId = src.split('id=')[1].split('&')[0];
+        }
+        return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET_NAME}/${folderPath}/${fileId}`;
     }
 
-    if (id) {
-        // ⭐ ใช้ lh3.googleusercontent.com/d/ ทะลุบล็อก Drive ได้ชัวร์ที่สุด
-        return `https://lh3.googleusercontent.com/d/${id}`;
+    // 4. 🔵 ถ้าเป็นชื่อไฟล์ตรงๆ (เช่น Screenshot 123.jpg) -> ต้อง Encode ให้ตรงกับ Supabase
+    if (!src.startsWith('http')) {
+        const encodedName = encodeURIComponent(src);
+        return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET_NAME}/${folderPath}/${encodedName}`;
     }
     
     return src; 
@@ -14185,9 +14196,9 @@ const relatedAssets = sourceAssets.filter(a =>
                   const dateL2 = l2Log ? formatDateTh(l2Log.date) : '....../....../......';
                   
                   // ลายเซ็น (Request / L1 / L2)
-                  const sigReq = userReq?.signature ? getDriveImageUrl(userReq.signature) : null;
-                  const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature) : null;
-                  const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature) : null;
+                    const sigReq = userReq?.signature ? getDriveImageUrl(userReq.signature, 'signature') : null;
+                    const sigL1 = userL1?.signature ? getDriveImageUrl(userL1.signature, 'signature') : null;
+                    const sigL2 = userL2?.signature ? getDriveImageUrl(userL2.signature, 'signature') : null;
 
                   // --- หา Issued By (คนจ่ายของ) และ Returned By (คนรับคืน) ---
                   const getLogUser = (statusKey) => {
@@ -14199,13 +14210,13 @@ const relatedAssets = sourceAssets.filter(a =>
                   const issuerData = getLogUser('Completed');
                   const userIssuer = issuerData.user;
                   const nameIssuer = userIssuer ? `${userIssuer.firstName} ${userIssuer.lastName}` : (issuerData.log ? issuerData.log.user : '');
-                  const sigIssuer = userIssuer?.signature ? getDriveImageUrl(userIssuer.signature) : null;
+const sigIssuer = userIssuer?.signature ? getDriveImageUrl(userIssuer.signature, 'signature') : null;
 
-                  // Returned: สถานะ 'Returned'
-                  const returnerData = getLogUser('Returned');
-                  const userReturner = returnerData.user;
-                  const nameReturner = userReturner ? `${userReturner.firstName} ${userReturner.lastName}` : (returnerData.log ? returnerData.log.user : '');
-                  const sigReturner = userReturner?.signature ? getDriveImageUrl(userReturner.signature) : null;
+// Returned: สถานะ 'Returned'
+const returnerData = getLogUser('Returned');
+const userReturner = returnerData.user;
+const nameReturner = userReturner ? `${userReturner.firstName} ${userReturner.lastName}` : (returnerData.log ? returnerData.log.user : '');
+const sigReturner = userReturner?.signature ? getDriveImageUrl(userReturner.signature, 'signature') : null;
                   const dateReturn = returnerData.log ? formatDateTh(returnerData.log.date) : '....../....../......';
 
                   return (
@@ -14433,7 +14444,7 @@ const relatedAssets = sourceAssets.filter(a =>
         
         const userStore = getUser(storeLog);
         const nameStore = userStore ? `${userStore.firstName} ${userStore.lastName}` : (storeLog ? storeLog.user.replace(' (Email)', '') : '..........................');
-        const sigStore = userStore?.signature ? getDriveImageUrl(userStore.signature) : null;
+        const sigStore = userStore?.signature ? getDriveImageUrl(userStore.signature, 'signature') : null;
         const dateStore = storeLog ? formatDateTh(storeLog.date) : '....../....../......';
 
         // --- B. ⭐ Logic หาคนเซ็นช่องฝ่ายจัดซื้อ (Purchasing) ---
@@ -14480,7 +14491,7 @@ const relatedAssets = sourceAssets.filter(a =>
         }
         const userPurchasing = getUser(purchasingLog);
         const namePurchasing = userPurchasing ? `${userPurchasing.firstName} ${userPurchasing.lastName}` : (purchasingLog ? purchasingLog.user.replace(' (Email)', '') : '..........................');
-        const sigPurchasing = userPurchasing?.signature ? getDriveImageUrl(userPurchasing.signature) : null;
+        const sigPurchasing = userPurchasing?.signature ? getDriveImageUrl(userPurchasing.signature, 'signature') : null;
         const datePurchasing = purchasingLog ? formatDateTh(purchasingLog.date) : '....../....../......';
 
         // ตัวแปรเช็คสถานะงาน
@@ -14894,11 +14905,11 @@ const relatedAssets = sourceAssets.filter(a =>
                   <div key={idx} className="bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 flex flex-col items-center shadow-2xl">
                      
                      {/* Image Display */}
-                     {(att.type?.startsWith('image/') || att.name?.match(/\.(jpg|jpeg|png|gif)$/i)) ? (
-                        <div className="w-full relative min-h-[300px] bg-black flex items-center justify-center">
-                            <img 
-                                src={getDriveImageUrl(att.url || att.base64 || att.data)} 
-                                alt={att.name} 
+{(att.type?.startsWith('image/') || att.name?.match(/\.(jpg|jpeg|png|gif)$/i)) ? (
+    <div className="w-full relative min-h-[300px] bg-black flex items-center justify-center">
+        <img 
+            src={getDriveImageUrl(att.url || att.base64 || att.data || att.name, 'item')} 
+            alt={att.name}
                                 className="w-auto max-w-full max-h-[85vh] object-contain" 
                                 onError={(e) => {
                                     e.target.style.display = 'none'; 
